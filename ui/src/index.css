@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/* Neon-purple accent carried over from the blog's cover art. Exposed through
+   @theme so Tailwind generates `text-accent`, `bg-accent`, `border-accent`. */
+@theme {
+  --color-accent: #c084fc;
+  --color-accent-strong: #aa3bff;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0a0b0f;
+  color: #cbd5e1;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Thin dark scrollbars so long logs and YAML don't get a chunky light bar. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}

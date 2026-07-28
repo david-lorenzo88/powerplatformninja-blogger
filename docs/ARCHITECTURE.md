@@ -83,14 +83,22 @@ increasing (asserted in the tests).
 
 ```json
 {"seq": 12, "kind": "node", "executor_id": "researcher",
- "level": "info", "message": "researcher active", "data": {...}, "ts": "..."}
+ "level": "info", "message": "researcher completed",
+ "data": {"type": "executor_completed", "output": "..."}, "ts": "..."}
 ```
 
 `kind` is one of:
 
 - `status` — queued / running / terminal, with `data.status`
-- `node` — a workflow executor produced output; drives the canvas
-- `log` — one line per tool call (`ppn.tools`) and per gate decision
+- `node` — an executor lifecycle event; drives the canvas. `data.type` is
+  `executor_invoked` (lights the node) or `executor_completed` (carries the
+  agent's finished output in `data.output`, when it can be extracted cleanly).
+- `log` — a tool call (`ppn.tools`) or gate decision, **or** a chunk of an
+  agent's streamed output (`data.type == "output"`), flushed in ~1 KB pieces so
+  the UI fills in as the agent produces text. Concatenating an executor's output
+  chunks reconstructs its full result; this is the reliable source for the
+  streaming agents, while `data.output` covers structured ones (e.g. the
+  publisher's `TopicSuggestionSet`).
 - `eof` — terminal; the stream closes after this
 
 Node status for the canvas is **derived from the same log** (`GET /runs/{id}`
