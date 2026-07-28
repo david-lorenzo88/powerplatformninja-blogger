@@ -24,6 +24,7 @@ Written and verified against the code. Do not restate these in chat — link the
 | `docs/GETTING-STARTED.md` | Fresh-environment setup: Azure resources, roles, WordPress, first run. |
 | `docs/CONFIGURATION.md` | Every env var; every key in `config/`; all 33 validation rules. |
 | `docs/OPERATIONS.md` | CLI reference and troubleshooting for failures that actually occurred. |
+| `docs/DEPLOYMENT.md` | Deploy to Azure Container Apps (Entra Easy Auth, Postgres, Azure Files, Bicep) — the online-hosting runbook. |
 | `docs/ARCHITECTURE.md` | Server API contract — the input for the React UI. |
 | `docs/STATUS.md` | What is done, what is verified, what is left. |
 
