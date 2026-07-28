@@ -1,0 +1,429 @@
+# Operations
+
+Day-to-day use, the full CLI, and every failure that has actually happened here
+with what to do about it.
+
+- [The CLI](#the-cli)
+- [A normal week](#a-normal-week)
+- [Resuming a failed run](#resuming-a-failed-run)
+- [Troubleshooting](#troubleshooting)
+- [Cost](#cost)
+- [Running the server](#running-the-server)
+- [Development](#development)
+
+---
+
+## The CLI
+
+Every command below takes `--help`.
+
+### Checks
+
+#### `ppn doctor`
+
+Prints a configuration table and makes one live call to WordPress
+(`/users/me?context=edit`). Run it after any `.env` change.
+
+```bash
+ppn doctor
+```
+
+Covers: Foundry endpoint and models, credential mode, search provider, WordPress
+config plus a live connection test, cover provider, translation defaults, and the
+counts of watch areas, feeds and validation rules loaded.
+
+#### `ppn preflight`
+
+Makes two small real model calls to establish what request shapes your deployment
+accepts — structured output alone, and structured output plus `temperature`.
+
+```bash
+ppn preflight
+```
+
+If the result disagrees with what the code inferred from the model name, it tells
+you to pin `FOUNDRY_TEMPERATURE_SUPPORT=true|false`. Costs a few hundred tokens and
+saves an hour. Run it whenever you change `FOUNDRY_MODEL`.
+
+#### `ppn models`
+
+Lists model deployments visible on the configured image resource, flagging which
+look like image models, plus provider-specific notes (MAI pixel caps, GPT-Image
+verification requirements).
+
+```bash
+ppn models
+```
+
+#### `ppn rules` · `ppn show-config`
+
+`rules` prints the 33 validation rules with severities, colour-coded. `show-config`
+dumps the effective configuration as JSON with secrets reduced to booleans — safe
+to paste into an issue.
+
+### Producing posts
+
+#### `ppn suggest`
+
+```bash
+ppn suggest
+ppn suggest --instruction "focus on governance and DLP changes this month"
+ppn suggest --dry-run
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `--instruction` / `-i` | *"Find what is worth writing about…"* | Steers the scouts. |
+| `--dry-run` | off | Offline stub. No network, no cost. |
+
+Writes `topics/suggestions-<date>.json` and a readable `.md`. Takes 10–20 minutes.
+
+#### `ppn write`
+
+```bash
+ppn write --index 2
+ppn write --index 1 --no-push --no-cover
+ppn write --dossier research/2026-07-28-my-topic.json --index 1
+ppn write --index 1 --translate
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `--index` / `-n` | `1` | Which suggestion, 1-based. |
+| `--topic` / `-t` | latest | A specific `suggestions-*.json`. |
+| `--dossier` / `-d` | — | Reuse a saved dossier; skips the Researcher entirely. |
+| `--skip-source-check` | off | Only with `--dossier`. Claims go unverified. |
+| `--push` / `--no-push` | `WP_AUTO_PUSH` | |
+| `--cover` / `--no-cover` | `COVER_ENABLED` | |
+| `--translate` / `--no-translate` | `TRANSLATE_ENABLED` | |
+| `--dry-run` | off | Offline stub, exercising both loops. |
+| `--verbose` / `-v` | off | Also shows the `agent_framework` trace. |
+
+#### `ppn write-topic`
+
+Write something you already decided on, skipping discovery.
+
+```bash
+ppn write-topic \
+  --title "Environment routing without a managed environment" \
+  --area governance --format how-to \
+  --problem "Makers land in the default environment and nobody notices" \
+  --source https://learn.microsoft.com/power-platform/admin/... \
+  --question "Does routing require Managed Environments in every case?" \
+  --push
+```
+
+`--source` and `--question` are repeatable.
+
+#### `ppn run`
+
+`suggest` then `write` on the top-ranked suggestion, unattended. Takes an hour or
+more. Useful on a schedule; less useful when you want a say in the topic.
+
+```bash
+ppn run --no-push
+```
+
+### After the draft
+
+#### `ppn cover`
+
+Regenerate cover art without re-running the pipeline.
+
+```bash
+ppn cover drafts/2026-07-28-my-post.md
+ppn cover drafts/2026-07-28-my-post.md --concept "isometric neon lattice of connected environments" --push
+```
+
+`--push` uploads to the media library and prints the media id; attach it with
+`ppn wp push`.
+
+#### `ppn translate`
+
+```bash
+ppn translate drafts/2026-07-28-my-post.md --push
+```
+
+Writes `drafts/<date>-<slug>-es.md` with `language: es` and `translation_of` in the
+front matter.
+
+#### `ppn wp preview` · `ppn wp push` · `ppn wp check`
+
+```bash
+ppn wp check                                            # verify credentials
+ppn wp preview drafts/2026-07-28-my-post.md             # print the block markup
+ppn wp push    drafts/2026-07-28-my-post.md             # create or update
+ppn wp push    drafts/2026-07-28-my-post.md --status publish
+```
+
+`push` **updates in place by slug** — it looks the slug up in
+`.ppn_state/wp_posts.json`, then falls back to a REST query across all statuses. Re-pushing
+never creates a duplicate. This is how you correct a post after changing the
+Markdown or the converter.
+
+### The server
+
+```bash
+ppn serve
+ppn serve --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## A normal week
+
+```bash
+ppn suggest                       # Monday, over coffee. 15 minutes.
+                                  # read topics/suggestions-<date>.md
+ppn write --index 3               # pick one. 20-60 minutes.
+                                  # read drafts/<date>-<slug>.review.md
+                                  # edit the draft in WordPress
+                                  # press Publish yourself
+ppn translate drafts/<file>.md --push   # if the post warrants it
+```
+
+The review report is the part worth reading properly. It lists both validators' findings
+rule by rule, with the exact location and a concrete fix for each, plus the Source
+Checker's verdict — which URLs did not resolve, which claims lacked corroboration,
+which excerpts did not appear on the page they were attributed to. A draft that
+scored 88 with two majors is often better than one that scored 84 with none; the
+report tells you which.
+
+---
+
+## Resuming a failed run
+
+The dossier is written to `research/` **the moment the Researcher finishes**, before
+anything downstream can fail. Research is the expensive stage — dozens of fetches,
+several minutes — and it should never be paid for twice.
+
+```bash
+ls -t research/ | head -3
+ppn write --dossier research/2026-07-28-my-topic.json --index 1
+```
+
+This enters the graph at `dossier_entry` instead of `brief_builder`. The Researcher
+is not part of the graph at all in this mode.
+
+If the source check already passed on the original run and you are only retrying a
+downstream failure, skip it:
+
+```bash
+ppn write --dossier research/2026-07-28-my-topic.json --index 1 --skip-source-check
+```
+
+That goes straight to the Writer with a synthetic passing verdict. Use it when you
+know the dossier was already verified — the log will warn that claims in the
+resulting draft are unverified.
+
+---
+
+## Troubleshooting
+
+### `Unsupported parameter: 'temperature' is not supported with this model`
+
+**What happened.** A reasoning model (`gpt-5`, `o1`, `o3`, `o4`) rejected the
+`temperature` the Writer sent. The run dies at the Writer — *after* research
+succeeded.
+
+**Fix.**
+
+```bash
+ppn preflight                       # confirms it in ~2 seconds
+echo "FOUNDRY_TEMPERATURE_SUPPORT=false" >> .env
+ppn write --dossier research/<the dossier that survived>.json --index 1
+```
+
+The name-based inference covers the known families; `preflight` is the check, and
+the env var is the override.
+
+### `401` or `403` from Foundry
+
+Subscription Owner is not a data-plane role. In the **AI Foundry resource** → IAM,
+assign yourself **Azure AI User** (models) and **Cognitive Services OpenAI User**
+(images). Then:
+
+```bash
+az login
+az account set --subscription "<name>"
+```
+
+Role assignments take a few minutes to propagate. If it fails immediately after
+assigning, wait five minutes before debugging anything else.
+
+### WordPress rejects the credentials (401)
+
+- Is `WP_USERNAME` the login name, not the display name?
+- Was the Application Password revoked? Regenerate it.
+- Is a security plugin blocking the REST API or Basic auth headers? Some plugins
+  strip `Authorization` — check the plugin's REST settings.
+
+```bash
+ppn wp check
+```
+
+### WordPress rejects the post (400)
+
+Usually a term the account cannot create. **Author cannot create categories.** Use
+Editor or Administrator.
+
+### Gutenberg: "This block contains unexpected or invalid content"
+
+Gutenberg validates a block by re-running its `save()` and diffing the result
+against the stored markup. Any difference is reported as invalid content, even when
+the post renders correctly on the front end.
+
+If it is a **code block** and you are on a build from before the fix, the cause is
+one of three serialisation mismatches — quotes escaped as `&quot;`, a `class` on
+`<code>`, or an unescaped `[`. Update, then re-push:
+
+```bash
+ppn wp preview drafts/<file>.md | head -40    # eyeball the markup
+ppn wp push    drafts/<file>.md               # updates in place by slug
+```
+
+For any other block, `ppn wp preview` prints exactly what would be sent — compare
+it against what the editor produces for the same block by hand.
+
+### `[SCREENSHOT: …]` appears literally in the post
+
+Old build. The converter now normalises both `![alt](IMAGE:slug)` and
+`[SCREENSHOT: slug] caption` into an empty `core/image` block plus an instruction
+note — a one-click upload slot in the editor. Set
+`WP_SCREENSHOT_PLACEHOLDER=note` if you prefer just the note.
+
+**These are not filled in automatically, and should not be.** A generated image of
+a Microsoft admin centre would be convincing and wrong, on a post whose entire
+positioning is reproducible steps. Cover art is decoration; a screenshot is
+evidence.
+
+### Cover generation returns 400 on MAI
+
+MAI caps images at 1,048,576 total pixels with a 768px minimum edge, and takes
+integer `width`/`height` rather than a size string. `fit_to_mai_limits()` refits
+automatically — `1536x1024` becomes `1248x832` — so a 400 here usually means
+something else. Check the log line for the dimensions actually sent.
+
+### `DeploymentNotFound` / 404 on cover generation
+
+```bash
+ppn models
+```
+
+The deployment name in `COVER_MODEL` must match exactly, including case.
+
+### Cover fails with a 403 mentioning verification
+
+`COVER_PROVIDER=openai` with GPT Image requires Organization Verification at
+platform.openai.com → Settings → Organization → General. An OpenAI **API key** is
+also not a ChatGPT Plus/Pro subscription — different product, separate billing.
+
+Easiest fix: use `MAI-Image-2.5-Pro` on your existing Foundry resource.
+
+### A run hangs
+
+The timeouts (40 min for suggest, 90 for write) exist to break a genuine hang. Long
+is not the same as hung — the scouts fetch every page they intend to cite.
+
+```bash
+ppn write --index 1 --verbose      # shows the agent_framework trace
+```
+
+`ppn.tools` logs one line per tool call, so the last line tells you which fetch is
+sitting there.
+
+### The validators never approve anything
+
+Read the review report first — if the same rule fires every time, the crew is
+telling you something. Then, in order of preference:
+
+1. Fix the rule if it is wrong for your blog (`config/validation_rules.yaml`).
+2. Lower `scoring.pass_threshold` from 82.
+3. Raise `PPN_MAX_REVISION_ROUNDS`.
+
+Do not disable `block_on_any_blocker`. The blockers are C03 (unsupported claims)
+and C07 (dropped caveats) — the two rules that keep the blog honest.
+
+### A run was `interrupted`
+
+The server marks runs `interrupted` on startup if they were still `queued` or
+`running` when the process died. Nothing is lost that was written to disk; check
+`research/` for a dossier and resume with `--dossier`.
+
+---
+
+## Cost
+
+Rough per-run token usage, dominated by the fetched page content in the research
+stage rather than by the generation.
+
+| Run | Model calls | Notes |
+|---|---|---|
+| `ppn suggest` | ~10–20 | Mostly fast tier. Setting `FOUNDRY_MODEL_FAST` cuts this substantially. |
+| `ppn write` | ~10–25 | All reasoning tier. Each revision round adds three calls (writer + two validators). |
+| Cover | 1 image | |
+| Translation | 1 large call | |
+
+Levers, in order of effect:
+
+1. **Set `FOUNDRY_MODEL_FAST`.** The scouts are the highest-volume, lowest-value
+   calls in the system.
+2. **`SEARCH_CONTEXT_SIZE=low`.** Fewer tokens per search result.
+3. **Lower `PPN_MAX_REVISION_ROUNDS`.** Each round is three reasoning calls.
+4. **`COVER_ENABLED=false`** if you make covers yourself.
+
+---
+
+## Running the server
+
+```bash
+ppn serve
+```
+
+On first start, `config/*.yaml` is imported into `.ppn_state/ppn.db` and the
+database becomes authoritative. **Later edits to the YAML files are not picked
+up** — edit through the API, where changes are versioned and rollback-able.
+
+To reset config back to the files, delete the database:
+
+```bash
+rm .ppn_state/ppn.db*
+```
+
+Runs and their event logs live in the same database, so that deletes history too.
+
+**Concurrency.** `PPN_MAX_CONCURRENT_RUNS` (default 2) is the resource cap. Raise
+it only if your Foundry quota can take it — two `write` runs in parallel is already
+a lot of tokens per minute.
+
+**Postgres.** Set `PPN_DATABASE_URL=postgresql+asyncpg://…`. No other change.
+
+---
+
+## Development
+
+```bash
+pytest                       # 31 tests, ~6 seconds, fully offline
+ruff check src tests
+```
+
+Both test files run real workflow graphs. `tests/test_server.py` runs real HTTP
+against the app with a real queue and real SSE.
+
+**Everything is testable without Azure.** `stub_clients()` returns schema-valid
+canned objects, and with `exercise_loops=True` it fails the first source check and
+the first validation round — so a dry run walks both loops rather than taking the
+happy path.
+
+Two habits worth keeping:
+
+**Introspect the installed package rather than trusting the docs.** Both of the
+hardest integration problems here — Microsoft Agent Framework's real executor API,
+and MAI's non-OpenAI image route — were solved by reading the installed code, not
+by reading documentation about it.
+
+**When a test hangs, get a stack dump rather than guessing.** A ~50% intermittent
+hang in the server tests turned out to be five leaked aiosqlite worker threads
+blocking teardown. Adding `-p no:cacheprovider --timeout` guesswork found nothing;
+`pytest -o faulthandler_timeout=40` dumped every thread's stack and named the
+culprit on the first run.

@@ -7,6 +7,18 @@ publishing straight into WordPress as unpublished drafts.
 Nothing here auto-publishes. The crew's job ends at a WordPress draft plus a review report;
 you press Publish.
 
+## Documentation
+
+| Document | Read it when |
+|---|---|
+| **[Getting started](docs/GETTING-STARTED.md)** | Setting this up on a fresh machine. Azure resources, model deployments, WordPress credentials, first run. |
+| **[How it works](docs/HOW-IT-WORKS.md)** | Before changing anything. Every stage, every gate, every loop, and why each one is built the way it is. |
+| **[Configuration](docs/CONFIGURATION.md)** | Tuning the crew. Every environment variable and every key in `config/`. |
+| **[Operations](docs/OPERATIONS.md)** | Daily use and when something breaks. Full CLI reference plus the failures that have actually happened here. |
+| **[Architecture](docs/ARCHITECTURE.md)** | Building against the server API. |
+
+The short version is below.
+
 ---
 
 ## The crew
@@ -318,8 +330,10 @@ drafts/2026-07-27-<slug>.package.json everything, including the WordPress post i
 
 Markdown is converted to real **Gutenberg blocks** on push — headings, lists, code blocks
 with language, tables, quotes and separators, so the post opens as editable blocks. Image
-placeholders become a marked paragraph (`[SCREENSHOT: slug] alt text`) you replace with the
-real screenshot.
+placeholders become an **empty `core/image` block** plus a capture note, which renders in the
+editor as a clickable upload slot: drop the real screenshot in, delete the note. Nothing
+fabricates a screenshot of a Microsoft admin centre — cover art is decoration, a screenshot
+is evidence.
 
 Re-running the same slug **updates** the existing WordPress draft instead of creating a
 duplicate (tracked in `.ppn_state/wp_posts.json`, with a slug lookup as fallback).
@@ -415,7 +429,10 @@ src/ppn_blogger/
   models.py      typed contracts between agents (Pydantic)
   clients.py     Foundry chat clients (reasoning + fast)
   prompts.py     agent instructions, built from config
-  agents.py      the nine agent factories
+  agents.py      the ten agent factories
+  covers.py      neon cover art (MAI / OpenAI-compatible routes)
+  config_source.py  swappable config backend (YAML files or the server's DB)
+  server/        FastAPI: run queue, SSE events, versioned config, drafts API
   tools.py       search, fetch, feeds, Learn, blog search, trust checks
   executors.py   gates, loops, state, artefact writing
   workflows.py   the two Agent Framework graphs
