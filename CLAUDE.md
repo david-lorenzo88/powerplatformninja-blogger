@@ -48,7 +48,14 @@ src/ppn_blogger/
   server/           FastAPI: run queue, SSE, versioned config store, drafts API
 config/             editorial policy — the thing you actually tune
 tests/              31 tests, fully offline
+ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
+
+The React UI in `ui/` is the frontend for `server/`. It is built and verified but
+lives on the PR branch (see Git, below) until that merges. Its one invariant:
+`ui/src/lib/deriveNodes.ts` is a faithful port of `derive_nodes()` in
+`server/api.py` — the canvas and the transcript are both folded from the event log
+the same way, so they can never disagree. Keep them in lockstep.
 
 ## Commands
 
@@ -62,6 +69,18 @@ ppn write --index 1 --dry-run
 ```
 
 `pip install -e ".[dev]"` gives you the CLI, the server extras and pytest.
+
+For the UI (Stage 2), from `ui/`:
+
+```bash
+npm install && npm run dev   # SPA on :5173, proxies /api to `ppn serve` on :8000
+npm run build                # → ui/dist, served by `ppn serve` in production
+npm run lint                 # oxlint
+```
+
+On this dev box `ruff` and `ppn` are not on PATH — use `python3 -m ruff` and
+`python3 -m ppn_blogger.cli`. `npm install` needs `--cache <writable-dir>` (a
+root-owned `~/.npm`); full environment notes are in `docs/STATUS.md`.
 
 ## How to work on this
 
@@ -134,15 +153,23 @@ route — were solved by reading installed code, not docs about it.
 
 ## Git
 
-The repository is initialised locally with the history below, and `origin` points
-at `https://github.com/david-lorenzo88/powerplatformninja-blogger.git`.
+The repository exists and is **public** at
+`https://github.com/david-lorenzo88/powerplatformninja-blogger`. `main` carries the
+crew, the docs and the ignore rules:
 
 ```
+ef1da27  docs: add project map, status doc, and README status link
 7f68e1e  docs: full reference — how it works, setup, configuration, operations
 c18e7fb  feat: agent crew that drafts blog posts for powerplatformninja.com
 ```
 
-**The GitHub repository does not exist yet** — see `docs/STATUS.md`.
+**The React UI (Stage 2) is on a branch, not yet on `main`** — see
+[PR #1](https://github.com/david-lorenzo88/powerplatformninja-blogger/pull/1)
+(branch `claude/powerplatformninja-blogger-ui-75a669`). It adds `ui/` and a
+run-event enrichment in `server/runs.py`. Check out that branch to work on the UI.
+
+Generated output — `drafts/`, `research/`, `topics/` — is **gitignored** (each keeps a
+tracked `.gitkeep`); never `git add` a draft or dossier into the public repo.
 
 Do not commit `.env`. Do not commit anything containing the WordPress Application
 Password or an Azure endpoint with credentials.

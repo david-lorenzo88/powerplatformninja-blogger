@@ -406,8 +406,16 @@ On first start the YAML under `config/` is imported into the database, which the
 becomes authoritative — edits are versioned there rather than in git, with
 history and rollback in-app.
 
-The API contract, the Azure migration seams and the frontend plan are in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The React app is stage 2.
+The **React management UI** (Stage 2) lives in `ui/` — four screens over this API:
+Runs, a live Run-detail canvas of the agent graph, Config, and Drafts. Dev and
+build notes are in [ui/README.md](ui/README.md).
+
+```bash
+cd ui && npm install && npm run dev   # SPA on :5173, proxies /api to `ppn serve`
+```
+
+The API contract and the Azure migration seams are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
