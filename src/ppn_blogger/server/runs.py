@@ -106,8 +106,45 @@ class RunLogHandler(logging.Handler):
         )
 
 
+def _stream_text(data: Any) -> str:
+    """Text delta from a streaming ``output`` event (an AgentResponseUpdate)."""
+    text = getattr(data, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _final_output_text(data: Any) -> str:
+    """The agent's finished output from an ``executor_completed`` event.
+
+    Completed events carry a list. An ``AgentExecutor`` yields a single
+    ``AgentExecutorResponse`` whose ``agent_response.text`` is the full result;
+    the publisher yields a structured Pydantic object; a routing gate yields an
+    ``AgentExecutorRequest`` envelope we deliberately surface nothing for. Duck
+    typed on purpose — the point of this module is to not import Agent Framework
+    internals just to read a string off them.
+    """
+    item = data[-1] if isinstance(data, (list, tuple)) and data else data
+    agent_response = getattr(item, "agent_response", None)
+    if agent_response is not None:
+        text = getattr(agent_response, "text", None)
+        if isinstance(text, str):
+            return text
+    dump = getattr(item, "model_dump_json", None)
+    if callable(dump):
+        try:
+            return dump(indent=2)
+        except Exception:  # noqa: BLE001 - never let observability break a run
+            return ""
+    if isinstance(item, str):
+        return item
+    return ""
+
+
 class RunManager:
     """Owns the queue, the workers and the event fan-out."""
+
+    # Streamed agent output is flushed in chunks this size, so the UI shows text
+    # as it is produced without emitting one event per token.
+    _OUTPUT_CHUNK = 1200
 
     def __init__(self, concurrency: int | None = None) -> None:
         self.concurrency = concurrency or int(os.environ.get("PPN_MAX_CONCURRENT_RUNS", "2"))
@@ -395,19 +432,59 @@ class RunManager:
             current_run_id.reset(token)
 
     def _on_event(self, run_id: str) -> Callable[[Any], None]:
-        """Bridge workflow events into the run's event stream."""
+        """Bridge workflow events into the run's event stream.
+
+        The workflow emits, per executor, one ``executor_invoked``, a run of
+        streamed ``output`` deltas, and one ``executor_completed`` carrying the
+        finished result. We surface all three so a node not only lights up but
+        shows what the agent actually researched, wrote or decided:
+
+        * ``executor_invoked`` → a ``node`` event that lights the node.
+        * ``output`` → the streamed text, accumulated and flushed in ~1 KB
+          ``log`` chunks so the panel fills in as the agent produces it, rather
+          than one event per token (the old behaviour emitted thousands).
+        * ``executor_completed`` → a ``node`` event whose ``data.output`` is the
+          agent's full, clean result.
+
+        Everything is keyed by ``executor_id`` so it folds onto the right node,
+        and ``derive_nodes`` still counts these exactly as before.
+        """
+        pending: dict[str, str] = {}
+
+        def flush(executor_id: str) -> None:
+            text = pending.pop(executor_id, "")
+            if text:
+                self.emit_threadsafe(
+                    run_id, kind="log", executor_id=executor_id,
+                    message=text[:4000], data={"type": "output"},
+                )
 
         def handler(event: Any) -> None:
             executor_id = getattr(event, "executor_id", "") or ""
             if not executor_id:
                 return
-            self.emit_threadsafe(
-                run_id,
-                kind="node",
-                executor_id=executor_id,
-                message=f"{executor_id} active",
-                data={"type": str(getattr(event, "type", ""))},
-            )
+            etype = str(getattr(event, "type", "") or "")
+            data = getattr(event, "data", None)
+
+            if etype == "executor_invoked":
+                self.emit_threadsafe(
+                    run_id, kind="node", executor_id=executor_id,
+                    message=f"{executor_id} started", data={"type": etype},
+                )
+            elif etype == "output":
+                text = _stream_text(data)
+                if text:
+                    pending[executor_id] = pending.get(executor_id, "") + text
+                    if len(pending[executor_id]) >= self._OUTPUT_CHUNK:
+                        flush(executor_id)
+            elif etype == "executor_completed":
+                flush(executor_id)
+                output = _final_output_text(data)
+                self.emit_threadsafe(
+                    run_id, kind="node", executor_id=executor_id,
+                    message=f"{executor_id} completed",
+                    data={"type": etype, "output": output[:12000]},
+                )
 
         return handler
 
