@@ -1,7 +1,8 @@
 # Management UI — architecture
 
-Stage 1 (the service core) is built and tested. Stage 2 is the React app, which
-consumes the contract below.
+Stage 1 (the service core) is built and tested. Stage 2 (the React app in `ui/`)
+is **built and verified** — it consumes the contract below. This document is the
+API contract; the frontend's own build/run notes are in [ui/README.md](../ui/README.md).
 
 ## Shape
 
@@ -143,12 +144,16 @@ PPN_MAX_CONCURRENT_RUNS=3 ppn serve
 
 First start imports `config/*.yaml` into the database and logs that it did.
 
-## Stage 2 — the React app
+## Stage 2 — the React app (built)
 
-`ui/`, Vite + React + TypeScript. Screens: **Runs** (queue, history, launch),
-**Run detail** (canvas + per-node transcript), **Config** (editor, history,
-rollback), **Drafts** (review, cover, publish).
+`ui/`, Vite + React + TypeScript (Tailwind, TanStack Query, React Flow, CodeMirror).
+Screens: **Runs** (queue, history, launch), **Run detail** (canvas + per-node
+output), **Config** (editor, history, rollback), **Drafts** (review, cover,
+publish). Build/run notes: [ui/README.md](../ui/README.md).
 
-For the canvas, render the Mermaid from `/api/workflows` into React Flow nodes
-once, then colour nodes from the `node` events. The graph is static per workflow
-kind; only the status overlay is live.
+The canvas parses the Mermaid from `/api/workflows` into React Flow nodes once
+(`ui/src/lib/parseMermaid.ts` + dagre layout), then colours nodes from the folded
+event log. The graph is static per workflow kind; only the status overlay is live.
+Both the canvas and the per-node transcript read from one `deriveNodes()`
+(`ui/src/lib/deriveNodes.ts`), a faithful port of `derive_nodes()` here in the
+server — fold once, so they cannot drift apart.
