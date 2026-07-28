@@ -1,0 +1,199 @@
+# The rulebook the Validator agents enforce.
+# severity: blocker | major | minor
+#   blocker -> draft cannot be finalised until fixed
+#   major   -> must be fixed unless the writer justifies it
+#   minor   -> nice to have, reported but never blocks
+
+content_rules:
+  - id: C01
+    rule: >-
+      The post opens with two framing paragraphs that name the problem or the
+      change. No throat clearing, no "in this article we will see".
+    severity: blocker
+    check_hint: Read the first 120 words. Is the reader's pain named explicitly?
+
+  - id: C02
+    rule: >-
+      The post contains at least one thing you cannot get by reading the official
+      documentation: a gotcha, a limit hit in practice, a measured number, or a
+      non-obvious combination of features.
+    severity: blocker
+
+  - id: C03
+    rule: >-
+      Every factual statement in the draft traces to a claim in the dossier.
+      Inline citations are NOT required (this blog does not use them), but a
+      statement the dossier does not support is a fabrication.
+    severity: blocker
+    check_hint: >-
+      Walk the draft sentence by sentence against the dossier claims. Quote any
+      unsupported statement verbatim in `location`.
+
+  - id: C04
+    rule: >-
+      Preview / GA status is stated explicitly for any feature discussed, with the
+      date it was checked.
+    severity: major
+
+  - id: C05
+    rule: Steps are reproducible; the reader never has to guess missing configuration.
+    severity: blocker
+
+  - id: C06
+    rule: Licensing and capacity implications are called out when the feature has any.
+    severity: major
+
+  - id: C07
+    rule: >-
+      Caveats the dossier attaches to a claim survive into the prose. Losing a
+      caveat while writing is a serious failure.
+    severity: blocker
+
+  - id: C08
+    rule: >-
+      The closing section (Conclusion or My take) gives an opinion and a
+      recommendation, not a summary of what was just said.
+    severity: major
+
+  - id: C09
+    rule: >-
+      Claims are hedged honestly — "in my tenant", "as of July 2026" — and never
+      stated as universal truth when they are not.
+    severity: major
+
+  - id: C10
+    rule: >-
+      No filler phrases. See the banned-phrases list in the style guide.
+    severity: major
+
+  - id: C11
+    rule: >-
+      Word count is within the range for the chosen post format
+      (see post_formats in blog_profile.yaml).
+    severity: minor
+
+  - id: C12
+    rule: >-
+      The post is written in clear, idiomatic English. Product and UI names are
+      spelled exactly as Microsoft spells them (Power Apps, Power Automate,
+      Microsoft Dataverse, Copilot Studio, Power Platform admin center).
+    severity: major
+
+structure_rules:
+  - id: S01
+    rule: Exactly one H1 (the title). Everything else is H2. No H3.
+    severity: blocker
+
+  - id: S02
+    rule: >-
+      The post has between 8 and 11 H2 sections, excluding "Contents" and "Sources".
+    severity: major
+
+  - id: S03
+    rule: >-
+      There is a `## Contents` index right after the opening paragraphs, with one
+      anchor link per following H2, in the same order, not listing itself or
+      "Sources".
+    severity: blocker
+    check_hint: Compare the index entries against the actual H2 headings, one by one.
+
+  - id: S04
+    rule: >-
+      Section titles are descriptive. "Introduction", "Background", "Overview" and
+      "Summary" — or any equally generic title — are rejected.
+    severity: major
+
+  - id: S05
+    rule: >-
+      The penultimate section is "What to watch carefully" (or an equivalent
+      critical-reading title) and contains real risks, not empty hedging.
+    severity: blocker
+
+  - id: S06
+    rule: The last content section is "Conclusion" or "My take".
+    severity: major
+
+  - id: S07
+    rule: >-
+      A "## Sources" section exists at the end, with markdown links carrying the
+      document title, no dates and no numbering. There are no inline citations in
+      the body.
+    severity: blocker
+
+  - id: S08
+    rule: >-
+      Every fenced code block declares its language (powerfx, json, csharp, yaml,
+      bash, xml, sql, text) so syntax highlighting works.
+    severity: blocker
+
+  - id: S09
+    rule: >-
+      No section runs beyond ~350 words without a list, table, code block or
+      callout to break it up.
+    severity: major
+
+  - id: S10
+    rule: >-
+      Callouts use the labelled blockquote form ("> **Important:** ...") and there
+      are no more than 3 in the whole post.
+    severity: minor
+
+  - id: S11
+    rule: >-
+      Images carry descriptive alt text; placeholders use the form
+      ![alt](IMAGE:short-slug).
+    severity: major
+
+  - id: S12
+    rule: A table is used for any comparison of 3+ items across 2+ dimensions.
+    severity: minor
+
+  - id: S13
+    rule: Links use descriptive anchor text, never "here" or a bare URL.
+    severity: major
+
+  - id: S14
+    rule: No emoji in headings or body.
+    severity: minor
+
+seo_rules:
+  - id: E01
+    rule: The title is 45-65 characters and contains the primary keyword.
+    severity: major
+
+  - id: E02
+    rule: >-
+      The meta description is 140-158 characters, contains the primary keyword and
+      reads as a sentence.
+    severity: major
+
+  - id: E03
+    rule: The primary keyword appears in the first 100 words and in at least one H2.
+    severity: minor
+
+  - id: E04
+    rule: >-
+      The slug is lowercase, hyphenated, 60 characters or fewer, with no stop
+      words.
+    severity: minor
+
+  - id: E05
+    rule: 2-5 internal link opportunities to existing powerplatformninja.com posts are suggested.
+    severity: minor
+
+  - id: E06
+    rule: One category from the blog_profile.yaml taxonomy and 4-6 tags.
+    severity: minor
+
+  - id: E07
+    rule: >-
+      `cover_concept` describes a concrete neon-lit graphic scene built from the
+      post's own subject matter — objects, geometry, light. It must not contain
+      any instruction to render text, and must not simply restate the title.
+    severity: minor
+
+# Overall gate
+scoring:
+  dimensions: [content, structure, seo]
+  pass_threshold: 82
+  block_on_any_blocker: true

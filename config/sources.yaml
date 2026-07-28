@@ -1,0 +1,110 @@
+# Where research comes from, and how much each source is trusted.
+# The Source Checker agent scores every citation against these tiers.
+
+# ---------------------------------------------------------------------------
+# RSS / Atom feeds scanned by the Feed Scout
+# ---------------------------------------------------------------------------
+feeds:
+  - name: Microsoft Power Platform Blog
+    url: https://www.microsoft.com/en-us/power-platform/blog/feed/
+    tier: official
+  - name: Power Apps Blog
+    url: https://www.microsoft.com/en-us/power-platform/blog/power-apps/feed/
+    tier: official
+  - name: Power Automate Blog
+    url: https://www.microsoft.com/en-us/power-platform/blog/power-automate/feed/
+    tier: official
+  - name: Copilot Studio Blog
+    url: https://www.microsoft.com/en-us/microsoft-copilot/blog/copilot-studio/feed/
+    tier: official
+  - name: Power Platform Release Notes
+    url: https://learn.microsoft.com/en-us/power-platform/release-plan/feed
+    tier: official
+  - name: Microsoft 365 Dev Blog
+    url: https://devblogs.microsoft.com/microsoft365dev/feed/
+    tier: official
+  - name: Benedikt Bergmann
+    url: https://benediktbergmann.eu/feed/
+    tier: community_trusted
+  - name: Matthew Devaney
+    url: https://www.matthewdevaney.com/feed/
+    tier: community_trusted
+  - name: Power Platform Community (Reddit)
+    url: https://www.reddit.com/r/PowerApps/.rss
+    tier: community_unverified
+
+# ---------------------------------------------------------------------------
+# Trust tiers used by the Source Checker
+# ---------------------------------------------------------------------------
+trust_tiers:
+  official:
+    score: 5
+    label: First-party Microsoft documentation or announcement
+    domains:
+      - learn.microsoft.com
+      - docs.microsoft.com
+      - microsoft.com
+      - devblogs.microsoft.com
+      - techcommunity.microsoft.com
+      - azure.microsoft.com
+      - github.com/microsoft
+      - powerplatform.microsoft.com
+      - admin.powerplatform.microsoft.com
+  standards:
+    score: 5
+    label: Standards bodies and RFCs
+    domains:
+      - ietf.org
+      - w3.org
+      - oauth.net
+  community_trusted:
+    score: 4
+    label: Recognised MVP / long-standing community authority
+    domains:
+      - benediktbergmann.eu
+      - matthewdevaney.com
+      - powerplatform.se
+      - crmchap.co.uk
+      - itmustbecode.com
+      - carldesouza.com
+      - jukkaniiranen.com
+      - thomas.wolf.name
+  vendor:
+    score: 3
+    label: Vendor/partner content — useful but commercially motivated
+    domains:
+      - xrmtoolbox.com
+      - kingswaysoft.com
+      - plumsail.com
+  community_unverified:
+    score: 2
+    label: Forum, Reddit or Q&A answer — must be corroborated
+    domains:
+      - reddit.com
+      - stackoverflow.com
+      - stackexchange.com
+      - powerusers.microsoft.com
+
+# Never cite these. The Source Checker fails the draft if any appear.
+blocked_domains:
+  - contentfarm.example
+  - answers-generated-by-ai.example
+
+# ---------------------------------------------------------------------------
+# Source Checker policy
+# ---------------------------------------------------------------------------
+policy:
+  # Minimum average trust score across all citations
+  min_average_trust: 3.5
+  # Every factual claim marked "critical" needs at least this many independent
+  # sources, at least one of which must be tier `official` or `standards`.
+  min_sources_per_critical_claim: 2
+  require_official_for_critical: true
+  # Reject claims whose only support is older than this, for fast-moving areas
+  max_source_age_days_for_news: 180
+  # Fail the run outright if any of these are found
+  hard_fail_on:
+    - blocked_domain_cited
+    - fabricated_url
+    - claim_contradicted_by_official_source
+    - version_or_pricing_claim_without_official_source

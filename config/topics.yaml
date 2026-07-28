@@ -1,0 +1,99 @@
+# Topic areas the Topic Suggester scans. Add / remove freely — no code changes.
+#
+#   weight        relative importance when ranking suggestions (1-5)
+#   keywords      terms fed to web search
+#   angle         the lens you want for this area; steers the suggestions
+#   freshness_days  how recent an item must be to count as "hot news"
+
+watch_areas:
+  - id: copilot-studio
+    label: Copilot Studio & agents
+    weight: 5
+    freshness_days: 30
+    keywords:
+      - '"Copilot Studio" agent'
+      - Copilot Studio autonomous agents
+      - Microsoft 365 Agents SDK
+      - Copilot Studio knowledge sources
+      - declarative agents Power Platform
+    angle: >-
+      What makers can actually build today vs what is still preview/limited,
+      and how it lands in a real tenant with real governance.
+
+  - id: dataverse
+    label: Dataverse platform
+    weight: 4
+    freshness_days: 45
+    keywords:
+      - Dataverse new features
+      - Dataverse elastic tables
+      - Dataverse plugin performance
+      - Dataverse long term retention
+      - Dataverse virtual tables
+    angle: Data modelling, performance and limits that bite at scale.
+
+  - id: power-apps
+    label: Power Apps
+    weight: 4
+    freshness_days: 45
+    keywords:
+      - Power Apps new features
+      - Power Apps modern controls
+      - Power Fx new functions
+      - Power Apps code apps
+      - model-driven app customization
+    angle: Techniques that shorten build time or fix a known pain point.
+
+  - id: power-automate
+    label: Power Automate
+    weight: 3
+    freshness_days: 45
+    keywords:
+      - Power Automate new features
+      - Power Automate error handling patterns
+      - cloud flow performance
+      - Power Automate agent flows
+    angle: Reliability, error handling, and patterns for production flows.
+
+  - id: alm-devops
+    label: ALM & DevOps
+    weight: 4
+    freshness_days: 60
+    keywords:
+      - Power Platform ALM pipelines
+      - Power Platform Build Tools
+      - solution deployment best practices
+      - Power Platform CLI new
+    angle: Shipping safely — pipelines, environments, source control.
+
+  - id: governance
+    label: Governance, CoE & security
+    weight: 3
+    freshness_days: 60
+    keywords:
+      - Power Platform CoE Starter Kit
+      - Power Platform DLP policies
+      - Managed Environments features
+      - Power Platform admin center new
+    angle: What admins must change this quarter, and why.
+
+  - id: licensing
+    label: Licensing & cost
+    weight: 3
+    freshness_days: 90
+    keywords:
+      - Power Platform licensing changes
+      - Power Platform request capacity
+      - Copilot Studio messages pricing
+      - Dataverse capacity pricing
+    angle: Concrete cost impact with worked numbers.
+
+# Hard exclusions — suggestions matching these are dropped.
+exclude_keywords:
+  - crypto
+  - "AI will replace developers"
+
+# Suggestions per run
+suggestions_per_run: 6
+# Reject a suggestion if an existing post covers it more than this (0-1)
+duplicate_similarity_threshold: 0.72

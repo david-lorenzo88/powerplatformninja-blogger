@@ -1,0 +1,155 @@
+# Identity of the blog. Every agent reads this so drafts stay on-brand.
+blog:
+  name: Power Platform Ninja
+  url: https://powerplatformninja.com
+  author: David Lorenzo
+  tagline: Practical, hands-on Power Platform and AI engineering
+  # Drafting language. Posts are written in English, then translated (see below).
+  language: en
+  language_label: English
+
+audience:
+  primary: >-
+    Power Platform makers and pro-devs who already ship real solutions: Power Apps
+    (canvas and model-driven), Power Automate, Dataverse, Power Pages, Copilot
+    Studio, and the ALM/DevOps around them.
+  seniority: intermediate-to-advanced
+  assumes_knowledge:
+    - Dataverse tables, columns and relationships
+    - Solutions, environments and the maker portal
+    - What a cloud flow is
+  does_not_assume:
+    - Deep Azure knowledge
+    - C# plugin development
+
+positioning:
+  must_have:
+    - A concrete problem drawn from real delivery work
+    - At least one thing that is NOT obvious from the official documentation
+    - Reproducible steps, screenshots or code the reader can run
+    - Gotchas, limits and licensing implications where relevant
+    - "A critical-reading section: what to watch carefully"
+  avoid:
+    - Rewriting a Microsoft Learn page with nothing added
+    - Pure news with no "so what for my tenant"
+    - Filler of the "AI will change everything" variety
+
+categories:
+  - Power Apps
+  - Power Automate
+  - Dataverse
+  - Power Pages
+  - Copilot Studio
+  - ALM & DevOps
+  - Governance & CoE
+  - Licensing
+  - Integration & Azure
+  - AI
+
+# ---------------------------------------------------------------------------
+# Structural conventions
+#
+# Modelled on the house style of blog.azurebrains.com: a table of contents,
+# 8-11 descriptive H2 sections, no H3, no TL;DR box, a critical-reading section
+# near the end, a closing section, and a plain "Fuentes" list.
+# ---------------------------------------------------------------------------
+structure:
+  table_of_contents: true          # linked list of the H2 sections, at the top
+  toc_heading: Contents
+  min_sections: 8
+  max_sections: 11
+  heading_depth: 2                 # H2 only — no H3
+  opening_paragraphs: 2            # framing paragraphs instead of a TL;DR box
+  tldr_block: false
+  callout_label: "Important:"      # blockquote callouts, used sparingly
+  max_callouts: 3
+  critical_section_heading: What to watch carefully
+  closing_headings:                # the writer picks one
+    - Conclusion
+    - My take
+  sources_heading: Sources
+  sources_style: plain             # markdown links, no dates, no inline citations
+  inline_citations: false
+  tags_per_post: [4, 6]
+  reading_speed_wpm: 200           # used to compute the read-time estimate
+
+post_formats:
+  - id: analysis
+    description: What just changed and what it really means for your tenant.
+    target_words: [2000, 2800]
+  - id: deep-dive
+    description: How something works under the hood, with its real limits.
+    target_words: [2400, 3200]
+  - id: how-to
+    description: Step-by-step solution to a concrete problem.
+    target_words: [1600, 2400]
+  - id: comparison
+    description: Two or more approaches weighed against each other, with a verdict.
+    target_words: [1800, 2600]
+  - id: troubleshooting
+    description: A specific error or symptom, root cause and fix.
+    target_words: [1400, 2200]
+
+# ---------------------------------------------------------------------------
+# Cover images
+#
+# Pure generated artwork — no text is composited on top. The model renders the
+# graphic; nothing else touches it.
+# ---------------------------------------------------------------------------
+cover:
+  # Art direction shared by every cover, so the blog reads as one series.
+  # Neon-lit, graphic, and driven by the post's own subject matter.
+  art_direction: >-
+    Bold neon-lit digital graphic artwork. Vivid glowing neon light in electric
+    cyan, magenta and violet cutting through a deep near-black background.
+    Strong graphic shapes: luminous wireframes, glowing circuitry, light trails,
+    volumetric glow, subtle atmospheric haze and reflective dark surfaces.
+    High contrast, saturated, cinematic, futuristic and confident. A designed
+    graphic composition with clear focal geometry — not a flat illustration, not
+    a plain gradient, not a stock photograph.
+  # Anything the model must never render.
+  negative: >-
+    No text of any kind, no letters, no numbers, no words, no captions, no
+    typography, no logos, no watermarks, no signatures, no user interface, no
+    charts with labels, no recognisable real people, no company branding.
+  palette:
+    default: electric cyan and magenta neon on near-black
+    Power Apps: violet and magenta neon on near-black
+    Power Automate: electric blue and cyan neon on near-black
+    Dataverse: emerald green and cyan neon on near-black
+    Power Pages: amber and orange neon on near-black
+    Copilot Studio: purple and pink neon on near-black
+    ALM & DevOps: teal and lime neon on near-black
+    Governance & CoE: amber and deep blue neon on near-black
+    Licensing: cool steel blue and white neon on near-black
+    Integration & Azure: azure blue and cyan neon on near-black
+    AI: hot pink and violet neon on near-black
+
+# ---------------------------------------------------------------------------
+# Translation
+#
+# After a draft is APPROVED in English, a Translator agent produces a localised
+# version. It is published as a separate WordPress draft.
+# ---------------------------------------------------------------------------
+translation:
+  target_language: Spanish (Spain)
+  target_code: es
+  # Appended to the English slug for the translated post.
+  slug_suffix: "-es"
+  # Section headings in the target language, so the translated post keeps shape.
+  headings:
+    toc: Contenido
+    critical: Lo que conviene observar con cautela
+    closing:
+      - Conclusión
+      - Mi lectura
+    sources: Fuentes
+  callout_label: "Importante:"
+  # Terms that must stay in English in the translated post.
+  keep_in_english:
+    - product and feature names (Power Apps, Power Automate, Dataverse, Copilot Studio)
+    - UI labels the reader sees in the portal (solution, environment, cloud flow,
+      managed environment, connector, alternate key, elastic tables)
+    - API, column, code and CLI identifiers
+  # Reuse the English cover rather than generating a second image.
+  reuse_cover: true
