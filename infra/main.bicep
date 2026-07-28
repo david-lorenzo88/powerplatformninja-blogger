@@ -5,7 +5,8 @@ param envName string = 'ppn-env'
 
 @description('Existing ACR name and the image tag built into it')
 param acrName string
-param imageTag string = 'v1'
+@description('Image tag — must be an image that carries ODBC Driver 18 (v2+).')
+param imageTag string = 'v2'
 
 @description('Foundry project endpoint (…/api/projects/<project>)')
 param foundryProjectEndpoint string
@@ -21,15 +22,15 @@ param wpAppPassword string
 @secure()
 param coverApiKey string = ''
 
-param pgAdmin string = 'ppnadmin'
+param sqlAdmin string = 'ppnadmin'
 @secure()
-param pgPassword string
-@description('Postgres region — separate from the app region because some subscriptions are offer-restricted for PostgreSQL Flexible Server in eastus. The app reaches it over the public endpoint.')
-param pgLocation string = 'eastus2'
+param sqlPassword string
+@description('Azure SQL region — separate from the app region because this subscription is offer-restricted for SQL in eastus. The app reaches it over the public endpoint.')
+param sqlLocation string = 'centralus'
 
-var pgServerName = '${appName}-pg-${uniqueString(resourceGroup().id)}'
-var storageName  = toLower('ppnfiles${uniqueString(resourceGroup().id)}')
-var shareName    = 'ppn-data'
+var sqlServerName = toLower('${appName}-sql-${uniqueString(resourceGroup().id)}')
+var storageName   = toLower('ppnfiles${uniqueString(resourceGroup().id)}')
+var shareName     = 'ppn-data'
 
 // ---- identity the app runs as -------------------------------------------
 resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -66,28 +67,35 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01
   properties: { shareQuota: 16 }
 }
 
-// ---- PostgreSQL (in pgLocation — see the param note) --------------------
-resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
-  name: pgServerName
-  location: pgLocation
-  sku: { name: 'Standard_B1ms', tier: 'Burstable' }
+// ---- Azure SQL (serverless, in sqlLocation — see the param note) --------
+// The app reaches this via mssql+aioodbc; the image carries ODBC Driver 18.
+resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
+  name: sqlServerName
+  location: sqlLocation
   properties: {
-    version: '16'
-    administratorLogin: pgAdmin
-    administratorLoginPassword: pgPassword
-    storage: { storageSizeGB: 32 }
-    backup: { backupRetentionDays: 7 }
-    highAvailability: { mode: 'Disabled' }
+    administratorLogin: sqlAdmin
+    administratorLoginPassword: sqlPassword
+    version: '12.0'
+    minimalTlsVersion: '1.2'
+    publicNetworkAccess: 'Enabled'
   }
 }
-resource pgDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
-  parent: pg
-  name: 'ppn'
-}
-resource pgFw 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = {
-  parent: pg
+resource sqlFw 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+  parent: sqlServer
   name: 'AllowAzureServices'
   properties: { startIpAddress: '0.0.0.0', endIpAddress: '0.0.0.0' }
+}
+resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
+  parent: sqlServer
+  name: 'ppn'
+  location: sqlLocation
+  sku: { name: 'GP_S_Gen5_1', tier: 'GeneralPurpose', family: 'Gen5', capacity: 1 }
+  properties: {
+    autoPauseDelay: 60          // pause after 60 min idle to save cost
+    minCapacity: json('0.5')
+    zoneRedundant: false
+    requestedBackupStorageRedundancy: 'Local'
+  }
 }
 
 // ---- Container Apps environment + files link ----------------------------
@@ -152,7 +160,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       secrets: concat([
         { name: 'wp-app-password', value: wpAppPassword }
-        { name: 'pg-url', value: 'postgresql+asyncpg://${pgAdmin}:${pgPassword}@${pg.properties.fullyQualifiedDomainName}:5432/ppn?ssl=require' }
+        { name: 'sql-url', value: 'mssql+aioodbc://${sqlAdmin}:${sqlPassword}@${sqlServer.properties.fullyQualifiedDomainName}:1433/ppn?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no' }
       ], empty(coverApiKey) ? [] : [
         { name: 'cover-api-key', value: coverApiKey }
       ])
@@ -189,7 +197,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'COVER_PROVIDER', value: 'foundry' }
             { name: 'COVER_MODEL', value: 'MAI-Image-2.5-Pro' }
             { name: 'COVER_UPLOAD_TO_WP', value: 'true' }
-            { name: 'PPN_DATABASE_URL', secretRef: 'pg-url' }
+            { name: 'PPN_DATABASE_URL', secretRef: 'sql-url' }
             { name: 'PPN_OUTPUT_DIR', value: '/data/drafts' }
             { name: 'PPN_RESEARCH_DIR', value: '/data/research' }
             { name: 'PPN_TOPICS_DIR', value: '/data/topics' }

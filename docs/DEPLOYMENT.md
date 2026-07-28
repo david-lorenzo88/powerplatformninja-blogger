@@ -10,13 +10,12 @@ every Azure-specific choice is an environment variable or an infrastructure
 setting. Three small optional code changes are listed at the [end](#optional-code-follow-ups).
 
 > **Live instance (2026-07-28).** This was deployed and is running — see
-> [Appendix A](#appendix-a--the-live-deployment). Two things differ from the
-> template below because of a subscription **offer restriction**: PostgreSQL
-> could not be provisioned in any region on this subscription, so the database is
-> **Azure SQL Database** (serverless, in `centralus`) reached via `mssql+aioodbc`,
-> and the image carries the **Microsoft ODBC Driver 18**. The Bicep here still
-> shows the Postgres template as the clean default; the appendix records what was
-> actually built.
+> [Appendix A](#appendix-a--the-live-deployment). Because this subscription is
+> **offer-restricted** from PostgreSQL in every region, the database is **Azure
+> SQL Database** (serverless, in `centralus`) reached via `mssql+aioodbc`, and the
+> image carries the **Microsoft ODBC Driver 18**. `infra/main.bicep` provisions
+> exactly that (Azure SQL); prose below that still says "Postgres" describes the
+> original template intent — the appendix and the Bicep are the source of truth.
 
 > **Why these choices.** The service is a single stateful process by design — an
 > in-process `asyncio` run queue, in-memory SSE fan-out, and a startup sweep that
@@ -641,7 +640,9 @@ to Microsoft login.
   tenant. To lock it to your account: Entra ID → Enterprise applications →
   `ppn-blogger-auth` → Properties → **Assignment required = Yes**, then assign
   only yourself under Users and groups.
-- **Reconcile the IaC.** The `infra/main.bicep` in the repo still describes the
-  Postgres template; the Azure SQL server + database were created by CLI
-  (cross-region). If you want a single reproducible template, fold the Azure SQL
-  resources into the Bicep.
+- **Adopt vs. recreate the DB.** `infra/main.bicep` now provisions the Azure SQL
+  server + serverless `ppn` database directly (a fresh `az deployment` creates
+  them with a `uniqueString` name). The **live** server was created by CLI with a
+  different name, so re-running the Bicep against this resource group would create
+  a *second* SQL server and repoint the app to the empty one — migrate the data
+  first, or point the Bicep at the existing server, before doing that.
