@@ -15,3 +15,12 @@ ui/dist/
 *.db
 *.db-wal
 *.db-shm
+
+# Generated crew output — unpublished drafts and full research dossiers.
+# Public repo: keep these local. .gitkeep preserves the directories.
+drafts/*
+!drafts/.gitkeep
+research/*
+!research/.gitkeep
+topics/*
+!topics/.gitkeep

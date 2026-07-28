@@ -16,6 +16,7 @@ you press Publish.
 | **[Configuration](docs/CONFIGURATION.md)** | Tuning the crew. Every environment variable and every key in `config/`. |
 | **[Operations](docs/OPERATIONS.md)** | Daily use and when something breaks. Full CLI reference plus the failures that have actually happened here. |
 | **[Architecture](docs/ARCHITECTURE.md)** | Building against the server API. |
+| **[Status](docs/STATUS.md)** | What is done, what is verified against real Azure, what is left. |
 
 The short version is below.
 
