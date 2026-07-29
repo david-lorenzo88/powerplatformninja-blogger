@@ -539,6 +539,128 @@ Config-only changes (env/secret) can go through `az containerapp update
 
 ---
 
+## 8a. Continuous deployment with GitHub Actions
+
+`.github/workflows/deploy.yml` automates §8: on every merge to `main` it runs the
+offline test suite, then `az acr build` + `az containerapp update`, exactly the
+manual path above. It authenticates to Azure with **OIDC** (a federated credential,
+no stored secret) and **never runs the Bicep** — infrastructure stays a deliberate,
+reviewed `az deployment` (re-running the template would mint a second SQL server, as
+Appendix A warns).
+
+### One-time Azure setup (you run this once)
+
+Create an app registration for the workflow, trust this repo's `main` branch, and
+grant it rights on the app's resource group:
+
+```bash
+export SUB=$(az account show --query id -o tsv)
+export TENANT=$(az account show --query tenantId -o tsv)
+export GH_REPO="david-lorenzo88/powerplatformninja-blogger"   # owner/repo
+
+# App registration + service principal
+export CI_APP_ID=$(az ad app create --display-name "ppn-blogger-github-actions" --query appId -o tsv)
+az ad sp create --id "$CI_APP_ID"
+
+# Federated credential: GitHub OIDC tokens from main are accepted with no secret.
+az ad app federated-credential create --id "$CI_APP_ID" --parameters "{
+  \"name\": \"ppn-main\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:${GH_REPO}:ref:refs/heads/main\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+# Contributor on the app resource group covers both `az acr build` (the ACR lives
+# in this RG) and `az containerapp update`.
+az role assignment create --assignee "$CI_APP_ID" --role Contributor \
+  --scope "/subscriptions/${SUB}/resourceGroups/ppn-blogger-rg"
+
+echo "AZURE_CLIENT_ID       = $CI_APP_ID"
+echo "AZURE_TENANT_ID       = $TENANT"
+echo "AZURE_SUBSCRIPTION_ID = $SUB"
+```
+
+### GitHub configuration
+
+Under **Settings → Secrets and variables → Actions**:
+
+| Kind | Name | Value |
+|---|---|---|
+| **Secret** | `AZURE_CLIENT_ID` | the `CI_APP_ID` printed above |
+| **Secret** | `AZURE_TENANT_ID` | your tenant id |
+| **Secret** | `AZURE_SUBSCRIPTION_ID` | your subscription id |
+| Secret *(optional)* | `PPN_ADMIN_TOKEN` | enables the post-deploy config reload — see below |
+| Variable *(optional)* | `AZURE_RESOURCE_GROUP` | overrides the default `ppn-blogger-rg` |
+| Variable *(optional)* | `AZURE_ACR_NAME` | overrides the default `ppnblogger286957664` |
+| Variable *(optional)* | `AZURE_CONTAINER_APP` | overrides the default `ppn-blogger` |
+
+The identifiers default to the live deployment, so the three secrets are all that is
+strictly required. Nothing secret is committed — none of `WP_APP_PASSWORD`, the DB
+URL or a registry password is needed, because the build runs in ACR and the app
+authenticates to everything with its managed identity.
+
+### What it does, and what it deliberately does not
+
+- **Tags** each image with the commit SHA (immutable, so a rollback is
+  `az containerapp update --image …:<old-sha>`) and also moves `latest`.
+- **Health gate:** it polls the new revision's `runningState` rather than curling
+  the URL, because Easy Auth 302-redirects every anonymous request whether the app
+  is up or not.
+- **Config reload:** after the new revision is running, it calls
+  `POST /api/config/reload`, which re-imports the image's `config/` into the
+  database as a new version of each document. The database is authoritative after
+  first boot, so without this a new editorial ruleset would ship in the image but
+  never reach the app. The step is opt-in (see below) and non-fatal — a failed
+  reload never fails a deploy that already rolled the image.
+- **`main` only, image only.** It does not touch Bicep, roles, or Easy Auth.
+
+### Enabling the post-deploy config reload
+
+The reload endpoint is machine-to-machine: it is guarded by a bearer token, not the
+interactive Entra login, and is **disabled unless `PPN_ADMIN_TOKEN` is set**. Three
+one-time steps:
+
+```bash
+# 1. Generate a strong token and set it on the running app (secret + env var).
+export ADMIN_TOKEN=$(openssl rand -base64 32)
+az containerapp secret set -g ppn-blogger-rg -n ppn-blogger \
+  --secrets admin-token="$ADMIN_TOKEN"
+az containerapp update -g ppn-blogger-rg -n ppn-blogger \
+  --set-env-vars PPN_ADMIN_TOKEN=secretref:admin-token
+
+# 2. Exclude ONLY this path from Easy Auth, so CI can reach it. The token is what
+#    keeps it safe; nothing else under /api is exposed.
+SUB=$(az account show --query id -o tsv)
+az rest --method patch \
+  --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/ppn-blogger-rg/providers/Microsoft.App/containerApps/ppn-blogger/authConfigs/current?api-version=2024-03-01" \
+  --body '{"properties":{"globalValidation":{"excludedPaths":["/api/config/reload"]}}}'
+```
+
+```
+# 3. Add PPN_ADMIN_TOKEN as a GitHub *secret* (same value as step 1).
+```
+
+With all three in place, every merge to `main` re-imports the new `config/` after
+the image rolls. Leave any of them out and the step logs a warning and skips — the
+image still deploys, and you can always run `ppn config reload` by hand.
+
+**On demand:** run the workflow manually (Actions → Deploy to Azure → *Run
+workflow*) with **`reload_only` = true** to re-import `config/` from the
+already-deployed image without rebuilding or rolling it — handy if a reload was
+skipped, or to re-apply config after editing it in place.
+
+(For a *fresh* provision, `infra/main.bicep` takes an optional `adminToken`
+parameter that wires the same secret and env var, so step 1 is handled by the
+template. The Easy Auth exclusion in step 2 is still applied separately, as auth is
+configured outside the template.)
+
+> **If you add a manual-approval gate** (a GitHub *Environment* named e.g.
+> `production` on the `deploy` job), the OIDC token's subject changes to
+> `repo:${GH_REPO}:environment:production`. Add a second federated credential with
+> that subject, or the login step will fail.
+
+---
+
 ## Known limitations
 
 Consequences of the single-instance design — accept them or address the code

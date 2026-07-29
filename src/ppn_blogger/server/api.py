@@ -16,10 +16,12 @@ Contract notes for the frontend:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
@@ -135,6 +137,40 @@ async def config_rollback(name: str, version: int) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"name": name, "version": row.version}
+
+
+@router.post("/config/reload")
+async def reload_config(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> dict[str, Any]:
+    """Re-import the image's ``config/`` files into the database as new versions.
+
+    The database is authoritative once the server has booted, so a code deploy that
+    ships new ``config/`` (a new editorial ruleset, say) does not reach a running
+    instance on its own. This is the ``ppn config reload`` path as an endpoint, so a
+    CI job can trigger it after rolling the image.
+
+    Machine-to-machine, not a user action: it is guarded by a bearer token
+    (``PPN_ADMIN_TOKEN``) rather than the interactive Entra login, and is **disabled**
+    unless that variable is set. Exclude *only* this path from Easy Auth so CI can
+    reach it; the token is what keeps it safe.
+    """
+    expected = os.environ.get("PPN_ADMIN_TOKEN", "")
+    if not expected:
+        raise HTTPException(503, "Config reload is disabled. Set PPN_ADMIN_TOKEN to enable it.")
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+        raise HTTPException(401, "Invalid or missing admin token.")
+
+    # First boot after a fresh database still needs the initial seed; after that,
+    # append the current files as a new version of each document.
+    if await config_store.seed_from_yaml_if_empty():
+        await config_store.refresh_active_source()
+        results = [(name, 1) for name in config_store.DOCUMENTS]
+    else:
+        results = await config_store.reimport_from_yaml(
+            note="Reloaded via POST /api/config/reload"
+        )
+    return {"reloaded": [{"name": n, "version": v} for n, v in results]}
 
 
 # ---------------------------------------------------------------------------

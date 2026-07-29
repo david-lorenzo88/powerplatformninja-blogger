@@ -1,0 +1,155 @@
+name: Deploy to Azure
+
+# Continuous deployment for the Container Apps instance (see docs/DEPLOYMENT.md).
+#
+# Fires on every merge to main (a squash, merge-commit or rebase merge all land as
+# a push to main) and can be run by hand. It reproduces the manual update path from
+# DEPLOYMENT.md section 8:
+#
+#   az acr build ...            # build the image in ACR Tasks (no Docker runner)
+#   az containerapp update ...  # roll the single replica to the new image
+#
+# It deliberately does NOT run infra/main.bicep. Re-running the template mints a
+# second Azure SQL server (its name is a uniqueString) and repoints the app at an
+# empty database — infrastructure changes stay a manual, reviewed `az deployment`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reload_only:
+        description: "Re-import config/ into the running app without rebuilding or rolling the image."
+        type: boolean
+        default: false
+
+# One deploy at a time. Don't cancel a run mid-rollout — let it finish.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required for Azure OIDC login (secretless)
+
+env:
+  # Non-secret identifiers. Defaults are the live deployment (docs/DEPLOYMENT.md,
+  # Appendix A); override per repo without editing this file by setting the
+  # matching Actions *variables* (Settings -> Secrets and variables -> Actions).
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'ppn-blogger-rg' }}
+  ACR_NAME: ${{ vars.AZURE_ACR_NAME || 'ppnblogger286957664' }}
+  CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP || 'ppn-blogger' }}
+  IMAGE_REPO: ppn-blogger
+
+jobs:
+  # ---- gate: the offline suite must pass before anything ships -------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Test
+        run: pytest -q          # 37 offline tests, no network, no credentials
+
+  # ---- build the image in ACR and roll the Container App ------------------
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # Mapped here (not just on the step) so the reload step's `if:` can see it.
+      # Empty when the secret is unset, which makes that step skip cleanly.
+      ADMIN_TOKEN: ${{ secrets.PPN_ADMIN_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build the image in ACR (cloud build)
+        if: ${{ ! inputs.reload_only }}
+        run: |
+          set -euo pipefail
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE_REPO:${GITHUB_SHA}" \
+            --image "$IMAGE_REPO:latest" \
+            .
+
+      - name: Roll the Container App to the new image
+        if: ${{ ! inputs.reload_only }}
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CONTAINER_APP" \
+            --image "${ACR_NAME}.azurecr.io/${IMAGE_REPO}:${GITHUB_SHA}"
+
+      - name: Wait for the new revision to be running
+        if: ${{ ! inputs.reload_only }}
+        run: |
+          set -euo pipefail
+          # Easy Auth answers every public request with a 302 to login, even when
+          # the app is down, so the ingress is not a reliable health signal. The
+          # revision's runningState is: poll it until the new revision is Running.
+          rev=$(az containerapp show -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+                  --query properties.latestRevisionName -o tsv)
+          echo "New revision: $rev"
+          for _ in $(seq 1 24); do
+            state=$(az containerapp revision show -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+                      --revision "$rev" --query properties.runningState -o tsv 2>/dev/null || echo "")
+            echo "runningState=$state"
+            case "$state" in
+              Running) echo "Revision is running." && exit 0 ;;
+              Failed|Degraded) echo "::error::Revision $rev entered state $state" && exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "::error::Revision $rev did not reach Running within ~6 minutes"
+          exit 1
+
+      - name: Reload editorial config into the running app
+        # The DB is authoritative after first boot, so a change to config/ (a new
+        # editorial ruleset) does not reach the running app on a code deploy. This
+        # calls the ppn config reload endpoint. On a normal deploy it runs against
+        # the fresh revision; a manual run with reload_only=true skips the rebuild
+        # and re-imports config/ from the already-deployed image. Skipped when
+        # PPN_ADMIN_TOKEN is not set; non-fatal if the call does not return 200,
+        # since nothing about the image changed either way.
+        if: ${{ env.ADMIN_TOKEN != '' }}
+        run: |
+          set -uo pipefail
+          fqdn=$(az containerapp show -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+                   --query properties.configuration.ingress.fqdn -o tsv)
+          echo "POST https://${fqdn}/api/config/reload"
+          code=$(curl -sS -m 60 -o /tmp/reload.json -w '%{http_code}' -X POST \
+                   -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+                   "https://${fqdn}/api/config/reload" || echo 000)
+          body=$(cat /tmp/reload.json 2>/dev/null || true)
+          if [ "$code" = "200" ]; then
+            echo "Config reloaded: ${body}"
+            echo "Config reloaded ✓" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::config reload returned HTTP ${code}. ${body}"
+            echo "The image is deployed; run 'ppn config reload' manually if the new config/ must apply."
+            echo "A 302 here means /api/config/reload is not excluded from Easy Auth; 503 means PPN_ADMIN_TOKEN is not set on the container (see docs/DEPLOYMENT.md §8a)."
+          fi
+
+      - name: Report
+        if: success()
+        run: |
+          fqdn=$(az containerapp show -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+                   --query properties.configuration.ingress.fqdn -o tsv)
+          echo "### Deployed \`${IMAGE_REPO}:${GITHUB_SHA:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "App: https://${fqdn} (Entra login required)" >> "$GITHUB_STEP_SUMMARY"

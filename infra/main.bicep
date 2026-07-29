@@ -22,6 +22,10 @@ param wpAppPassword string
 @secure()
 param coverApiKey string = ''
 
+@description('Bearer token guarding POST /api/config/reload. Blank = endpoint disabled.')
+@secure()
+param adminToken string = ''
+
 param sqlAdmin string = 'ppnadmin'
 @secure()
 param sqlPassword string
@@ -163,6 +167,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         { name: 'sql-url', value: 'mssql+aioodbc://${sqlAdmin}:${sqlPassword}@${sqlServer.properties.fullyQualifiedDomainName}:1433/ppn?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no' }
       ], empty(coverApiKey) ? [] : [
         { name: 'cover-api-key', value: coverApiKey }
+      ], empty(adminToken) ? [] : [
+        { name: 'admin-token', value: adminToken }
       ])
     }
     template: {
@@ -205,6 +211,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'PPN_LOG_LEVEL', value: 'INFO' }
           ], empty(coverApiKey) ? [] : [
             { name: 'COVER_API_KEY', secretRef: 'cover-api-key' }
+          ], empty(adminToken) ? [] : [
+            { name: 'PPN_ADMIN_TOKEN', secretRef: 'admin-token' }
           ])
           probes: [
             { type: 'Liveness',  httpGet: { path: '/api/health', port: 8000 }, initialDelaySeconds: 20, periodSeconds: 30 }
