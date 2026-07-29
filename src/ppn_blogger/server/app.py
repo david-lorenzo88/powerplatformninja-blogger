@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -73,6 +73,12 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def spa(full_path: str) -> FileResponse:
+            # The API namespace must never fall through to the SPA shell. An
+            # unmatched /api/* path is a 404, not a 200 with index.html — else a
+            # malformed request like /api/drafts/..%2F..%2F.env reads as "route
+            # not found, here is the app" instead of being rejected.
+            if full_path.startswith("api/") or full_path == "api":
+                raise HTTPException(404, "Not found")
             candidate = UI_DIST / full_path
             if full_path and candidate.is_file():
                 return FileResponse(candidate)

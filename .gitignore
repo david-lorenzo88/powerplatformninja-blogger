@@ -24,3 +24,7 @@ research/*
 !research/.gitkeep
 topics/*
 !topics/.gitkeep
+
+# Author notes are per-post, personal, and may name a real tenant — keep local.
+input/notes/*
+!input/notes/.gitkeep

@@ -1,199 +1,561 @@
-# The rulebook the Validator agents enforce.
-# severity: blocker | major | minor
-#   blocker -> draft cannot be finalised until fixed
-#   major   -> must be fixed unless the writer justifies it
-#   minor   -> nice to have, reported but never blocks
+# Power Platform Ninja validation rules
+#
+# Consumed by the Validator agent. Rules are grouped into families:
+#   H = honesty (fabrication control)   blocker-heavy, checked first
+#   T = typography (dashes, symbols)    mechanical, regex-detectable
+#   V = voice (the anti-LLM family)     the reason drafts get rejected most often
+#   C = content
+#   S = structure
+#   E = SEO
+#
+# `detector` holds a regex the Validator MUST run literally before forming an opinion.
+# Rules with `auto: true` are decided by the regex. Rules with `auto: false` need
+# judgement, and the Validator must quote the offending text verbatim in `location`.
 
-content_rules:
-  - id: C01
+meta:
+  version: 2
+  language: en
+  checked_against:
+    - config/style_guide.md
+    - config/blog_profile.yaml
+    - artifacts/research_dossier.json
+    - artifacts/author_notes.md
+
+# ---------------------------------------------------------------------------
+# H (honesty). Run this family first. A draft failing here is not worth styling.
+# ---------------------------------------------------------------------------
+honesty_rules:
+  - id: H01
     rule: >-
-      The post opens with two framing paragraphs that name the problem or the
-      change. No throat clearing, no "in this article we will see".
+      Every factual statement traces to a claim in the research dossier. Inline citations
+      are not used on this blog, but a statement the dossier does not support is a
+      fabrication.
     severity: blocker
-    check_hint: Read the first 120 words. Is the reader's pain named explicitly?
+    auto: false
+    check_hint: >-
+      Walk the draft sentence by sentence against the dossier claims. Quote every
+      unsupported statement verbatim in `location`.
+    fix_hint: Delete the sentence, or replace it with the weaker claim the dossier does support.
 
-  - id: C02
+  - id: H02
     rule: >-
-      The post contains at least one thing you cannot get by reading the official
+      Every first-person statement of experience ("I hit", "in my tenant", "it took me")
+      traces to a line in author_notes.md. The Writer may not invent an anecdote to
+      satisfy the voice rules.
+    severity: blocker
+    auto: false
+    check_hint: >-
+      Grep the draft for first-person verbs. For each hit, find the supporting line in
+      author_notes.md. No supporting line means fabrication.
+    fix_hint: >-
+      Convert to a neutral statement, or to [[AUTHOR: ...]] so the human can supply the
+      real detail.
+
+  - id: H03
+    rule: >-
+      Every number, timing, error string, limit and version in the draft appears in the
+      dossier or the author notes. Plausible-looking invented numbers are the worst
+      failure this crew can produce.
+    severity: blocker
+    auto: false
+    detector: '\b\d+(?:[.,]\d+)?\s*(?:s|ms|sec|seconds|minutes|rows|records|MB|GB|requests|calls|%)\b'
+    check_hint: >-
+      Run the detector, then trace each hit to its source. Also check bare version
+      numbers and error codes.
+    fix_hint: 'Replace with [[MEASURE: metric, conditions]] and let the human fill it in.'
+
+  - id: H04
+    rule: >-
+      Caveats that the dossier attaches to a claim survive into the prose. Dropping a
+      caveat while writing is a serious failure, not a style nit.
+    severity: blocker
+    auto: false
+
+  - id: H05
+    rule: >-
+      Placeholders use the exact forms [[AUTHOR: ...]] or [[MEASURE: ...]], number five
+      or fewer, and appear neither in the title, the meta description, the opening two
+      paragraphs, nor inside any code fence.
+    severity: major
+    auto: true
+    detector: '\[\[(AUTHOR|MEASURE):[^\]]+\]\]'
+    fix_hint: >-
+      More than five placeholders means the research or the notes are too thin. Report
+      back rather than iterating on style.
+
+  - id: H06
+    rule: >-
+      Preview versus GA status is stated explicitly for every feature discussed, with the
+      date it was checked.
+    severity: major
+    auto: false
+
+  - id: H07
+    rule: >-
+      Licensing, capacity and consumption implications are called out wherever the
+      feature has any.
+    severity: major
+    auto: false
+
+  - id: H08
+    rule: >-
+      Claims are scoped honestly: "in my tenant", "as of July 2026", "on a managed
+      environment". Never stated as universal truth when they are not.
+    severity: major
+    auto: false
+
+# ---------------------------------------------------------------------------
+# T (typography). Purely mechanical. Never argue with the regex.
+# ---------------------------------------------------------------------------
+typography_rules:
+  - id: T01
+    rule: >-
+      No dash characters anywhere in the prose: em dash, en dash, figure dash, horizontal
+      bar, minus sign, unicode hyphen.
+    severity: blocker
+    auto: true
+    detector: '[\u2010\u2012\u2013\u2014\u2015\u2212]'
+    scope: Everything outside fenced code blocks, inline code spans and URLs.
+    fix_hint: >-
+      Aside becomes parentheses or commas. Pause before a reveal becomes a colon or a
+      full stop. Joined clauses become two sentences. Numeric range becomes "to". Do not
+      convert every hit to a colon.
+
+  - id: T02
+    rule: A hyphen is never used as punctuation with spaces around it, or to open a clause.
+    severity: blocker
+    auto: true
+    detector: '(?<=\s)-(?=\s)|^\s*-\s+(?![A-Za-z0-9\[`*])'
+    scope: Prose only. Markdown list bullets at line start are exempt.
+
+  - id: T03
+    rule: >-
+      Hyphens inside compound modifiers, product names, slugs, URLs, CLI flags, GUIDs and
+      code are correct and must not be "fixed".
+    severity: info
+    auto: false
+    check_hint: Guard rail for the Writer's own over-correction. Do not raise findings against these.
+
+  - id: T04
+    rule: >-
+      Straight quotes only. No curly quotes, no ellipsis character, no emoji, no symbol
+      glyphs such as check marks or crosses in tables and callouts.
+    severity: major
+    auto: true
+    detector: '[\u2018\u2019\u201C\u201D\u2026\u2705\u274C\u26A0\uFE0F\U0001F300-\U0001FAFF]'
+
+  - id: T05
+    rule: >-
+      Bold marks UI paths and definition lead-ins only, at most one bolded phrase per
+      paragraph. No italics for emphasis.
+    severity: minor
+    auto: false
+
+  - id: T06
+    rule: UI paths use the ">" arrow form in bold, never any dash form.
+    severity: minor
+    auto: true
+    detector: '\*\*[^*]*(?:->|→|»)[^*]*\*\*'
+
+# ---------------------------------------------------------------------------
+# V (voice). This is the family that decides whether the post reads as human.
+# ---------------------------------------------------------------------------
+voice_rules:
+  - id: V01
+    rule: No banned vocabulary. See section 5 of the style guide.
+    severity: major
+    auto: true
+    detector: '(?i)\b(delve|deep dive|dive deep|game.?changer|revolutionis|revolutioniz|seamless|leverag(?:e|ing)\s|unlock the power|supercharge|empower|robust|cutting.edge|state of the art|fast.paced world|ever.evolving|important to note|worth noting|in conclusion|at the end of the day|possibilities are endless|in this article we will|let''s explore|navigating the complexit|testament to|tapestry|realm of|underscores? the importance|pivotal|paradigm shift|holistic|synergy|best.in.class|elevate your|streamline|unpack|myriad|plethora|crucial|simply |just |easily|effortlessly)\b'
+    fix_hint: >-
+      Replace with the concrete thing. "Crucial" becomes "required, because X fails
+      without it". "Streamline" becomes the number of steps removed.
+
+  - id: V02
+    rule: >-
+      The antithesis reflex ("not X, but Y", "it isn't just X, it's Y", "X isn't about A,
+      it's about B") appears at most once in the post.
+    severity: major
+    auto: true
+    detector: '(?i)(is|are|was|were)n''t (just )?(about )?[^.!?]{3,60}?,? (it''?s|they''?re|but) '
+    fix_hint: State the thing that changed, then the consequence. Drop the contrast frame.
+
+  - id: V03
+    rule: >-
+      No rule-of-three padding: sequences of exactly three adjectives or nouns where the
+      third carries no information.
+    severity: minor
+    auto: false
+    check_hint: Look for "X, Y and Z" lists inside sentences. Ask what the third item adds.
+
+  - id: V04
+    rule: >-
+      At most two H2 sections end on a summarising judgement. The rest end on content.
+      A model restates every section; a person moves on.
+    severity: major
+    auto: false
+    check_hint: Read only the final sentence of each section, in sequence, ignoring everything else.
+
+  - id: V05
+    rule: >-
+      No over-signposting: "in this section", "now that we've covered", "before we begin",
+      "let's break this down", "first, some context".
+    severity: major
+    auto: true
+    detector: '(?i)(in this (section|post|article) (we|i)|now that we|before we (begin|dive|start)|let''s (break|take a look|walk through)|first,? some context|as we (saw|discussed) (above|earlier))'
+
+  - id: V06
+    rule: At most one rhetorical question in the post, and it must be answered with something non-obvious.
+    severity: minor
+    auto: false
+
+  - id: V07
+    rule: >-
+      No audience sandwich ("whether you're a maker, a developer or an admin"). The post
+      names one reader with a specific situation.
+    severity: major
+    auto: true
+    detector: '(?i)whether you(''re| are) (a|an)\s'
+
+  - id: V08
+    rule: >-
+      No empty comparatives. "Faster", "more efficient", "better" must carry a number, a
+      baseline, or a [[MEASURE]] placeholder.
+    severity: major
+    auto: true
+    detector: '(?i)\b(significantly|considerably|substantially|dramatically|much|far)\s+(faster|slower|better|more|less|cheaper|simpler)\b'
+
+  - id: V09
+    rule: >-
+      The closing section makes a recommendation someone could disagree with. No
+      evolving-landscape close, no "time will tell", no recap.
+    severity: blocker
+    auto: false
+    check_hint: >-
+      Try to write a one-sentence rebuttal to the closing paragraph. If no rebuttal is
+      possible, the paragraph has no opinion in it.
+
+  - id: V10
+    rule: >-
+      Sentence-length variance. Average 15 to 20 words. At least one sentence under eight
+      words in every H2 section. At least one sentence over thirty words in the post. At
+      least two single-sentence paragraphs. No paragraph over five sentences.
+    severity: major
+    auto: true
+    check_hint: >-
+      Compute per section. Report the failing sections by name with their measured
+      averages, not a general complaint.
+
+  - id: V11
+    rule: >-
+      Section lengths differ. Four or more consecutive H2 sections within 15 percent of
+      the same word count means the post was generated to a template.
+    severity: minor
+    auto: true
+
+  - id: V12
+    rule: >-
+      Specificity floor. The post carries at least three exact identifiers (version,
+      build, API name, error code, schema name, limit value), at least two dated
+      statements, at least one account of something that did not work, and at least one
+      explicit limit of the author's own knowledge.
+    severity: blocker
+    auto: false
+    check_hint: List each one found, by quotation. If any category is empty, this is a blocker.
+    fix_hint: >-
+      These come from author_notes.md. If the notes do not contain them, raise it to the
+      human rather than asking the Writer to try harder.
+
+  - id: V13
+    rule: >-
+      The post contains at least one thing a reader could not get from the official
       documentation: a gotcha, a limit hit in practice, a measured number, or a
       non-obvious combination of features.
     severity: blocker
+    auto: false
+
+  - id: V14
+    rule: >-
+      Contractions appear at natural speech density. A draft with zero contractions reads
+      like documentation.
+    severity: minor
+    auto: true
+    detector: '(?i)\b(it''s|don''t|doesn''t|won''t|didn''t|can''t|that''s|you''ll|i''d|i''ve|there''s)\b'
+
+  - id: V15
+    rule: >-
+      No first person plural. "We" belongs to vendors. Use "I" for what the author did
+      and "you" for what the reader does.
+    severity: major
+    auto: true
+    detector: '(?i)\b(we|our|us|we''ll|we''ve|we''re)\b'
+    check_hint: Exempt quotations from Microsoft documentation and code comments.
+
+  - id: V16
+    rule: >-
+      Clear, idiomatic English. Product and UI names spelled exactly as Microsoft spells
+      them: Power Apps, Power Automate, Microsoft Dataverse, Copilot Studio, Power
+      Platform admin center, Microsoft Foundry.
+    severity: major
+    auto: false
+
+# ---------------------------------------------------------------------------
+# C (content)
+# ---------------------------------------------------------------------------
+content_rules:
+  - id: C01
+    rule: >-
+      The post opens with two framing paragraphs that name the problem or the change.
+      No throat clearing.
+    severity: blocker
+    auto: false
+    check_hint: Read the first 40 words. Is a specific pain named, with a specific product surface?
+
+  - id: C02
+    rule: Steps are reproducible. The reader never has to guess missing configuration.
+    severity: blocker
+    auto: false
 
   - id: C03
     rule: >-
-      Every factual statement in the draft traces to a claim in the dossier.
-      Inline citations are NOT required (this blog does not use them), but a
-      statement the dossier does not support is a fabrication.
-    severity: blocker
-    check_hint: >-
-      Walk the draft sentence by sentence against the dossier claims. Quote any
-      unsupported statement verbatim in `location`.
+      Where the post takes a position, the cost of that position is stated. A
+      recommendation with no downside listed is marketing.
+    severity: major
+    auto: false
 
   - id: C04
     rule: >-
-      Preview / GA status is stated explicitly for any feature discussed, with the
-      date it was checked.
-    severity: major
-
-  - id: C05
-    rule: Steps are reproducible; the reader never has to guess missing configuration.
-    severity: blocker
-
-  - id: C06
-    rule: Licensing and capacity implications are called out when the feature has any.
-    severity: major
-
-  - id: C07
-    rule: >-
-      Caveats the dossier attaches to a claim survive into the prose. Losing a
-      caveat while writing is a serious failure.
-    severity: blocker
-
-  - id: C08
-    rule: >-
-      The closing section (Conclusion or My take) gives an opinion and a
-      recommendation, not a summary of what was just said.
-    severity: major
-
-  - id: C09
-    rule: >-
-      Claims are hedged honestly — "in my tenant", "as of July 2026" — and never
-      stated as universal truth when they are not.
-    severity: major
-
-  - id: C10
-    rule: >-
-      No filler phrases. See the banned-phrases list in the style guide.
-    severity: major
-
-  - id: C11
-    rule: >-
-      Word count is within the range for the chosen post format
-      (see post_formats in blog_profile.yaml).
+      Word count is within the range for the chosen post format (see post_formats in
+      blog_profile.yaml).
     severity: minor
+    auto: true
 
-  - id: C12
-    rule: >-
-      The post is written in clear, idiomatic English. Product and UI names are
-      spelled exactly as Microsoft spells them (Power Apps, Power Automate,
-      Microsoft Dataverse, Copilot Studio, Power Platform admin center).
-    severity: major
-
+# ---------------------------------------------------------------------------
+# S (structure)
+# ---------------------------------------------------------------------------
 structure_rules:
   - id: S01
-    rule: Exactly one H1 (the title). Everything else is H2. No H3.
+    rule: Exactly one H1. Everything else H2. No H3, no H4.
     severity: blocker
+    auto: true
+    detector: '^#{3,}\s'
 
   - id: S02
-    rule: >-
-      The post has between 8 and 11 H2 sections, excluding "Contents" and "Sources".
+    rule: Between 8 and 12 H2 sections, excluding "Contents" and "Sources".
     severity: major
+    auto: true
 
   - id: S03
     rule: >-
-      There is a `## Contents` index right after the opening paragraphs, with one
-      anchor link per following H2, in the same order, not listing itself or
+      A "## Contents" index sits immediately after the opening paragraphs, with one
+      anchor link per following H2, in the same order, listing neither itself nor
       "Sources".
     severity: blocker
-    check_hint: Compare the index entries against the actual H2 headings, one by one.
+    auto: true
+    check_hint: Compare index entries against actual H2 headings one by one, including anchor slugs.
 
   - id: S04
     rule: >-
-      Section titles are descriptive. "Introduction", "Background", "Overview" and
-      "Summary" — or any equally generic title — are rejected.
+      Section titles are descriptive and content-bearing. Rejected: "Introduction",
+      "Background", "Overview", "Summary", "Getting started", "Conclusion" as a heading,
+      and any title that would fit an unrelated post.
     severity: major
+    auto: true
+    detector: '(?im)^##\s+(introduction|background|overview|summary|getting started|final thoughts|wrapping up|key takeaways)\s*$'
 
   - id: S05
     rule: >-
-      The penultimate section is "What to watch carefully" (or an equivalent
-      critical-reading title) and contains real risks, not empty hedging.
-    severity: blocker
+      Section titles vary in grammatical shape. Six or more titles opening with the same
+      word means the outline was generated, not written.
+    severity: minor
+    auto: true
 
   - id: S06
-    rule: The last content section is "Conclusion" or "My take".
-    severity: major
+    rule: >-
+      The penultimate section is "What to watch carefully" (or an equivalent critical
+      title) and contains named risks with named consequences, not hedging.
+    severity: blocker
+    auto: false
 
   - id: S07
-    rule: >-
-      A "## Sources" section exists at the end, with markdown links carrying the
-      document title, no dates and no numbering. There are no inline citations in
-      the body.
-    severity: blocker
+    rule: The last content section is "My take" (or "Conclusion" for pure news posts).
+    severity: major
+    auto: true
 
   - id: S08
     rule: >-
-      Every fenced code block declares its language (powerfx, json, csharp, yaml,
-      bash, xml, sql, text) so syntax highlighting works.
+      A "## Sources" section closes the post, with markdown links carrying the document
+      title, no dates and no numbering. No inline citations anywhere in the body.
     severity: blocker
+    auto: true
+    detector: '\]\(https?://[^)]+\)'
+    check_hint: Any link matching the detector above the Sources heading is an inline citation unless it is a descriptive in-prose reference approved by S12.
 
   - id: S09
-    rule: >-
-      No section runs beyond ~350 words without a list, table, code block or
-      callout to break it up.
-    severity: major
+    rule: Every fenced code block declares a language.
+    severity: blocker
+    auto: true
+    detector: '(?m)^```\s*$(?=[\s\S]*?\n```)'
 
   - id: S10
     rule: >-
-      Callouts use the labelled blockquote form ("> **Important:** ...") and there
-      are no more than 3 in the whole post.
-    severity: minor
+      No section runs beyond roughly 350 words without a list, table, code block or
+      callout.
+    severity: major
+    auto: true
 
   - id: S11
     rule: >-
-      Images carry descriptive alt text; placeholders use the form
-      ![alt](IMAGE:short-slug).
-    severity: major
+      No images anywhere in the body. No markdown image syntax, no IMAGE: placeholders,
+      no embedded SVG or HTML img tags. The cover image lives in front matter only.
+    severity: blocker
+    auto: true
+    detector: '!\[[^\]]*\]\(|<img\s|IMAGE:|<svg'
 
   - id: S12
-    rule: A table is used for any comparison of 3+ items across 2+ dimensions.
-    severity: minor
+    rule: Links use descriptive anchor text. Never "here", "this link", or a bare URL in prose.
+    severity: major
+    auto: true
+    detector: '(?i)\[(here|this link|link|click here|read more)\]\(|(?<![(\["])https?://\S+'
 
   - id: S13
-    rule: Links use descriptive anchor text, never "here" or a bare URL.
-    severity: major
+    rule: >-
+      Callouts use the labelled blockquote form ("> **Important:** ..."), labels limited
+      to Important, Warning and Note, at most three per post.
+    severity: minor
+    auto: true
+    detector: '(?m)^>\s*\*\*(Important|Warning|Note):\*\*'
 
   - id: S14
-    rule: No emoji in headings or body.
+    rule: A table is used for any comparison of three or more items across two or more dimensions.
     severity: minor
+    auto: false
 
+# ---------------------------------------------------------------------------
+# E (SEO)
+# ---------------------------------------------------------------------------
 seo_rules:
   - id: E01
-    rule: The title is 45-65 characters and contains the primary keyword.
+    rule: Title is 45 to 65 characters, contains the primary keyword, and carries no dash character.
     severity: major
+    auto: true
 
   - id: E02
     rule: >-
-      The meta description is 140-158 characters, contains the primary keyword and
-      reads as a sentence.
+      Meta description is 140 to 158 characters, contains the primary keyword, reads as a
+      sentence, and carries no dash character.
     severity: major
+    auto: true
 
   - id: E03
     rule: The primary keyword appears in the first 100 words and in at least one H2.
     severity: minor
+    auto: true
 
   - id: E04
-    rule: >-
-      The slug is lowercase, hyphenated, 60 characters or fewer, with no stop
-      words.
+    rule: Slug is lowercase, hyphenated, 60 characters or fewer, no stop words.
     severity: minor
+    auto: true
+    detector: '^[a-z0-9]+(-[a-z0-9]+)*$'
 
   - id: E05
-    rule: 2-5 internal link opportunities to existing powerplatformninja.com posts are suggested.
+    rule: Two to five internal link opportunities to existing powerplatformninja.com posts are suggested.
     severity: minor
+    auto: false
 
   - id: E06
-    rule: One category from the blog_profile.yaml taxonomy and 4-6 tags.
+    rule: One category from the blog_profile.yaml taxonomy, and four to six tags.
     severity: minor
+    auto: true
 
   - id: E07
     rule: >-
-      `cover_concept` describes a concrete neon-lit graphic scene built from the
-      post's own subject matter — objects, geometry, light. It must not contain
-      any instruction to render text, and must not simply restate the title.
+      cover_concept describes a concrete neon-lit graphic scene built from the post's own
+      subject matter: objects, geometry, light. No instruction to render text. Not a
+      restatement of the title.
     severity: minor
+    auto: false
 
-# Overall gate
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
 scoring:
-  dimensions: [content, structure, seo]
-  pass_threshold: 82
+  dimensions:
+    honesty: 0.30
+    voice: 0.30
+    structure: 0.20
+    content: 0.15
+    seo: 0.05
+  deductions:
+    blocker: 25
+    major: 8
+    minor: 2
+    info: 0
+  pass_threshold: 85
   block_on_any_blocker: true
+
+# ---------------------------------------------------------------------------
+# Loop governance. Without this the crew ping-pongs on style forever.
+# ---------------------------------------------------------------------------
+loop:
+  max_iterations: 4
+  order_of_checks: [honesty, typography, voice, structure, content, seo]
+  stop_early_if: >-
+    Any honesty blocker fires on iteration 1. Report to the human immediately instead of
+    burning iterations on prose that may be fabricated.
+
+  validator_must:
+    - Quote the offending text verbatim in `location`. Never describe it in the abstract.
+    - Give exactly one concrete fix per finding, written as an instruction, not a preference.
+    - Run every `detector` regex literally before forming a judgement on that rule.
+    - Report measured values for V10 and V11, per section, not a general impression.
+    - Re-check previously passed rules after a rewrite. Fixing V01 often breaks V10.
+
+  validator_must_not:
+    - Rewrite the draft. It returns findings, not prose.
+    - Re-raise a finding the Writer already addressed unless the fix introduced a new failure.
+    - Raise stylistic preferences that are not a numbered rule in this file.
+    - Ask the Writer to add specificity that is not in the dossier or the author notes.
+
+  writer_must:
+    - Fix blockers first, then majors, then minors.
+    - Change nothing factual while fixing style. A style pass that alters a claim is a regression.
+    - State, in the change log, which rule id each edit addresses.
+
+  regression_check:
+    rule: >-
+      After any rewrite, diff the claim set of the new draft against the previous one. Any
+      claim added, removed or altered during a style-only pass is reported as a blocker.
+    severity: blocker
+
+  escalate_to_human_when:
+    - max_iterations reached and score is still below pass_threshold
+    - any H01, H02 or H03 blocker survives one rewrite
+    - V12 fails because author_notes.md lacks the material
+    - placeholders exceed five
+
+# ---------------------------------------------------------------------------
+# Validator output contract
+# ---------------------------------------------------------------------------
+output_schema:
+  type: object
+  properties:
+    verdict: {enum: [pass, revise, escalate]}
+    score: {type: number}
+    scores_by_dimension: {type: object}
+    iteration: {type: integer}
+    findings:
+      type: array
+      items:
+        type: object
+        properties:
+          rule_id: {type: string}
+          severity: {enum: [blocker, major, minor, info]}
+          location: {type: string, description: Verbatim quote of the offending text, or the heading name}
+          why: {type: string, description: One sentence. What the reader would notice.}
+          fix: {type: string, description: One concrete instruction. Not a preference.}
+    measurements:
+      type: object
+      description: >-
+        avg_sentence_words, short_sentences_per_section, longest_paragraph_sentences,
+        section_word_counts, h2_count, placeholder_count, dash_hits, banned_word_hits.
+    resolved_since_last_iteration: {type: array, items: {type: string}}

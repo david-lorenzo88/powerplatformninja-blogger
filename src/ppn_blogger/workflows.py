@@ -40,6 +40,7 @@ from .executors import (
     DossierGate,
     DraftGate,
     Finalizer,
+    NotesGate,
     ResumePayload,
     ReviewGate,
     RunState,
@@ -146,10 +147,11 @@ def build_post_workflow(
     translate: bool | None = None,
     resume_from_dossier: bool = False,
     skip_source_check: bool = False,
+    notes_text: str = "",
 ) -> PostWorkflow:
     settings = settings or get_settings()
     clients = clients or default_clients()
-    state = RunState()
+    state = RunState(notes_text=notes_text)
 
     brief = BriefBuilder(state, settings)
     entry = (
@@ -157,12 +159,14 @@ def build_post_workflow(
         if resume_from_dossier
         else brief
     )
+    normalizer = AgentExecutor(A.build_notes_normalizer(settings, clients), id=A.NOTES_NORMALIZER)
+    notes_gate = NotesGate(state)
     researcher = AgentExecutor(A.build_researcher(settings, clients), id=A.RESEARCHER)
     dossier_gate = DossierGate(state)
     source_checker = AgentExecutor(A.build_source_checker(settings, clients), id=A.SOURCE_CHECKER)
     source_gate = SourceGate(state, settings)
     writer = AgentExecutor(A.build_writer(settings, clients), id=A.WRITER)
-    draft_gate = DraftGate(state)
+    draft_gate = DraftGate(state, settings)
     content_validator = AgentExecutor(
         A.build_content_validator(settings, clients), id=A.CONTENT_VALIDATOR
     )
@@ -198,7 +202,12 @@ def build_post_workflow(
         if skip_source_check:
             builder.add_edge(entry, writer)
     else:
+        # Two ways out of the brief: through the notes normalizer when there are
+        # real notes, or straight to the researcher when there are none.
+        builder.add_edge(brief, normalizer)
         builder.add_edge(brief, researcher)
+        builder.add_edge(normalizer, notes_gate)
+        builder.add_edge(notes_gate, researcher)
         builder.add_edge(researcher, dossier_gate)
         builder.add_edge(dossier_gate, source_checker)
         builder.add_edge(source_gate, researcher)   # source loop
@@ -227,6 +236,7 @@ async def write_post(
     push_to_wordpress: bool | None = None,
     make_cover: bool | None = None,
     translate: bool | None = None,
+    notes_text: str = "",
     on_event: Any = None,
 ) -> PostPackage:
     built = build_post_workflow(
@@ -235,6 +245,7 @@ async def write_post(
         push_to_wordpress=push_to_wordpress,
         make_cover=make_cover,
         translate=translate,
+        notes_text=notes_text,
     )
 
     if on_event is None:
@@ -263,6 +274,7 @@ async def write_post_from_dossier(
     make_cover: bool | None = None,
     translate: bool | None = None,
     skip_source_check: bool = False,
+    notes_text: str = "",
     on_event: Any = None,
 ) -> PostPackage:
     """Run the pipeline from an existing dossier, skipping the research stage."""
@@ -274,6 +286,7 @@ async def write_post_from_dossier(
         translate=translate,
         resume_from_dossier=True,
         skip_source_check=skip_source_check,
+        notes_text=notes_text,
     )
     payload = ResumePayload(topic=topic, dossier=dossier)
 

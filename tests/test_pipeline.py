@@ -64,7 +64,9 @@ async def test_markdown_converts_to_gutenberg_blocks(tmp_path, monkeypatch):
     assert "<!-- wp:table" in blocks
     assert "<!-- wp:list" in blocks
     assert "<!-- wp:quote" in blocks
-    assert "ppn-image-placeholder" in blocks
+    # No in-body images any more: the converter has no image path at all.
+    assert "wp:image" not in blocks
+    assert "ppn-image-placeholder" not in blocks
     # Gutenberg comments must be balanced. Self-closing blocks (`<!-- wp:x /-->`)
     # are complete on their own and have no closing delimiter.
     self_closing = blocks.count("/-->")
@@ -110,40 +112,28 @@ def test_html_entities_in_code_are_escaped_once():
     assert "&amp;amp;" not in blocks, "double-escaped ampersand"
 
 
-def test_screenshot_markers_become_fillable_image_blocks(monkeypatch):
-    """The writer drifts into `[SCREENSHOT: slug] caption`; publish it as a slot.
+def test_no_image_path_in_the_converter():
+    """The in-body image path is gone: markdown images never become blocks.
 
-    Shipping the literal marker into WordPress is what happened on the first
-    post. An empty core/image block opens in the editor as the upload
-    placeholder, so filling it in is one click.
+    S11 blocks images upstream, but if one slips through it must not resurrect
+    the old empty-core/image slot the converter used to emit.
     """
-    from ppn_blogger.settings import get_settings
     from ppn_blogger.wordpress import markdown_to_blocks
 
-    monkeypatch.setattr(get_settings().wordpress, "screenshot_placeholder", "image")
-    body = (
-        "## Step 2\n\n"
-        "[SCREENSHOT: group-mixed-mode] Group Rules page with Mixed mode selected\n\n"
-        "Then save.\n"
-    )
-    blocks = markdown_to_blocks(body)
-
-    assert "[SCREENSHOT:" not in blocks, "raw marker leaked into the post"
-    assert '<!-- wp:image {"className":"ppn-screenshot-slot"} /-->' in blocks
-    assert "Group Rules page with Mixed mode selected" in blocks
-    assert "group-mixed-mode" in blocks
-
-    # The note-only style skips the empty block for anyone who finds it noisy.
-    monkeypatch.setattr(get_settings().wordpress, "screenshot_placeholder", "note")
-    assert "ppn-screenshot-slot" not in markdown_to_blocks(body)
+    blocks = markdown_to_blocks("## Step\n\n![alt](IMAGE:foo)\n\nText.\n")
+    assert "ppn-screenshot-slot" not in blocks
+    assert 'wp:image {"className"' not in blocks
 
 
 def test_rules_load_and_are_non_empty():
     settings = get_settings()
     rules = settings.all_rules()
     assert len(rules) >= 20
-    assert {r["group"] for r in rules} == {"content", "structure", "seo"}
-    assert all(r["severity"] in {"blocker", "major", "minor"} for r in rules)
+    # v2 ruleset: six families instead of three.
+    assert {r["group"] for r in rules} == {
+        "honesty", "typography", "voice", "content", "structure", "seo"
+    }
+    assert all(r["severity"] in {"blocker", "major", "minor", "info"} for r in rules)
 
 
 @pytest.mark.asyncio
@@ -493,3 +483,148 @@ def test_resume_graph_excludes_the_researcher():
     assert "researcher" not in resumed, "resume path must not re-enter research"
     assert "dossier_entry (Start)" in resumed
     assert "source_checker --> source_gate" in resumed
+
+
+# ---------------------------------------------------------------------------
+# v2 editorial ruleset: detectors, voice modes, author notes
+# ---------------------------------------------------------------------------
+
+
+def test_validation_rules_parse_and_all_detectors_compile():
+    """The new ruleset loads and every one of its 21 detectors compiles."""
+    import re
+
+    from ppn_blogger.detectors import compile_all
+
+    settings = get_settings()
+    compiled = compile_all(settings)
+    assert len(compiled) == 21, f"expected 21 detectors, got {len(compiled)}"
+    assert all(isinstance(p, re.Pattern) for p in compiled.values())
+    # The six families are all present.
+    assert {r["group"] for r in settings.all_rules()} == {
+        "honesty", "typography", "voice", "content", "structure", "seo"
+    }
+
+
+def test_t01_fires_on_prose_dash_and_is_silent_in_code_and_urls():
+    """T01: an em dash in prose fires; a hyphen in a compound, slug, URL or a
+    dash inside a fenced code block does not."""
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+
+    def t01(md: str) -> bool:
+        run = run_detectors(md, groups=("typography",), settings=settings, slug="ok")
+        return any(f.rule_id == "T01" for f in run.findings)
+
+    assert t01("## H\nThe cache holds for six hours — then it drops.\n"), "em dash in prose"
+    assert not t01("## H\nThis is a low-code approach for makers.\n"), "compound hyphen"
+    assert not t01("## H\nThe slug is my-post-about-dataverse here.\n"), "slug hyphen"
+    assert not t01("## H\nSee https://learn.microsoft.com/a-b-c-d for more.\n"), "url hyphen"
+    assert not t01("## H\nRun it now.\n\n```bash\necho a — b\n```\n"), "dash inside a fence"
+    # And T02: the spaced hyphen fires in prose but a list bullet does not.
+    def t02(md: str) -> bool:
+        run = run_detectors(md, groups=("typography",), settings=settings, slug="ok")
+        return any(f.rule_id == "T02" for f in run.findings)
+
+    assert t02("## H\nIt works - it just does not scale.\n"), "spaced hyphen in prose"
+    assert not t02("## H\n- first bullet\n- second bullet\n"), "list bullets are exempt"
+
+
+def test_s11_blocks_any_image():
+    """S11 is a blocker on markdown image syntax and on IMAGE: markers."""
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+
+    def s11(md: str):
+        return [
+            f for f in run_detectors(md, groups=("structure",), settings=settings).findings
+            if f.rule_id == "S11"
+        ]
+
+    md_img = s11("## Step\n![a screenshot](https://x/y.png)\n")
+    assert md_img and md_img[0].severity == "blocker", "markdown image must trip S11"
+    assert s11("## Step\nSee IMAGE:elastic-config for the screen.\n"), "IMAGE: marker trips S11"
+    assert not s11("## Step\nNo pictures here, only prose.\n"), "clean section is silent"
+
+
+def test_h03_trips_on_a_number_absent_from_dossier_and_notes():
+    """A measured number in neither the dossier nor the author claims is H03."""
+    from ppn_blogger.detectors import run_detectors
+    from ppn_blogger.models import AuthorClaim
+
+    settings = get_settings()
+    body = "## Result\nThe query returned 5,000 rows in 3 seconds on the first run.\n"
+
+    absent = run_detectors(body, groups=("honesty",), settings=settings, dossier_blob="nothing relevant")
+    assert any(f.rule_id == "H03" and f.severity == "blocker" for f in absent.findings)
+
+    # Traceable to the dossier: silent.
+    ok = run_detectors(
+        body, groups=("honesty",), settings=settings,
+        dossier_blob="the unfiltered query returned 5000 rows in 3 seconds",
+    )
+    assert not any(f.rule_id == "H03" for f in ok.findings)
+
+    # Traceable to an author claim instead: also silent.
+    claim = AuthorClaim(id="A1", type="measurement", text="It returned 5,000 rows in 3 seconds.")
+    ok2 = run_detectors(body, groups=("honesty",), settings=settings, author_claims=[claim])
+    assert not any(f.rule_id == "H03" for f in ok2.findings)
+
+
+@pytest.mark.asyncio
+async def test_no_notes_yields_analysis_and_no_first_person(tmp_path, monkeypatch):
+    """`ppn write --dry-run` with no notes file → analysis mode, zero first person."""
+    import re
+
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients = stub_clients(exercise_loops=False)
+    topics = await discover_topics(clients=clients)
+    package = await write_post(
+        topics.suggestions[0], clients=clients, push_to_wordpress=False, make_cover=False
+    )
+
+    assert package.voice_mode == "analysis"
+    assert package.author_claims == []
+    # No first-person sentences in the analysis draft. Headings and the ToC are
+    # excluded so the fixed "My take" section title is not a false hit.
+    prose = "\n".join(
+        line
+        for line in package.draft.markdown.splitlines()
+        if not line.startswith("#") and not re.match(r"\s*- \[", line)
+    )
+    assert not re.search(r"(?i)\b(I|I'm|I've|I'd|my|we|our|us)\b", prose)
+
+
+@pytest.mark.asyncio
+async def test_notes_yield_field_report_with_traceable_claim_ids(tmp_path, monkeypatch):
+    """A populated notes fixture → field_report, with traceable author claim ids."""
+    import json
+
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    notes = (
+        "## What I actually did\nRebuilt the table by hand.\n\n"
+        "## Numbers I measured\n- 40,000 rows in 11 seconds, my tenant, 14 July\n\n"
+        "## What did not work\nThe designer toggle had no effect until I recreated the table.\n"
+    )
+    clients = stub_clients(exercise_loops=False)
+    topics = await discover_topics(clients=clients)
+    package = await write_post(
+        topics.suggestions[0], clients=clients, push_to_wordpress=False,
+        make_cover=False, notes_text=notes,
+    )
+
+    assert package.voice_mode == "field_report"
+    assert package.author_claims, "notes produced no claims"
+    ids = [c.id for c in package.author_claims]
+    assert ids == sorted(ids), "claim ids are not stable/ordered"
+    # The claims are filed to disk next to the dossier, and every id is traceable.
+    saved = json.loads(Path(package.notes_path).read_text())
+    assert {c["id"] for c in saved["claims"]} == set(ids)

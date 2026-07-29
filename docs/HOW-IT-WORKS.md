@@ -75,6 +75,7 @@ The models live in `models.py`. The important ones:
 |---|---|---|
 | `ScoutReport` | each scout | `items: list[SignalItem]`, `notes` |
 | `TopicSuggestionSet` | Topic Editor | `suggestions`, `discarded` |
+| `AuthorClaimSet` | Notes Normalizer | `claims: list[AuthorClaim]` — the author's testimony, typed and id'd |
 | `ResearchDossier` | Researcher | `claims`, `citations`, `examples`, `gotchas`, `limits`, `open_questions`, `suggested_outline` |
 | `SourceVerdict` | Source Checker | `passed`, `average_trust`, `fabricated_urls`, `contradictions`, `findings`, `instructions_for_researcher` |
 | `Draft` | Writer / Translator | `markdown`, `title`, `slug`, `meta_description`, `tags`, `cover_concept`, `revision`, `changelog` |
@@ -204,7 +205,10 @@ resuming).
 
 ```mermaid
 flowchart TD
-    brief_builder --> researcher
+    brief_builder -->|notes present| notes_normalizer
+    notes_normalizer --> notes_gate
+    notes_gate --> researcher
+    brief_builder -->|no notes| researcher
     researcher --> dossier_gate
     dossier_gate --> source_checker
     source_checker --> source_gate
@@ -228,8 +232,39 @@ flowchart TD
 ### `brief_builder`
 
 Turns the chosen `TopicSuggestion` into a `<research_brief>` — the angle, the
-problem statement, the `key_questions`, the seed sources — and hands it to the
-Researcher. It also stores the topic on the shared `RunState`.
+problem statement, the `key_questions`, the seed sources. It also stores the topic
+on the shared `RunState` and decides the route: if real author notes were supplied
+it sends them to the normalizer first; if not, the brief goes straight to the
+Researcher and the run is `analysis` mode.
+
+### `notes_normalizer` and `notes_gate` — the author's testimony
+
+New per-post input: `input/notes/<slug>.md` (or `--notes <path>`). Raw, badly
+written notes of what the author actually built, measured and broke — the only
+place the Writer is allowed to get first person, real numbers and real failures.
+
+`BriefBuilder` decides whether the file has real content. The unfilled template, or
+a missing file, produces an **empty claim list** and puts the run in `analysis`
+mode — no model call, and nothing is inferred. When there are notes, the
+**Notes Normalizer** (fast tier, `AuthorClaimSet`) turns them into typed
+`AuthorClaim`s (`measurement`, `failure`, `limit`, `environment`, `exact_string`,
+`opinion`, `context`), each with a stable id. Its one hard rule: extract only what
+is written, invent nothing. `NotesGate` files the claims to
+`research/<date>-<slug>.notes.json` beside the dossier, sets the run to
+`field_report`, and briefs the Researcher.
+
+The claims travel through the run with a strict contract:
+
+- The **Researcher** gets the raw notes text as search seeds (the error strings and
+  version numbers in them are exactly what to search for), but treats them as
+  unverified like anything else.
+- The **Source Checker** gets the claims as *testimony*. It must not verify them,
+  and they cannot fail `source_gate`.
+- The **Writer** gets the claims as the only permitted source of first person,
+  numbers and failures, with the placeholder mechanism for anything missing.
+- The **Content Validator** gets the claims to enforce H02 (first person traces to a
+  claim) and H03 (every number traces to the dossier or a claim).
+- The **Translator** gets neither, and preserves first person as first person.
 
 ### `researcher`
 
@@ -328,8 +363,13 @@ corrected dossier.
 ### `writer`
 
 The Writer has almost no tools — `search_existing_posts` and `today`. It writes
-"from the researcher's dossier, and from nothing else." Everything it might have
-looked up has already been fetched, verified and structured.
+from the dossier and the author claims, and from nothing else. Everything it might
+have looked up has already been fetched, verified and structured.
+
+Its message carries the run's `voice_mode`, a word-target band and the author
+claims. In `field_report` mode it may use first person, numbers and failures, but
+only where a claim backs them. In `analysis` mode there is no first person at all,
+and the word target drops to the lower end of the band.
 
 It enforces one fixed post shape, driven entirely by
 `blog_profile.yaml → structure`:
@@ -338,19 +378,20 @@ It enforces one fixed post shape, driven entirely by
 2. Exactly `opening_paragraphs` (2) opening paragraphs — problem, then payoff. No
    TL;DR block.
 3. `## Contents` — bullet list of anchor links, one per following H2, in order.
-4. Between `min_sections` and `max_sections` (8–11) `##` sections. **Never H3.**
-   Generic headings (Introduction, Background, Overview, Summary) are banned.
+4. Between `min_sections` and `max_sections` (8 to 12) `##` sections. **Never H3.**
+   Generic headings (`banned_headings`) are rejected.
 5. A mandatory penultimate section — `critical_section_heading`, default *"What to
    watch carefully"* — covering real risks, maturity, availability, and what can
    break.
-6. A closing section from `closing_headings` (*Conclusion* or *My take*) — an
-   opinion and a recommendation, not a recap.
+6. A closing section from `closing_headings` — *My take* (preferred) or
+   *Conclusion* for a pure news post — an opinion and a recommendation, not a recap.
 7. `## Sources` — markdown links, document title only, no dates, no numbering.
 
-**No inline citations anywhere.** That is a house-style decision, and it puts the
-whole burden of factual integrity on the dossier and the validators. Every factual
-statement must still trace to a dossier claim; dossier caveats must survive into
-prose.
+**No in-body images and no dashes.** The body carries no images of any kind (rule
+S11) and no dash characters (rule T01). **No inline citations anywhere** either —
+that puts the whole burden of factual integrity on the dossier, the author claims
+and the validators. Every factual statement must trace to a dossier claim or a
+claim; dossier caveats must survive into prose.
 
 On revision it must address every blocker and major finding *by id*, bump
 `revision`, and summarise what changed in `changelog`. Where it disagrees with a
@@ -360,33 +401,44 @@ body.
 ### `draft_gate`
 
 Parses the `Draft`, fills `word_count` and `read_minutes` if the model left them
-blank (`reading_speed_wpm`, default 200), and fans out to both validators
-simultaneously.
+blank (`reading_speed_wpm`, default 200), then **runs the code-side detectors** and
+fans out to both validators — with a *different* payload for each.
+
+`run_detectors()` in `detectors.py` compiles the 21 detector regexes and runs them
+over the draft before any model call. `auto: true` rules are decided in code; their
+hits become pre-computed `RuleFinding`s the validator is told to include rather than
+re-derive. It also computes the `measurements` a model must never estimate: average
+sentence length, per-section word counts, longest paragraph, H2 count, placeholder
+count, dash hits, banned-word hits. The T01/T02 detectors mask fenced code, inline
+code, URLs and list bullets first, so a hyphen in `low-code` or a URL is never
+flagged. The code findings are merged back into the reports at `review_gate`, so a
+blocker a regex raised gates the run exactly like a model blocker.
 
 ### The two validators
 
-They run in parallel and judge different things, on purpose. One validator asked to
-check both facts and formatting does neither well — it finds three formatting nits
-and calls it a day.
+They run in parallel and judge different families, on purpose. One validator asked
+to check both facts and formatting does neither well.
 
-**Content Validator** (`rules_text(groups=("content",))`, temperature 0.2) is the
-blog's hard-to-please editor. It receives the draft *and the dossier*, which is the
-anti-hallucination backstop: since the published post carries no inline citations,
-something has to check the mapping. Its two hardest rules:
+**Content Validator** (`rules_text(groups=("honesty", "voice", "content"))`,
+temperature 0.2) is the blog's hard-to-please editor. It receives the draft, the
+dossier *and the author claims* — the anti-hallucination backstop, since the
+published post carries no inline citations. Its hardest rules:
 
-- **C03** — any statement not traceable to a dossier claim is a **blocker**, quoted
+- **H01** — any statement not traceable to a dossier claim is a **blocker**, quoted
   verbatim in `location`. "It is generally known" is never acceptable support.
-- **C07** — any dropped dossier caveat is a **blocker**.
+- **H02 / H03** — every first-person sentence traces to an author claim, and every
+  number, version and error string traces to the dossier or a claim.
+- **H04** — any dropped dossier caveat is a **blocker**.
+- The **V** family is where drafts read as machine-written: the specificity floor,
+  the closing opinion, sentence-length variance, banned vocabulary.
 
-**Design Validator** (`groups=("structure", "seo")`) judges readability, structure
-and SEO only. Its checks are mechanical and it is told to *count things* rather
-than gesture at them: exactly one H1 and no H3 (any H3 is a blocker); section count
-in range; TOC entries compared one-by-one against the actual H2s, with order,
-extras, omissions and anchor slugs each reported separately; every fenced code
-block carries a language (naming the ones that don't); Sources present and
-correctly formatted; zero inline citations in the body; callouts in the configured
-form and under the cap; any run over ~350 words with no list, table, code block or
-callout flagged as a wall of text; title and meta-description lengths; slug format;
+**Design Validator** (`groups=("typography", "structure", "seo")`) judges
+typography, structure and readability. Most of its rules are `auto` and already
+found by the detectors (dashes, curly quotes, images, missing code languages,
+generic headings, inline citations); it spends its judgement on the rest: TOC
+entries compared one-by-one against the actual H2s; the critical-read section
+penultimate and the closing section from `closing_headings`; **any in-body image a
+blocker (S11)**; walls of text; a table where a comparison deserves one;
 `cover_concept` a concrete visual scene rather than a restated title.
 
 Every finding, from either validator, must carry a `fix` that is an executable
@@ -539,11 +591,10 @@ language rides in the block delimiter instead —
 Syntax-highlighting Code Block plugin reads it. `WP_CODE_LANGUAGE_ATTR=false`
 turns that off.
 
-Image placeholders (`![alt](IMAGE:slug)`, and the `[SCREENSHOT: slug] caption`
-shape the Writer sometimes drifts into) become an **empty `core/image` block** plus
-an instruction paragraph. An empty image block renders in the editor as the upload
-placeholder, so filling in a real screenshot is one click.
-`WP_SCREENSHOT_PLACEHOLDER=note` drops the block and leaves only the note.
+There is **no image path** in the converter. This blog carries no in-body images
+(rule S11 is a blocker on any), so there is no `![alt](IMAGE:slug)` handling, no
+`[SCREENSHOT: ...]` normalisation and no empty `core/image` slot. The only image is
+the cover, uploaded separately and set as `featured_media`.
 
 `ppn wp preview <draft>` prints the block markup without publishing, which is the
 fastest way to check a conversion change.
@@ -594,6 +645,10 @@ nothing added, nothing removed, nothing improved. Specifically:
   how people actually talk about the platform, and translating those terms makes
   the post harder to read, not easier.
 - `tú`, never `usted`.
+- **The dash ban applies to Spanish too**, and it matters more here because Spanish
+  prose reaches for the raya (—) by default. `translation_gate` runs the T01, T02
+  and T04 detectors over the Spanish output and logs any hit. First person is kept
+  as first person, never rewritten to an impersonal form.
 - `meta_description` rewritten to fit 140–158 characters in Spanish, not stretched.
 
 The Spanish post gets the English slug plus `-es`, keeps the English category (the
@@ -664,7 +719,9 @@ carry messages, the state is shared:
 
 ```python
 topic, dossier, draft, source_verdict, reports,
-source_round, revision_round, dossier_path, package
+source_round, revision_round, dossier_path, package,
+notes_text, author_claims, voice_mode, notes_path,   # author notes
+code_findings, measurements, prev_finding_ids         # code-side detectors
 ```
 
 Only two lines in the codebase increment a round counter, and each has exactly one

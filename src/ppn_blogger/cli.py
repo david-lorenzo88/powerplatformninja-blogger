@@ -32,6 +32,8 @@ from .util import setup_logging
 app = typer.Typer(add_completion=False, help="Power Platform Ninja blogging crew.")
 wp_app = typer.Typer(help="WordPress operations.")
 app.add_typer(wp_app, name="wp")
+config_app = typer.Typer(help="Configuration store operations (server database).")
+app.add_typer(config_app, name="config")
 console = Console()
 
 
@@ -149,6 +151,25 @@ def _clients(dry_run: bool):
     from .clients import default_clients
 
     return default_clients()
+
+
+def _load_notes(notes_path: Path | None, slug: str) -> str:
+    """Author notes text for a post.
+
+    ``--notes`` points anywhere; otherwise the default location is
+    ``input/notes/<slug>.md``. A missing file is not an error — it simply means
+    the post runs in analysis mode.
+    """
+    from .settings import ROOT
+
+    path = notes_path if notes_path else (ROOT / "input" / "notes" / f"{slug}.md")
+    if path and Path(path).exists():
+        text = Path(path).read_text(encoding="utf-8")
+        console.print(f"[green]Author notes[/] loaded from {path}")
+        return text
+    if notes_path:
+        raise typer.BadParameter(f"No notes file at {notes_path}")
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +297,11 @@ def write(
         "--skip-source-check",
         help="With --dossier, go straight to the writer. Claims will be unverified.",
     ),
+    notes: Path | None = typer.Option(
+        None,
+        "--notes",
+        help="Author notes markdown. Defaults to input/notes/<slug>.md. Empty = analysis mode.",
+    ),
     push: bool | None = typer.Option(
         None, "--push/--no-push", help="Override WP_AUTO_PUSH for this run."
     ),
@@ -309,6 +335,7 @@ def write(
     console.print(Panel(f"[bold]{topic.title}[/]\n\n{topic.angle}", title="Writing"))
 
     clients = _clients(dry_run)
+    notes_text = _load_notes(notes, topic.slug or topic.title)
 
     if dossier is not None:
         from .models import ResearchDossier
@@ -332,6 +359,7 @@ def write(
                 make_cover=False if dry_run else cover,
                 translate=translate,
                 skip_source_check=skip_source_check,
+                notes_text=notes_text,
                 on_event=on_event,
             ),
             timeout_minutes=get_settings().run.write_timeout_minutes,
@@ -347,6 +375,7 @@ def write(
             push_to_wordpress=push,
             make_cover=False if dry_run else cover,
             translate=translate,
+            notes_text=notes_text,
             on_event=on_event,
         ),
         timeout_minutes=get_settings().run.write_timeout_minutes,
@@ -365,6 +394,9 @@ def write_topic(
     fmt: str = typer.Option("how-to", "--format", help="Post format id from blog_profile.yaml."),
     source: list[str] = typer.Option([], "--source", help="Seed URL. Repeatable."),
     question: list[str] = typer.Option([], "--question", help="Question the research must answer."),
+    notes: Path | None = typer.Option(
+        None, "--notes", help="Author notes markdown. Defaults to input/notes/<slug>.md."
+    ),
     push: bool | None = typer.Option(None, "--push/--no-push"),
     translate: bool | None = typer.Option(
         None, "--translate/--no-translate", help="Also produce the Spanish version."
@@ -393,6 +425,7 @@ def write_topic(
         effort=3,
         score=80.0,
     )
+    notes_text = _load_notes(notes, topic.slug or topic.title)
     package = asyncio.run(
         write_post(
             topic,
@@ -400,6 +433,7 @@ def write_topic(
             push_to_wordpress=push,
             make_cover=False if dry_run else None,
             translate=translate,
+            notes_text=notes_text,
         )
     )
     _report(package)
@@ -510,6 +544,8 @@ def _report(package) -> None:
     lines = [
         f"{verdict}  score {outcome.overall_score:.1f}  revisions {outcome.revision}  "
         f"blockers {outcome.blockers}",
+        f"Voice   {package.voice_mode}"
+        + (f"  ·  {len(package.author_claims)} author claims" if package.author_claims else ""),
         "",
         f"Draft   {package.markdown_path}",
         f"Review  {package.report_path}",
@@ -848,8 +884,50 @@ def rules() -> None:
     table.add_column("Severity", width=9)
     table.add_column("Rule", overflow="fold")
     for rule in settings.all_rules():
-        colour = {"blocker": "red", "major": "yellow", "minor": "dim"}[rule["severity"]]
+        colour = {"blocker": "red", "major": "yellow", "minor": "dim", "info": "dim"}.get(
+            rule["severity"], "white"
+        )
         table.add_row(rule["id"], rule["group"], f"[{colour}]{rule['severity']}[/]", rule["rule"].strip())
+    console.print(table)
+
+
+@config_app.command("reload")
+def config_reload() -> None:
+    """Re-import config/ into the server database as new versions.
+
+    The server imports config/ once, on first start, and the database is
+    authoritative from then on — so a git-only swap of the YAML never reaches a
+    running server. This appends the current files as a new version of each
+    document (keeping the edit history), which is how a new editorial ruleset
+    goes live for the UI and any queued run.
+    """
+    setup_logging()
+
+    async def run() -> tuple[list[tuple[str, int]], bool]:
+        from .server import config_store
+        from .server.db import init_db
+
+        await init_db()
+        if await config_store.seed_from_yaml_if_empty():
+            return [(n, 1) for n in config_store.DOCUMENTS], True
+        return await config_store.reimport_from_yaml(note="Reloaded via `ppn config reload`"), False
+
+    try:
+        results, seeded = asyncio.run(run())
+    except ImportError as exc:
+        console.print(
+            f"[red]Server extras are not installed[/] ({exc}).\n"
+            "The database config store needs: [bold]pip install -e \".[server]\"[/]. "
+            "Without the server, the CLI reads config/ directly and no reload is needed."
+        )
+        raise typer.Exit(1) from None
+
+    verb = "seeded (first import)" if seeded else "reloaded"
+    table = Table(title=f"Config {verb}")
+    table.add_column("Document")
+    table.add_column("New version")
+    for name, version in results:
+        table.add_row(name, f"v{version}")
     console.print(table)
 
 

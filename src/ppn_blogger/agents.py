@@ -14,6 +14,7 @@ from agent_framework import Agent
 from . import prompts, tools
 from .clients import ClientBundle, hosted_web_search_tools
 from .models import (
+    AuthorClaimSet,
     Draft,
     ResearchDossier,
     ScoutReport,
@@ -28,6 +29,7 @@ NEWS_SCOUT = "news_scout"
 FEED_SCOUT = "feed_scout"
 DOCS_SCOUT = "docs_scout"
 TOPIC_EDITOR = "topic_editor"
+NOTES_NORMALIZER = "notes_normalizer"
 RESEARCHER = "researcher"
 WRITER = "writer"
 CONTENT_VALIDATOR = "content_validator"
@@ -124,6 +126,20 @@ def build_topic_editor(settings: Settings, clients: ClientBundle) -> Agent:
 # ---------------------------------------------------------------------------
 # Post pipeline crew
 # ---------------------------------------------------------------------------
+
+
+def build_notes_normalizer(settings: Settings, clients: ClientBundle) -> Agent:
+    # Fast tier: this is extraction, not reasoning. It never touches the web —
+    # it only reshapes the notes the author already wrote.
+    return Agent(
+        clients.fast,
+        prompts.notes_normalizer_instructions(settings),
+        id=NOTES_NORMALIZER,
+        name=NOTES_NORMALIZER,
+        description="Turns raw author notes into typed, id'd author claims. Invents nothing.",
+        tools=[tools.today_tool],
+        default_options=_opts(AuthorClaimSet),
+    )
 
 
 def build_researcher(settings: Settings, clients: ClientBundle) -> Agent:

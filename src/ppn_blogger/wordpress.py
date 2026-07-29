@@ -13,10 +13,8 @@ than one lump of classic HTML.
 from __future__ import annotations
 
 import base64
-import html
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -37,17 +35,12 @@ class WordPressError(RuntimeError):
 
 # ---------------------------------------------------------------------------
 # Markdown -> Gutenberg blocks
+#
+# This blog has no in-body images (rule S11 is a blocker on any image), so the
+# converter no longer has an image-placeholder path: no ![alt](IMAGE:slug), no
+# [SCREENSHOT: ...] normalisation, no empty core/image slot. The only image is
+# the cover, uploaded separately and set as featured_media — never in the body.
 # ---------------------------------------------------------------------------
-
-_IMAGE_PLACEHOLDER = re.compile(r"!\[(?P<alt>[^\]]*)\]\(IMAGE:(?P<slug>[^)]+)\)")
-
-# The writer is told to emit ![alt](IMAGE:slug), but models drift into the
-# screenshot-brief shape `[SCREENSHOT: slug] caption` often enough that leaving
-# it unhandled means a bare literal in the published post. Normalise it instead.
-_SCREENSHOT_MARKER = re.compile(
-    r"^\s*\[SCREENSHOT:\s*(?P<slug>[^\]]+)\]\s*(?P<alt>.*)$",
-    re.IGNORECASE | re.MULTILINE,
-)
 
 
 def escape_code(raw: str) -> str:
@@ -76,22 +69,8 @@ def markdown_to_blocks(markdown_body: str) -> str:
     import markdown as md
     from bs4 import BeautifulSoup, NavigableString
 
-    # Image placeholders are marked up here and turned into blocks below.
-    def _placeholder(match: re.Match[str]) -> str:
-        alt = match.group("alt").strip()
-        slug = match.group("slug").strip()
-        return f'<p class="ppn-image-placeholder" data-slug="{slug}">{alt}</p>'
-
-    def _screenshot(match: re.Match[str]) -> str:
-        slug = match.group("slug").strip()
-        alt = match.group("alt").strip() or slug.replace("-", " ")
-        return f'![{alt}](IMAGE:{slug})'
-
-    prepared = _SCREENSHOT_MARKER.sub(_screenshot, markdown_body)
-    prepared = _IMAGE_PLACEHOLDER.sub(_placeholder, prepared)
-
     rendered = md.markdown(
-        prepared,
+        markdown_body,
         extensions=["fenced_code", "tables", "sane_lists", "attr_list", "md_in_html"],
         output_format="html",
     )
@@ -117,24 +96,6 @@ def _inner(node: Any) -> str:
     return "".join(str(c) for c in node.contents).strip()
 
 
-def _screenshot_placeholder(alt: str, slug: str) -> str:
-    """Render a screenshot marker as something you can actually fill in.
-
-    An empty ``core/image`` block serialises self-closing and opens in the
-    editor as the upload placeholder — so replacing it is one click rather than
-    deleting a paragraph and inserting a block. The instruction is kept beside
-    it so you still know what to capture.
-    """
-    style = get_settings().wordpress.screenshot_placeholder
-    note = _paragraph(
-        f"<strong>Screenshot:</strong> {alt}" + (f" <em>({slug})</em>" if slug else ""),
-        class_name="ppn-image-placeholder",
-    )
-    if style == "note":
-        return note
-    return f'<!-- wp:image {{"className":"ppn-screenshot-slot"}} /-->\n\n{note}'
-
-
 def _node_to_block(node: Any) -> str:
     name = node.name
 
@@ -149,17 +110,6 @@ def _node_to_block(node: Any) -> str:
         )
 
     if name == "p":
-        classes = node.get("class") or []
-        if "ppn-image-placeholder" in classes:
-            return _screenshot_placeholder(_inner(node), node.get("data-slug", ""))
-        if node.find("img"):
-            img = node.find("img")
-            return (
-                "<!-- wp:image -->\n"
-                f'<figure class="wp-block-image"><img src="{html.escape(img.get("src", ""))}" '
-                f'alt="{html.escape(img.get("alt", ""))}"/></figure>\n'
-                "<!-- /wp:image -->"
-            )
         return _paragraph(_inner(node))
 
     if name in {"ul", "ol"}:

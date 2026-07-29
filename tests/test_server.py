@@ -304,3 +304,28 @@ async def test_write_run_produces_a_reviewable_draft(api):
 async def test_draft_paths_cannot_escape_the_drafts_directory(api):
     response = await api.get("/api/drafts/..%2F..%2F.env")
     assert response.status_code in (400, 404)
+
+
+@pytest.mark.asyncio
+async def test_config_reload_endpoint_is_token_guarded(api, monkeypatch):
+    """POST /api/config/reload: disabled without a token, guarded with one."""
+    # Disabled unless PPN_ADMIN_TOKEN is set.
+    monkeypatch.delenv("PPN_ADMIN_TOKEN", raising=False)
+    assert (await api.post("/api/config/reload")).status_code == 503
+
+    monkeypatch.setenv("PPN_ADMIN_TOKEN", "s3cret-token")
+    # Missing or wrong token is rejected.
+    assert (await api.post("/api/config/reload")).status_code == 401
+    assert (
+        await api.post("/api/config/reload", headers={"X-Admin-Token": "wrong"})
+    ).status_code == 401
+
+    # The right token re-imports config as a new version of each document.
+    before = {d["name"]: d["version"] for d in (await api.get("/api/config")).json()}
+    resp = await api.post("/api/config/reload", headers={"X-Admin-Token": "s3cret-token"})
+    assert resp.status_code == 200
+    reloaded = {r["name"]: r["version"] for r in resp.json()["reloaded"]}
+    assert "validation_rules" in reloaded
+    # Seeded at v1 by the lifespan, so a reload bumps every document to v2.
+    for name, version in before.items():
+        assert reloaded[name] == version + 1
