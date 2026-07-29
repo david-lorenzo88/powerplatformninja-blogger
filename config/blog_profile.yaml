@@ -50,28 +50,72 @@ categories:
 # Structural conventions
 #
 # Modelled on the house style of blog.azurebrains.com: a table of contents,
-# 8-11 descriptive H2 sections, no H3, no TL;DR box, a critical-reading section
-# near the end, a closing section, and a plain "Fuentes" list.
+# 8-12 descriptive H2 sections, no H3, no TL;DR box, a critical-reading section
+# near the end, a closing section, and a plain "Sources" list. No in-body
+# images of any kind — the only image is the cover, in front matter.
 # ---------------------------------------------------------------------------
 structure:
   table_of_contents: true          # linked list of the H2 sections, at the top
   toc_heading: Contents
   min_sections: 8
-  max_sections: 11
+  max_sections: 12
   heading_depth: 2                 # H2 only — no H3
   opening_paragraphs: 2            # framing paragraphs instead of a TL;DR box
   tldr_block: false
   callout_label: "Important:"      # blockquote callouts, used sparingly
   max_callouts: 3
   critical_section_heading: What to watch carefully
-  closing_headings:                # the writer picks one
-    - Conclusion
+  closing_headings:                # the writer picks one; My take is preferred
     - My take
+    - Conclusion                   # only for a pure news post
   sources_heading: Sources
   sources_style: plain             # markdown links, no dates, no inline citations
   inline_citations: false
+  # Generic titles the Design Validator rejects (rule S04). Kept in config so a
+  # new banned heading is a one-line edit, not a regex change.
+  banned_headings:
+    - Introduction
+    - Background
+    - Overview
+    - Summary
+    - Getting started
+    - Conclusion                   # as a section title; use "My take"
+    - Final thoughts
+    - Wrapping up
+    - Key takeaways
   tags_per_post: [4, 6]
   reading_speed_wpm: 200           # used to compute the read-time estimate
+
+# ---------------------------------------------------------------------------
+# Voice mode
+#
+# Not a post format (--format still carries deep-dive and friends). This is a
+# separate axis set automatically by the notes normalizer from whether real
+# author notes were supplied:
+#
+#   field_report  author notes present. First person is allowed, drawn only
+#                 from the notes. V12 (specificity floor) is a hard blocker.
+#   analysis      no notes. Neutral register, no first person anywhere. V12
+#                 relaxes to "a named limitation the docs understate",
+#                 satisfiable from the dossier alone. Lower word target.
+# ---------------------------------------------------------------------------
+voice_mode:
+  field_report:
+    first_person: true
+    v12: blocker
+    word_target_factor: 1.0
+    register: >-
+      First person singular is allowed for what the author did, but only where a
+      matching author claim exists. Every number, failure and anecdote traces to
+      the author claims.
+  analysis:
+    first_person: false
+    v12: relaxed
+    word_target_factor: 0.8
+    register: >-
+      Neutral register. No first person anywhere, singular or plural. No invented
+      anecdote. V12 is satisfied by a named limitation the official docs understate,
+      drawn from the dossier alone. Aim at the lower end of the word band.
 
 post_formats:
   - id: analysis

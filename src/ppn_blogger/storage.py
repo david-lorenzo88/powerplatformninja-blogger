@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from .models import (
+    AuthorClaim,
     Draft,
     PostPackage,
     ResearchDossier,
@@ -114,6 +115,21 @@ def save_dossier(dossier: ResearchDossier) -> Path:
     return path
 
 
+def save_notes(claims: list[AuthorClaim], slug_or_title: str) -> Path:
+    """Write the normalised author claims beside the dossier.
+
+    An empty list is still written, so a run always records whether notes were
+    present. Named to match the dossier: ``<date>-<slug>.notes.json``.
+    """
+    settings = get_settings()
+    settings.ensure_dirs()
+    name = f"{date.today().isoformat()}-{slugify(slug_or_title)}.notes.json"
+    path = settings.run.research_dir / name
+    payload = {"claims": [c.model_dump() for c in claims]}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Drafts
 # ---------------------------------------------------------------------------
@@ -151,8 +167,6 @@ def draft_front_matter(
             "score": round(outcome.overall_score, 1),
             "blockers": outcome.blockers,
         }
-    if draft.image_briefs:
-        data["image_briefs"] = draft.image_briefs
     return data
 
 
@@ -237,6 +251,17 @@ def save_review_report(draft: Draft, outcome: ReviewOutcome) -> Path:
                     f"{f.problem.replace('|', '/')} | {f.fix.replace('|', '/')} |"
                 )
             lines.append("")
+
+    measurements = next((r.measurements for r in outcome.reports if r.measurements), None)
+    if measurements:
+        lines += ["## Measurements", "", "| Metric | Value |", "|---|---|"]
+        for key in (
+            "avg_sentence_words", "longest_paragraph_sentences", "h2_count",
+            "placeholder_count", "dash_hits", "banned_word_hits",
+        ):
+            if key in measurements:
+                lines.append(f"| {key} | {measurements[key]} |")
+        lines.append("")
 
     if outcome.revision_instructions:
         lines += ["## Outstanding instructions to the writer", "", outcome.revision_instructions, ""]

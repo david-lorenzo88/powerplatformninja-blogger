@@ -84,6 +84,7 @@ Writes `topics/suggestions-<date>.json` and a readable `.md`. Takes 10–20 minu
 ppn write --index 2
 ppn write --index 1 --no-push --no-cover
 ppn write --dossier research/2026-07-28-my-topic.json --index 1
+ppn write --index 1 --notes input/notes/my-slug.md   # field-report mode
 ppn write --index 1 --translate
 ```
 
@@ -93,11 +94,31 @@ ppn write --index 1 --translate
 | `--topic` / `-t` | latest | A specific `suggestions-*.json`. |
 | `--dossier` / `-d` | — | Reuse a saved dossier; skips the Researcher entirely. |
 | `--skip-source-check` | off | Only with `--dossier`. Claims go unverified. |
+| `--notes` | `input/notes/<slug>.md` | Author notes markdown. Present = field-report mode; absent = analysis mode. |
 | `--push` / `--no-push` | `WP_AUTO_PUSH` | |
 | `--cover` / `--no-cover` | `COVER_ENABLED` | |
 | `--translate` / `--no-translate` | `TRANSLATE_ENABLED` | |
 | `--dry-run` | off | Offline stub, exercising both loops. |
 | `--verbose` / `-v` | off | Also shows the `agent_framework` trace. |
+
+##### Author notes: field-report vs analysis
+
+The single highest-value thing you can give a post is five minutes of raw notes on
+what you actually did. Before a run:
+
+```bash
+cp config/author_notes.template.md input/notes/my-slug.md
+$EDITOR input/notes/my-slug.md          # write badly; fragments are fine
+ppn write --index 1                      # picks up input/notes/<slug>.md by default
+```
+
+With notes, the run is **field-report** mode: the normalizer turns them into typed
+author claims (filed to `research/<date>-<slug>.notes.json`), and the Writer may use
+first person, real numbers and real failures — but only where a claim backs them.
+Without notes (or with just the unfilled template), the run is **analysis** mode:
+neutral register, no first person, a lower word target, and V12 satisfied from the
+dossier alone. `--notes <path>` points anywhere. The CLI prints the resulting voice
+mode and claim count in the run summary.
 
 #### `ppn write-topic`
 
@@ -285,17 +306,13 @@ ppn wp push    drafts/<file>.md               # updates in place by slug
 For any other block, `ppn wp preview` prints exactly what would be sent — compare
 it against what the editor produces for the same block by hand.
 
-### `[SCREENSHOT: …]` appears literally in the post
+### An image or `IMAGE:` marker appears in the draft
 
-Old build. The converter now normalises both `![alt](IMAGE:slug)` and
-`[SCREENSHOT: slug] caption` into an empty `core/image` block plus an instruction
-note — a one-click upload slot in the editor. Set
-`WP_SCREENSHOT_PLACEHOLDER=note` if you prefer just the note.
-
-**These are not filled in automatically, and should not be.** A generated image of
-a Microsoft admin centre would be convincing and wrong, on a post whose entire
-positioning is reproducible steps. Cover art is decoration; a screenshot is
-evidence.
+It should not, and the Design Validator blocks it (rule S11) before publish — this
+blog has no in-body images at all. There is no converter path that renders one, so
+a marker that survived to WordPress means a blocker was overridden. Remove it: the
+information in a screenshot belongs in a code block, a table or precise prose. The
+only image is the cover, in front matter.
 
 ### Cover generation returns 400 on MAI
 
@@ -338,11 +355,18 @@ Read the review report first — if the same rule fires every time, the crew is
 telling you something. Then, in order of preference:
 
 1. Fix the rule if it is wrong for your blog (`config/validation_rules.yaml`).
-2. Lower `scoring.pass_threshold` from 82.
+2. Lower `scoring.pass_threshold` from 85.
 3. Raise `PPN_MAX_REVISION_ROUNDS`.
 
-Do not disable `block_on_any_blocker`. The blockers are C03 (unsupported claims)
-and C07 (dropped caveats) — the two rules that keep the blog honest.
+If the same **honesty** or **voice** blocker fires every round, the crew is usually
+right and the material is missing. V12 (specificity floor) and H02/H03 (first
+person and numbers must trace to something) fail when there are no author notes to
+draw on — supply them rather than softening the rule (see below).
+
+Do not disable `block_on_any_blocker`. The blockers include H01 (unsupported
+claims), H03 (invented numbers) and H04 (dropped caveats) — the rules that keep the
+blog honest. If a typography blocker (T01 dash, S11 image) keeps firing, that is a
+code-side detector, not a matter of opinion: fix the draft, not the threshold.
 
 ### A run was `interrupted`
 

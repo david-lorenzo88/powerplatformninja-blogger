@@ -21,12 +21,15 @@ from agent_framework import (
 )
 
 from . import agents as A
-from . import storage
+from . import detectors, storage
 from .models import (
+    AuthorClaim,
+    AuthorClaimSet,
     Draft,
     PostPackage,
     ResearchDossier,
     ReviewOutcome,
+    RuleFinding,
     ScoutReport,
     SourceVerdict,
     TopicSuggestion,
@@ -37,6 +40,105 @@ from .settings import Settings, get_settings
 from .util import as_json, parse_model, user_message, word_count
 
 logger = logging.getLogger("ppn.workflow")
+
+
+# ---------------------------------------------------------------------------
+# Author notes helpers
+# ---------------------------------------------------------------------------
+
+
+def notes_are_filled(text: str) -> bool:
+    """True when the notes file has real content, not just the template.
+
+    Missing file or the unfilled template (headings plus ``<...>`` prompts and
+    empty fences) yields an empty claim list and analysis mode, so this decides
+    whether the normalizer model is worth calling at all.
+    """
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("#", ">", "|", "```", "---")):
+            continue
+        if line.startswith("<") and line.endswith(">"):
+            continue  # an angle-bracket prompt from the template
+        if line in {"-", "*"}:
+            continue
+        if len(line) >= 3:
+            return True
+    return False
+
+
+def _research_brief(topic: TopicSuggestion, notes_text: str = "") -> str:
+    questions = "\n".join(f"- {q}" for q in topic.key_questions) or "- (derive them from the angle)"
+    seeds = "\n".join(f"- {s}" for s in topic.seed_sources) or "- (none supplied; find your own)"
+    notes_block = ""
+    if notes_text.strip():
+        # The error strings and version numbers in the raw notes are the best
+        # search seeds the researcher will get, so hand them the notes as-is.
+        notes_block = (
+            "\n\n<author_notes_raw>\nThe author wrote these notes. Use the error strings, "
+            "version numbers and product names in them as search seeds. Do NOT treat them as "
+            f"verified facts — verify against sources like anything else.\n{notes_text.strip()}\n"
+            "</author_notes_raw>"
+        )
+    return f"""
+<research_brief>
+Title (working): {topic.title}
+Watch area: {topic.watch_area}
+Post format: {topic.post_format}
+Primary keyword: {topic.primary_keyword}
+
+Problem to solve for the reader:
+{topic.problem_statement}
+
+Angle we are taking:
+{topic.angle}
+
+Why this is timely:
+{topic.why_now}
+
+Novelty we are promising:
+{topic.novelty}
+
+Questions the dossier MUST answer:
+{questions}
+
+Seed sources to start from (verify each before citing):
+{seeds}
+</research_brief>{notes_block}
+
+Research this now and return the complete ResearchDossier JSON.
+""".strip()
+
+
+def _author_context(state: RunState, settings: Settings) -> str:
+    """The voice-mode, word-target and author-claim block for a writer message."""
+    fmt = state.topic.post_format if state.topic else "analysis"
+    lo, hi = settings.word_target(fmt, state.voice_mode)
+    if state.author_claims:
+        claims_block = as_json([c.model_dump() for c in state.author_claims])
+    else:
+        claims_block = (
+            "(none — analysis post: no first person anywhere, no invented numbers, "
+            "no anecdotes. Use placeholders if a concrete detail is missing.)"
+        )
+    return (
+        f"<voice_mode>{state.voice_mode}</voice_mode>\n"
+        f"<word_target>{lo} to {hi} words</word_target>\n"
+        f"<author_claims>\n{claims_block}\n</author_claims>"
+    )
+
+
+def _testimony(state: RunState) -> str:
+    """Author claims for the Source Checker: testimony, never to be verified."""
+    if not state.author_claims:
+        return ""
+    return (
+        "\n\n<author_testimony>\nThese are the author's own claims. Do NOT verify them, "
+        "search for them, or fail the dossier because of them. Pass over them.\n"
+        f"{as_json([c.model_dump() for c in state.author_claims])}\n</author_testimony>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +167,15 @@ class RunState:
     revision_round: int = 0
     dossier_path: str = ""
     package: PostPackage | None = None
+    # Author notes: raw text in, typed claims and a voice mode out.
+    notes_text: str = ""
+    author_claims: list[AuthorClaim] = field(default_factory=list)
+    voice_mode: str = "analysis"
+    notes_path: str = ""
+    # Code-side detector output for the current draft, keyed by validator name.
+    code_findings: dict[str, list[RuleFinding]] = field(default_factory=dict)
+    measurements: dict = field(default_factory=dict)
+    prev_finding_ids: set[str] = field(default_factory=set)
 
     def snapshot_outcome(self, approved: bool, instructions: str = "") -> ReviewOutcome:
         scores = [r.score for r in self.reports] or [0]
@@ -170,7 +281,13 @@ class TopicPublisher(Executor):
 
 
 class BriefBuilder(Executor):
-    """Entry point: turns a chosen topic into the researcher's brief."""
+    """Entry point: routes through the notes normalizer, then to the researcher.
+
+    When there are real author notes, they go to the normalizer first, which
+    turns them into typed claims and puts the run in ``field_report`` mode. With
+    no notes (or just the unfilled template) there is nothing to normalise: the
+    run is ``analysis`` and the brief goes straight to the researcher.
+    """
 
     def __init__(self, state: RunState, settings: Settings, id: str = "brief_builder") -> None:
         super().__init__(id)
@@ -182,37 +299,68 @@ class BriefBuilder(Executor):
         self, topic: TopicSuggestion, ctx: WorkflowContext[AgentExecutorRequest]
     ) -> None:
         self.state.topic = topic
-        questions = "\n".join(f"- {q}" for q in topic.key_questions) or "- (derive them from the angle)"
-        seeds = "\n".join(f"- {s}" for s in topic.seed_sources) or "- (none supplied; find your own)"
-        prompt = f"""
-<research_brief>
-Title (working): {topic.title}
-Watch area: {topic.watch_area}
-Post format: {topic.post_format}
-Primary keyword: {topic.primary_keyword}
 
-Problem to solve for the reader:
-{topic.problem_statement}
+        if notes_are_filled(self.state.notes_text):
+            logger.info("author notes present — normalising into claims (field_report)")
+            prompt = (
+                "Normalise these author notes into typed author claims. Extract only what is "
+                "written; invent nothing.\n\n<author_notes>\n"
+                f"{self.state.notes_text.strip()}\n</author_notes>"
+            )
+            await ctx.send_message(
+                AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
+                target_id=A.NOTES_NORMALIZER,
+            )
+            return
 
-Angle we are taking:
-{topic.angle}
+        # No notes: analysis mode, empty claim set, straight to research.
+        self.state.author_claims = []
+        self.state.voice_mode = "analysis"
+        self.state.notes_path = str(storage.save_notes([], topic.slug or topic.title))
+        logger.info("no author notes — analysis mode")
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(_research_brief(topic, self.state.notes_text))],
+                should_respond=True,
+            ),
+            target_id=A.RESEARCHER,
+        )
 
-Why this is timely:
-{topic.why_now}
 
-Novelty we are promising:
-{topic.novelty}
+class NotesGate(Executor):
+    """Parses the normalizer's claims, files them, and briefs the researcher."""
 
-Questions the dossier MUST answer:
-{questions}
+    def __init__(self, state: RunState, id: str = "notes_gate") -> None:
+        super().__init__(id)
+        self.state = state
 
-Seed sources to start from (verify each before citing):
-{seeds}
-</research_brief>
+    @handler
+    async def receive(
+        self, response: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
+    ) -> None:
+        try:
+            result = parse_model(response, AuthorClaimSet)
+            claims = result.claims
+        except ValueError as exc:
+            # A broken normalization must not sink the run — fall back to analysis.
+            logger.warning("author notes unparsable, continuing in analysis mode: %s", exc)
+            claims = []
 
-Research this now and return the complete ResearchDossier JSON.
-""".strip()
-        await ctx.send_message(AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True))
+        self.state.author_claims = claims
+        self.state.voice_mode = "field_report" if claims else "analysis"
+        topic = self.state.topic
+        assert topic is not None
+        self.state.notes_path = str(storage.save_notes(claims, topic.slug or topic.title))
+        logger.info(
+            "author claims: %d (%s)", len(claims), self.state.voice_mode
+        )
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(_research_brief(topic, self.state.notes_text))],
+                should_respond=True,
+            ),
+            target_id=A.RESEARCHER,
+        )
 
 
 class DossierEntry(Executor):
@@ -253,7 +401,7 @@ class DossierEntry(Executor):
         if not self.skip_source_check:
             prompt = (
                 "Verify this dossier against the source policy. Be adversarial.\n\n"
-                f"<dossier>\n{as_json(payload.dossier)}\n</dossier>"
+                f"<dossier>\n{as_json(payload.dossier)}\n</dossier>{_testimony(self.state)}"
             )
             await ctx.send_message(
                 AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
@@ -275,6 +423,8 @@ Write the first draft of this post.
 <dossier>
 {as_json(payload.dossier)}
 </dossier>
+
+{_author_context(self.state, self.settings)}
 
 Return the complete Draft JSON. Set revision to 1.
 """.strip()
@@ -306,7 +456,7 @@ class DossierGate(Executor):
         )
         prompt = (
             "Verify this dossier against the source policy. Be adversarial.\n\n"
-            f"<dossier>\n{as_json(dossier)}\n</dossier>"
+            f"<dossier>\n{as_json(dossier)}\n</dossier>{_testimony(self.state)}"
         )
         await ctx.send_message(
             AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
@@ -380,6 +530,8 @@ Write the first draft of this post.
 {as_json(dossier)}
 </dossier>{caveat}
 
+{_author_context(self.state, self.settings)}
+
 Return the complete Draft JSON. Set revision to 1.
 """.strip()
         await ctx.send_message(
@@ -389,11 +541,19 @@ Return the complete Draft JSON. Set revision to 1.
 
 
 class DraftGate(Executor):
-    """Parses the draft and fans it out to both validators."""
+    """Parses the draft, runs the code-side detectors, briefs both validators.
 
-    def __init__(self, state: RunState, id: str = "draft_gate") -> None:
+    The two validators judge different families and so get different payloads:
+    the Content Validator (honesty, voice, content) gets the dossier and the
+    author claims; the Design Validator (typography, structure, SEO) gets
+    neither. Both get the pre-computed detector findings and measurements for
+    their own families, so the model never re-counts what a regex already knows.
+    """
+
+    def __init__(self, state: RunState, settings: Settings, id: str = "draft_gate") -> None:
         super().__init__(id)
         self.state = state
+        self.settings = settings
 
     @handler
     async def receive(
@@ -407,11 +567,81 @@ class DraftGate(Executor):
             draft.read_minutes = max(1, round(draft.word_count / wpm))
         draft.revision = draft.revision or (self.state.revision_round + 1)
         self.state.draft = draft
-        logger.info("draft r%d ready: %d words", draft.revision, draft.word_count)
 
         dossier = self.state.dossier
-        payload = f"""
-Validate this draft.
+        dossier_blob = as_json(dossier) if dossier else ""
+
+        content_run = detectors.run_detectors(
+            draft.markdown,
+            groups=self.settings.CONTENT_GROUPS,
+            settings=self.settings,
+            dossier_blob=dossier_blob,
+            author_claims=self.state.author_claims,
+            slug=draft.slug,
+        )
+        design_run = detectors.run_detectors(
+            draft.markdown,
+            groups=self.settings.DESIGN_GROUPS,
+            settings=self.settings,
+            slug=draft.slug,
+        )
+        self.state.code_findings = {
+            "content": content_run.findings,
+            "design": design_run.findings,
+        }
+        self.state.measurements = content_run.measurements  # same for both
+        logger.info(
+            "draft r%d ready: %d words, %d code findings (%d blockers)",
+            draft.revision,
+            draft.word_count,
+            len(content_run.findings) + len(design_run.findings),
+            sum(
+                1
+                for f in content_run.findings + design_run.findings
+                if f.severity == "blocker"
+            ),
+        )
+
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(self._payload(draft, "content", content_run, dossier))],
+                should_respond=True,
+            ),
+            target_id=A.CONTENT_VALIDATOR,
+        )
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(self._payload(draft, "design", design_run, None))],
+                should_respond=True,
+            ),
+            target_id=A.DESIGN_VALIDATOR,
+        )
+
+    def _payload(
+        self,
+        draft: Draft,
+        validator: str,
+        run: detectors.DetectorRun,
+        dossier: ResearchDossier | None,
+    ) -> str:
+        precomputed = (
+            as_json([f.model_dump() for f in run.findings]) if run.findings else "(none)"
+        )
+        hints = f"\n\n<detector_hints>\n{run.hints}\n</detector_hints>" if run.hints else ""
+        extra = ""
+        if validator == "content":
+            claims = (
+                as_json([c.model_dump() for c in self.state.author_claims])
+                if self.state.author_claims
+                else "(none — analysis post)"
+            )
+            extra = (
+                f"\n\n<voice_mode>{self.state.voice_mode}</voice_mode>"
+                f"\n\n<author_claims>\n{claims}\n</author_claims>"
+                f"\n\n<dossier>\n{as_json(dossier) if dossier else '{}'}\n</dossier>"
+            )
+        return f"""
+Validate this draft. You own the {validator} families.
 
 <draft_metadata>
 {as_json(draft.model_dump(exclude={'markdown'}))}
@@ -421,15 +651,17 @@ Validate this draft.
 {draft.markdown}
 </draft_markdown>
 
-<dossier>
-{as_json(dossier) if dossier else '{}'}
-</dossier>
+<precomputed_findings>
+These were found by the code-side detectors. Include them; do not re-derive them.
+{precomputed}
+</precomputed_findings>
 
-Return your ValidationReport JSON.
+<measurements>
+{as_json(run.measurements)}
+</measurements>{hints}{extra}
+
+Return your ValidationReport JSON with validator="{validator}".
 """.strip()
-        await ctx.send_message(
-            AgentExecutorRequest(messages=[user_message(payload)], should_respond=True)
-        )
 
 
 class ReviewGate(Executor):
@@ -464,7 +696,10 @@ class ReviewGate(Executor):
                         summary=f"Validator output could not be parsed: {exc}"[:500],
                     )
                 )
-        self.state.reports = reports
+
+        # Merge the code-side detector findings into the matching report so a
+        # blocker a regex raised gates the run exactly like a model blocker.
+        self._merge_code_findings(reports)
 
         blockers = [f for r in reports for f in r.findings if f.severity == "blocker"]
         majors = [f for r in reports for f in r.findings if f.severity == "major"]
@@ -496,10 +731,13 @@ class ReviewGate(Executor):
 The validators reviewed revision {self.state.revision_round} of your draft. Address every
 blocker and major finding, then return the full corrected Draft JSON with
 revision={self.state.revision_round + 1} and a changelog describing what you changed.
+Change nothing factual while fixing style.
 
 <validator_findings>
 {instructions}
 </validator_findings>
+
+{_author_context(self.state, self.settings)}
 
 <dossier>
 {as_json(dossier) if dossier else '{}'}
@@ -509,6 +747,36 @@ revision={self.state.revision_round + 1} and a changelog describing what you cha
             AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
             target_id=A.WRITER,
         )
+
+    def _merge_code_findings(self, reports: list[ValidationReport]) -> None:
+        """Fold the pre-computed detector findings into the matching reports.
+
+        Also attaches the measured values and computes which rule ids were
+        resolved since the last round, then records this round's findings so the
+        next round can diff against them.
+        """
+        by_name = {r.validator: r for r in reports}
+        for validator, code in self.state.code_findings.items():
+            report = by_name.get(validator)
+            if report is None:
+                # Model mislabelled the validator; fall back to any report that
+                # is not already claimed, else the first one.
+                report = next((r for r in reports if r.validator not in self.state.code_findings), None)
+                report = report or (reports[0] if reports else None)
+            if report is None:
+                continue
+            seen = {(f.rule_id, f.location) for f in report.findings}
+            for finding in code:
+                if (finding.rule_id, finding.location) not in seen:
+                    report.findings.append(finding)
+
+        current_ids = {f.rule_id for r in reports for f in r.findings}
+        resolved = sorted(self.state.prev_finding_ids - current_ids)
+        for report in reports:
+            report.measurements = report.measurements or self.state.measurements
+            report.resolved_since_last_iteration = resolved
+        self.state.prev_finding_ids = current_ids
+        self.state.reports = reports
 
 
 def _revision_text(reports: list[ValidationReport]) -> str:
@@ -563,6 +831,9 @@ class Finalizer(Executor):
             draft=draft,
             dossier=dossier,
             outcome=outcome,
+            voice_mode=self.state.voice_mode,
+            author_claims=list(self.state.author_claims),
+            notes_path=self.state.notes_path,
             markdown_path=str(markdown_path),
             report_path=str(report_path),
         )
@@ -668,6 +939,20 @@ class TranslationGate(Executor):
         if not translated.read_minutes:
             wpm = int(get_settings().structure.get("reading_speed_wpm", 200)) or 200
             translated.read_minutes = max(1, round(translated.word_count / wpm))
+
+        # Spanish prose reaches for the raya by default, so run the typography
+        # detectors that matter most (T01 dash ban, T02 spaced-hyphen, T04
+        # straight quotes) against the translated output. These never block a
+        # finished English post; they are logged so a bad translation is visible.
+        typo = detectors.run_detectors(
+            translated.markdown, groups=("typography",), settings=self.settings
+        )
+        offenders = [f for f in typo.findings if f.rule_id in {"T01", "T02", "T04"}]
+        if offenders:
+            logger.warning(
+                "translation typography issues: %s",
+                ", ".join(f"{f.rule_id} {f.location!r}" for f in offenders[:5]),
+            )
 
         package.translation = translated
         package.translation_language = profile.get("target_code", "es")

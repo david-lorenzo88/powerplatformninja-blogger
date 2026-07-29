@@ -7,11 +7,13 @@ models via ``response_format``, so the workflow never has to guess at prose.
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-Severity = Literal["blocker", "major", "minor"]
+# "info" was added with the v2 ruleset (rule T03 is info): a finding worth
+# surfacing that never deducts and never blocks.
+Severity = Literal["blocker", "major", "minor", "info"]
 TrustTier = Literal[
     "official", "standards", "community_trusted", "vendor", "community_unverified", "unknown"
 ]
@@ -62,6 +64,45 @@ class TopicSuggestionSet(BaseModel):
     generated_on: str
     suggestions: list[TopicSuggestion] = Field(default_factory=list)
     discarded: list[str] = Field(default_factory=list, description="Ideas rejected and why")
+
+
+# ---------------------------------------------------------------------------
+# Author notes
+#
+# The one place the Writer is allowed to draw first person, real numbers and
+# real failures from. Raw notes are normalised into these typed claims by the
+# notes normalizer, so downstream agents move a list of testimony rather than
+# free prose. Author claims are testimony: the Source Checker passes them
+# through untouched and never fails a run on them.
+# ---------------------------------------------------------------------------
+
+
+AuthorClaimType = Literal[
+    "measurement", "failure", "limit", "environment", "exact_string", "opinion", "context"
+]
+
+
+class AuthorClaim(BaseModel):
+    id: str = Field(..., description="Short stable id, e.g. A1 — referenced by the Writer")
+    type: AuthorClaimType
+    text: str = Field(..., description="The claim, taken from the notes, never invented")
+    scope: str = Field("", description="Where it holds: tenant, region, date, environment type")
+    verbatim: bool = Field(
+        False, description="True when `text` must be reproduced exactly (error strings, names)"
+    )
+    author_attested: bool = Field(
+        True, description="Always true — this is the author's own testimony, not researched"
+    )
+
+
+class AuthorClaimSet(BaseModel):
+    """What the normalizer produces from the raw notes file."""
+
+    claims: list[AuthorClaim] = Field(default_factory=list)
+    # Set in code, not by the model: field_report when there are real notes,
+    # analysis when the file is missing or still the unfilled template.
+    voice_mode: Literal["field_report", "analysis"] = "analysis"
+    summary: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +198,6 @@ class Draft(BaseModel):
             "matter — shapes, geometry and light. Never any text, logos or UI."
         ),
     )
-    image_briefs: list[str] = Field(default_factory=list, description="What screenshots to capture")
     internal_links: list[str] = Field(default_factory=list)
     word_count: int = 0
     read_minutes: int = 0
@@ -185,6 +225,14 @@ class ValidationReport(BaseModel):
     findings: list[RuleFinding] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     summary: str = ""
+    # Filled by the code-side detectors, not the model: numeric facts the model
+    # must never be asked to count (avg_sentence_words, section_word_counts,
+    # h2_count, dash_hits, banned_word_hits, ...). See the output_schema block
+    # in validation_rules.yaml.
+    measurements: dict[str, Any] = Field(default_factory=dict)
+    resolved_since_last_iteration: list[str] = Field(
+        default_factory=list, description="Rule ids that fired last round and no longer do"
+    )
 
 
 class ReviewOutcome(BaseModel):
@@ -230,6 +278,9 @@ class PostPackage(BaseModel):
     draft: Draft
     dossier: ResearchDossier
     outcome: ReviewOutcome
+    voice_mode: str = "analysis"
+    author_claims: list[AuthorClaim] = Field(default_factory=list)
+    notes_path: str = ""
     markdown_path: str = ""
     report_path: str = ""
     cover: CoverImage | None = None

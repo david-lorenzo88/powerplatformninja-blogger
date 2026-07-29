@@ -93,11 +93,6 @@ class WordPressSettings:
     code_language_attribute: bool = field(
         default_factory=lambda: _env_bool("WP_CODE_LANGUAGE_ATTR", True)
     )
-    # "image" = an empty core/image block you click to upload, with the capture
-    # instruction beside it. "note" = the instruction paragraph only.
-    screenshot_placeholder: str = field(
-        default_factory=lambda: _env("WP_SCREENSHOT_PLACEHOLDER", "image").lower()
-    )
 
     @property
     def api_base(self) -> str:
@@ -359,22 +354,65 @@ class Settings:
     def source_policy(self) -> dict[str, Any]:
         return dict(self.sources.get("policy", {}))
 
+    # The six rule families in validation_rules.yaml, in the order the loop
+    # governance block checks them. Group name is the family minus "_rules".
+    RULE_GROUPS = (
+        "honesty_rules",
+        "typography_rules",
+        "voice_rules",
+        "content_rules",
+        "structure_rules",
+        "seo_rules",
+    )
+
+    # Which validator owns which families. Content judges honesty, voice and
+    # content; Design judges typography, structure and SEO.
+    CONTENT_GROUPS = ("honesty", "voice", "content")
+    DESIGN_GROUPS = ("typography", "structure", "seo")
+
     def all_rules(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for group in ("content_rules", "structure_rules", "seo_rules"):
+        for group in self.RULE_GROUPS:
             for rule in self.validation.get(group, []):
                 out.append({**rule, "group": group.replace("_rules", "")})
         return out
 
-    def rules_text(self, groups: tuple[str, ...] = ("content", "structure", "seo")) -> str:
+    def rules_text(self, groups: tuple[str, ...] = CONTENT_GROUPS + DESIGN_GROUPS) -> str:
         lines: list[str] = []
         for rule in self.all_rules():
             if rule["group"] not in groups:
                 continue
-            lines.append(f"- [{rule['id']}] ({rule['severity']}) {rule['rule'].strip()}")
+            auto = " [auto]" if rule.get("auto") else ""
+            lines.append(f"- [{rule['id']}] ({rule['severity']}){auto} {rule['rule'].strip()}")
             if hint := rule.get("check_hint"):
                 lines.append(f"    how to check: {hint.strip()}")
+            if fix := rule.get("fix_hint"):
+                lines.append(f"    fix: {fix.strip()}")
         return "\n".join(lines)
+
+    @property
+    def banned_headings(self) -> list[str]:
+        return list(self.structure.get("banned_headings", []))
+
+    @property
+    def voice_modes(self) -> dict[str, Any]:
+        """The field_report / analysis definitions from blog_profile.yaml."""
+        return dict(self.blog_profile.get("voice_mode", {}))
+
+    @property
+    def post_formats(self) -> list[dict[str, Any]]:
+        return list(self.blog_profile.get("post_formats", []))
+
+    def word_target(self, post_format: str, voice_mode: str = "field_report") -> tuple[int, int]:
+        """Target word band for a format, scaled down for analysis posts."""
+        band = (2000, 2800)
+        for fmt in self.post_formats:
+            if fmt.get("id") == post_format:
+                lo, hi = fmt.get("target_words", band)
+                band = (int(lo), int(hi))
+                break
+        factor = float(self.voice_modes.get(voice_mode, {}).get("word_target_factor", 1.0))
+        return round(band[0] * factor), round(band[1] * factor)
 
     def ensure_dirs(self) -> None:
         for path in (self.run.output_dir, self.run.research_dir, self.run.topics_dir):

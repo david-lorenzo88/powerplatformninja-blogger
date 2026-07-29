@@ -30,6 +30,7 @@ The short version is below.
 | **Feed Scout** | fast | curated RSS, fetch, blog search | `ScoutReport` |
 | **Docs Scout** | fast | Microsoft Learn search, fetch | `ScoutReport` |
 | **Topic Editor** | reasoning | blog search | `TopicSuggestionSet` |
+| **Notes Normalizer** | fast | — | `AuthorClaimSet` |
 | **Researcher** | reasoning | Learn, web search, fetch, feeds, trust check | `ResearchDossier` |
 | **Source Checker** | reasoning | URL reachability, fetch, trust check, Learn | `SourceVerdict` |
 | **Writer** | reasoning | blog search | `Draft` |
@@ -171,9 +172,11 @@ ppn preflight                   # one cheap real call per request shape
 ppn suggest                     # scan news/feeds/docs → topics/suggestions-<date>.md
 ppn write --index 1             # full pipeline for suggestion #1
 ppn write --index 1 -d research/2026-07-28-x.json   # reuse saved research
+ppn write --index 1 --notes input/notes/my-slug.md  # field-report mode from your notes
 ppn write --index 1 --translate # ...and produce the Spanish version too
 ppn run                         # suggest, then write the top-ranked topic
 ppn rules                       # print the rulebook the validators enforce
+ppn config reload               # re-import config/ into a running server's database
 
 ppn write-topic --title "Elastic tables: what you give up" \
                 --area dataverse --format deep-dive \
@@ -203,22 +206,39 @@ used at [blog.azurebrains.com](https://blog.azurebrains.com):
 
 - Two framing paragraphs instead of a TL;DR block.
 - `## Contents` — a linked table of contents matching the H2s exactly.
-- 8–11 sections, **all H2, no H3**. Descriptive headings ("What…", "Why…", "How…");
+- 8 to 12 sections, **all H2, no H3**. Descriptive headings ("What…", "Why…", "How…");
   generic ones are rejected.
 - `## What to watch carefully` as the penultimate section — the critical read is
   mandatory, not decorative.
-- Closing section: `## Conclusion` or `## My take`, an opinion rather than a recap.
+- Closing section: `## My take` (preferred) or `## Conclusion` for a pure news post,
+  an opinion rather than a recap.
 - `## Sources` — markdown links, no dates, no numbering.
 - **No inline citations.** The body reads clean.
+- **No in-body images of any kind.** No screenshots, no diagrams, no placeholders. A
+  screenshot's information belongs in a code block, a table or three precise sentences.
+  The only image is the cover, in front matter. Any image in the body is a blocker
+  (rule S11).
+- **No dashes and no curly quotes.** The typography rules (T family) are enforced by
+  code-side regex detectors before either validator runs.
 
-That last point does not weaken verification. The Source Checker validates the
-*dossier*, before a word is written, so claim-to-source traceability lives there. The
-Content Validator then checks the draft sentence by sentence against the dossier
-(rule C03) and treats a dropped caveat as a blocker (C07). You lose the visual clutter,
-not the guard rail.
+That does not weaken verification. The Source Checker validates the *dossier*, before a
+word is written, so claim-to-source traceability lives there. The Content Validator then
+checks the draft sentence by sentence against the dossier (rule H01), traces every number
+to the dossier or the author notes (H03), and treats a dropped caveat as a blocker (H04).
+You lose the visual clutter, not the guard rail.
 
-Change any of this in `config/blog_profile.yaml` under `structure:` — the writer prompt
-and both validators read it.
+### Author notes and voice mode
+
+The one thing the crew cannot invent is what *you* did. Drop raw notes at
+`input/notes/<slug>.md` (copy `config/author_notes.template.md`) — five minutes of what
+you built, measured and broke. A normalizer turns them into typed, id'd author claims,
+and the run switches to **field_report** mode: the Writer may use first person, real
+numbers and real failures, but only where a claim backs them. No notes means **analysis**
+mode: neutral register, no first person, a lower word target, and the specificity floor
+satisfied from the dossier alone. Point elsewhere with `--notes <path>`.
+
+Change any of this in `config/blog_profile.yaml` under `structure:` and `voice_mode:` —
+the writer prompt and both validators read it.
 
 ### Translation
 
@@ -330,11 +350,9 @@ drafts/2026-07-27-<slug>.package.json everything, including the WordPress post i
 ```
 
 Markdown is converted to real **Gutenberg blocks** on push — headings, lists, code blocks
-with language, tables, quotes and separators, so the post opens as editable blocks. Image
-placeholders become an **empty `core/image` block** plus a capture note, which renders in the
-editor as a clickable upload slot: drop the real screenshot in, delete the note. Nothing
-fabricates a screenshot of a Microsoft admin centre — cover art is decoration, a screenshot
-is evidence.
+with language, tables, quotes and separators, so the post opens as editable blocks. The
+body carries no images at all (rule S11 blocks them), so the converter has no image path;
+the only image is the cover, uploaded separately and set as the featured image.
 
 Re-running the same slug **updates** the existing WordPress draft instead of creating a
 duplicate (tracked in `.ppn_state/wp_posts.json`, with a slug lookup as fallback).
@@ -350,8 +368,9 @@ All behaviour lives in `config/` — no code changes needed.
 | `blog_profile.yaml` | Audience, positioning, categories, post formats and word targets |
 | `topics.yaml` | Watch areas, keywords, weights, freshness windows, exclusions |
 | `sources.yaml` | RSS feeds, trust tiers per domain, blocked domains, source policy |
-| `validation_rules.yaml` | The rulebook, severities and the pass threshold |
-| `style_guide.md` | Voice, structure template, banned phrases, citation style |
+| `validation_rules.yaml` | The rulebook: six rule families, severities, detectors, the pass threshold |
+| `style_guide.md` | Voice, structure template, banned phrases, typography, citation style |
+| `author_notes.template.md` | Copy to `input/notes/<slug>.md` and fill in before a run |
 
 Two things are worth knowing:
 

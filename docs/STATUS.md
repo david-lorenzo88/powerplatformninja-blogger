@@ -118,8 +118,10 @@ Production is a single process: `npm run build` → `ui/dist`, served by `ppn se
 `html.escape` turning quotes into `&quot;`, a `class` attribute on `<code>`, and an
 unescaped `[`. Fixed in `escape_code()`; regression tests assert the serialisation.
 
-**Screenshot markers.** The Writer drifts into `[SCREENSHOT: slug] caption`; the
-converter normalises both forms into an empty `core/image` block plus a capture note.
+**No in-body images (editorial v2).** The blog carries no in-body images at all;
+rule S11 blocks any, and the Markdown-to-Gutenberg converter has no image path. The
+old `[SCREENSHOT: ...]` / `![alt](IMAGE:slug)` handling and the empty `core/image`
+slot are gone.
 
 **`temperature` on `gpt-5`.** Killed a production run six minutes in. `supports_temperature`
 infers from the model name; `ppn preflight` verifies it. This is why `--dossier` exists.

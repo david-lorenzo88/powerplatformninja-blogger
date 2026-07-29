@@ -77,6 +77,28 @@ async def seed_from_yaml_if_empty() -> bool:
     return True
 
 
+async def reimport_from_yaml(note: str = "Re-imported from config/") -> list[tuple[str, int]]:
+    """Push the current ``config/`` files into the DB as new versions.
+
+    ``seed_from_yaml_if_empty`` only fires on the very first start, so once the
+    database is authoritative a git-only config swap never reaches a running
+    server. ``ppn config reload`` calls this to append each file as a new
+    version, so the new editorial ruleset takes effect without wiping history.
+    """
+    source = YamlConfigSource(CONFIG_DIR)
+    out: list[tuple[str, int]] = []
+    for name, fmt in DOCUMENTS.items():
+        if fmt == "markdown":
+            content = source.get_text(name)
+        else:
+            content = yaml.safe_dump(
+                source.get_mapping(name), sort_keys=False, allow_unicode=True
+            )
+        row = await save_document(name, content, note=note)
+        out.append((name, row.version))
+    return out
+
+
 async def save_document(name: str, content: str, note: str = "") -> ConfigDocument:
     """Append a new version. Validates YAML before accepting it."""
     if name not in DOCUMENTS:

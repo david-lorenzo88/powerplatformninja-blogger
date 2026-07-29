@@ -20,6 +20,8 @@ from agent_framework import BaseChatClient, ChatResponse, ChatResponseUpdate, Co
 from pydantic import BaseModel
 
 from .models import (
+    AuthorClaim,
+    AuthorClaimSet,
     Citation,
     Claim,
     Draft,
@@ -36,15 +38,19 @@ from .models import (
 
 TODAY = date.today().isoformat()
 
+# The sample is the spec for the house shape and the v2 typography rules, so it
+# is written to pass every auto detector: no dash characters, no in-body images,
+# no first person (analysis register), contractions present, and every measured
+# claim traceable to the stub dossier.
 _SAMPLE_MARKDOWN = """# Elastic tables in Dataverse: what you give up to scale
 
 Standard Dataverse tables start to hurt past a few million rows, and the usual
-answer — partitioning — does not help, because the throttling limits apply per
-environment rather than per table.
+answer (partitioning) doesn't help. The throttling limits apply per environment,
+not per table, so more partitions buy nothing.
 
 Elastic tables solve that problem, but they take several relational features with
-them, and you are probably using some of them. Here is the full list, measured in
-a real tenant, plus a migration checklist.
+them, and you're probably using some of them. Here is the full list, plus a
+migration checklist you can follow.
 
 ## Contents
 - [What elastic tables actually are](#what-elastic-tables-actually-are)
@@ -60,11 +66,12 @@ a real tenant, plus a migration checklist.
 ## What elastic tables actually are
 
 Dataverse tables backed by distributed storage that scales writes horizontally, in
-exchange for giving up part of the relational model.
+exchange for giving up part of the relational model. You trade joins for throughput.
 
 ## Why partitioning a standard table solves nothing
 
-Request limits are allocated per user per 24 hours, not per table.
+Request limits are allocated per user, per rolling day, not per table. Splitting one
+big table into ten changes nothing, because the ceiling was never the table.
 
 ## Which features stop working
 
@@ -78,37 +85,44 @@ Request limits are allocated per user per 24 hours, not per table.
 
 ## How to model the partition key
 
+Pick a value that spreads writes evenly and that you already filter on. A date
+bucket works well for time-series data.
+
 ```powerfx
 Set(varPartition, Text(Today(), "yyyy-mm"))
 ```
 
 ## How to move the data without downtime
 
+Export the schema and the data, then import into the elastic table in a second
+environment before you cut over.
+
 ```bash
 pac data export --schemaFile schema.xml --dataFile data.zip
 ```
 
-![Elastic table configuration screen in the maker portal](IMAGE:elastic-table-config)
-
 ## What changes for your plugins and flows
 
-The plugin pipeline is unchanged, but review any synchronous step that assumes
-server-side calculated aggregates.
+The plugin pipeline doesn't change, but review any synchronous step that assumes
+server-side calculated aggregates. Those aggregates aren't there anymore.
 
 ## Licensing and capacity impact
 
-Capacity consumption is measured the same way as for standard tables.
+Capacity consumption is measured the same way as for standard tables, so a move
+here won't blow up the bill on its own.
 
 ## What to watch carefully
 
-- Parts of the capability were still preview when this was written.
-- There is no easy way back: returning to a standard table means remodelling.
-- The limits documentation changes often; re-check it before you size anything.
+Parts of the capability shift between preview and GA, so check the status before
+you size anything. There's no easy way back: returning to a standard table means
+remodelling from scratch. The limits documentation changes often, and the number
+that bit a project last quarter may not be the number today.
 
 ## My take
 
 Use elastic tables when write throughput is the real bottleneck and you can live
-without relational aggregation. If you are unsure, do not migrate yet.
+without relational aggregation. If you're unsure, don't migrate yet. The feature
+earns its place in a narrow band of high-write workloads, and nowhere else.
 
 ## Sources
 
@@ -119,12 +133,12 @@ without relational aggregation. If you are unsure, do not migrate yet.
 _SAMPLE_MARKDOWN_ES = """# Elastic tables en Dataverse: lo que pierdes por escalar
 
 Las tablas estándar de Dataverse empiezan a doler por encima de unos millones de
-filas, y la respuesta habitual —particionar— no ayuda, porque los límites de
-throttling se aplican por entorno y no por tabla.
+filas, y la respuesta habitual (particionar) no ayuda. Los límites de throttling se
+aplican por entorno y no por tabla, así que más particiones no compran nada.
 
 Las elastic tables resuelven ese problema, pero se llevan por delante varias
 funcionalidades relacionales que probablemente estés usando. Aquí tienes la lista
-completa, medida en un tenant real, y una checklist de migración.
+completa y una checklist de migración que puedes seguir.
 
 ## Contenido
 - [Qué son realmente las elastic tables](#que-son-realmente-las-elastic-tables)
@@ -144,7 +158,8 @@ escritura horizontalmente, a cambio de renunciar a parte del modelo relacional.
 
 ## Por qué particionar una tabla estándar no resuelve nada
 
-Los límites de peticiones se asignan por usuario y por 24 horas, no por tabla.
+Los límites de peticiones se asignan por usuario y por día, no por tabla. Partir una
+tabla grande en diez no cambia nada, porque el techo nunca fue la tabla.
 
 ## Qué funcionalidades dejan de funcionar
 
@@ -158,37 +173,42 @@ Los límites de peticiones se asignan por usuario y por 24 horas, no por tabla.
 
 ## Cómo modelar la partition key
 
+Elige un valor que reparta la escritura de forma uniforme y por el que ya filtres.
+Un bucket de fecha funciona bien para datos de serie temporal.
+
 ```powerfx
 Set(varPartition, Text(Today(), "yyyy-mm"))
 ```
 
 ## Cómo mover los datos sin cortes
 
+Exporta el esquema y los datos, y luego impórtalos en la elastic table en un segundo
+entorno antes de hacer el cambio.
+
 ```bash
 pac data export --schemaFile schema.xml --dataFile data.zip
 ```
 
-![Pantalla de configuración de una elastic table en el portal de creador](IMAGE:elastic-table-config)
-
 ## Qué cambia para tus plugins y flows
 
 El pipeline de plugins no cambia, pero revisa cualquier paso síncrono que asuma
-agregados calculados en servidor.
+agregados calculados en servidor. Esos agregados ya no están.
 
 ## Impacto en licenciamiento y capacidad
 
-El consumo de capacidad se mide igual que en las tablas estándar.
+El consumo de capacidad se mide igual que en las tablas estándar, así que un cambio
+aquí no dispara la factura por sí solo.
 
 ## Lo que conviene observar con cautela
 
-- Parte de la funcionalidad seguía en preview cuando se escribió esto.
-- No hay vuelta atrás sencilla: volver a una tabla estándar implica remodelar.
-- La documentación de límites cambia a menudo; revísala antes de dimensionar.
+Parte de la funcionalidad se mueve entre preview y GA, así que revisa el estado antes
+de dimensionar. No hay vuelta atrás sencilla: volver a una tabla estándar implica
+remodelar desde cero. La documentación de límites cambia a menudo.
 
 ## Mi lectura
 
-Usa elastic tables cuando el cuello de botella real sea el throughput de escritura
-y puedas vivir sin agregación relacional. Si dudas, no migres todavía.
+Usa elastic tables cuando el cuello de botella real sea el throughput de escritura y
+puedas vivir sin agregación relacional. Si dudas, no migres todavía.
 
 ## Fuentes
 
@@ -309,6 +329,38 @@ def _dossier(clean: bool) -> ResearchDossier:
     )
 
 
+def _author_claims() -> AuthorClaimSet:
+    """Canned normalizer output for a populated notes file."""
+    return AuthorClaimSet(
+        claims=[
+            AuthorClaim(
+                id="A1",
+                type="measurement",
+                text="The unfiltered FetchXML returned about 40,000 rows in 11 seconds.",
+                scope="my tenant, managed environment, 14 July",
+            ),
+            AuthorClaim(
+                id="A2",
+                type="failure",
+                text="Turning on the elastic option in the designer had no effect until the table was recreated.",
+                scope="my tenant",
+            ),
+            AuthorClaim(
+                id="A3",
+                type="exact_string",
+                text="The error was 'The entity does not support rollup attributes'.",
+                verbatim=True,
+            ),
+            AuthorClaim(
+                id="A4",
+                type="opinion",
+                text="I would only ship this for a genuinely high-write table, not as a default.",
+            ),
+        ],
+        summary="Four claims: one measurement, one failure, one exact string, one opinion.",
+    )
+
+
 def _source_verdict(passed: bool) -> SourceVerdict:
     if passed:
         return SourceVerdict(
@@ -355,11 +407,10 @@ def _draft(revision: int) -> Draft:
             "Glowing wireframe data tables splitting apart into thousands of light shards that "
             "stream into a dark distributed lattice, hot cyan and magenta rim light, volumetric haze."
         ),
-        image_briefs=["Maker portal screen showing the elastic table option"],
         internal_links=["https://powerplatformninja.com/dataverse-performance"],
         word_count=0,
         revision=revision,
-        changelog="" if revision == 1 else "Addressed C03 and S03 findings.",
+        changelog="" if revision == 1 else "Addressed H01 and S03 findings.",
     )
 
 
@@ -396,11 +447,15 @@ def _validation(validator: str, strict: bool) -> ValidationReport:
         passed=False,
         findings=[
             RuleFinding(
-                rule_id="C03" if validator == "content" else "S03",
+                rule_id="H01" if validator == "content" else "S03",
                 severity="blocker",
-                location="## Gotchas and limits",
-                problem="A limit is stated without an inline citation.",
-                fix="Cite S1 immediately after the rollup column sentence.",
+                location="## Which features stop working",
+                problem="A statement is not traceable to a dossier claim."
+                if validator == "content"
+                else "The Contents index does not match the H2 order.",
+                fix="Trace the sentence to a dossier claim or drop it."
+                if validator == "content"
+                else "Reorder the Contents entries to match the sections.",
             )
         ],
         strengths=["Clear problem statement"],
@@ -434,6 +489,8 @@ class StubChatClient(BaseChatClient):
 
         if model is ScoutReport:
             return _scout_report(f"scout-{self._bump('scout')}")
+        if model is AuthorClaimSet:
+            return _author_claims()
         if model is TopicSuggestionSet:
             return _topic_set()
         if model is ResearchDossier:
