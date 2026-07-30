@@ -34,6 +34,7 @@ async def api(tmp_path, monkeypatch):
     from ppn_blogger.testing import stub_clients
 
     real_discover, real_write = wf.discover_topics, wf.write_post
+    real_write_from_dossier = wf.write_post_from_dossier
 
     async def stub_discover(instruction="", **kw):
         kw.setdefault("clients", stub_clients(exercise_loops=False))
@@ -47,8 +48,15 @@ async def api(tmp_path, monkeypatch):
         kw["make_cover"] = False
         return await real_write(topic, **kw)
 
+    async def stub_write_from_dossier(topic, dossier, **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        kw["push_to_wordpress"] = False
+        kw["make_cover"] = False
+        return await real_write_from_dossier(topic, dossier, **kw)
+
     monkeypatch.setattr(wf, "discover_topics", stub_discover)
     monkeypatch.setattr(wf, "write_post", stub_write)
+    monkeypatch.setattr(wf, "write_post_from_dossier", stub_write_from_dossier)
 
     import httpx
 
@@ -329,3 +337,206 @@ async def test_config_reload_endpoint_is_token_guarded(api, monkeypatch):
     # Seeded at v1 by the lifespan, so a reload bumps every document to v2.
     for name, version in before.items():
         assert reloaded[name] == version + 1
+
+
+# ---------------------------------------------------------------------------
+# Catalog: topic ideas, posts, versions, regeneration
+# ---------------------------------------------------------------------------
+
+
+async def _suggest(api):
+    suggest_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    return (await _wait_for(api, suggest_id))["result"]["suggestions"]
+
+
+async def _write(api, topic):
+    write_id = (
+        await api.post("/api/runs/write", json={"topic": topic, "push": False})
+    ).json()["id"]
+    finished = await _wait_for(api, write_id, timeout=90)
+    assert finished["status"] == "succeeded", finished.get("error")
+    return finished
+
+
+@pytest.mark.asyncio
+async def test_suggest_run_populates_topic_ideas(api):
+    topics = await _suggest(api)
+
+    ideas = (await api.get("/api/topic-ideas")).json()
+    idea_slugs = {i["slug"] for i in ideas}
+    assert {t["slug"] for t in topics} <= idea_slugs
+    assert all("score" in i and "watch_area" in i for i in ideas)
+
+    # A second suggest run must not duplicate ideas — they upsert by slug.
+    suggest_id2 = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, suggest_id2)
+    ideas2 = (await api.get("/api/topic-ideas")).json()
+    slugs2 = [i["slug"] for i in ideas2]
+    assert len(slugs2) == len(set(slugs2)), "topic ideas duplicated on re-run"
+    assert len(ideas2) == len(ideas)
+
+
+@pytest.mark.asyncio
+async def test_write_run_creates_post_and_version(api):
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+
+    posts = (await api.get("/api/posts")).json()
+    assert len(posts) == 1
+    post = posts[0]
+    assert post["version_count"] == 1
+    assert post["topic_idea_id"] is not None
+    assert post["current_version"]["approved"] is True
+
+    detail = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert detail["topic_idea"]["slug"] == topics[0]["slug"]
+    versions = detail["versions"]
+    assert len(versions) == 1 and versions[0]["version"] == 1
+
+    # The version's markdown file resolves through the existing drafts endpoint.
+    markdown_file = versions[0]["markdown_file"]
+    assert markdown_file == finished["result"]["markdown_path"].split("/")[-1]
+    body = (await api.get(f"/api/drafts/{markdown_file}")).json()
+    assert body["markdown"].startswith("#")
+
+    # The idea now links back to the post.
+    idea = (await api.get(f"/api/topic-ideas/{post['topic_idea_id']}")).json()
+    assert idea["has_draft"] is True
+    assert idea["post_id"] == post["id"]
+
+
+@pytest.mark.asyncio
+async def test_topic_idea_has_draft_filter(api):
+    topics = await _suggest(api)
+
+    assert (await api.get("/api/topic-ideas?has_draft=true")).json() == []
+    assert len((await api.get("/api/topic-ideas?has_draft=false")).json()) >= 1
+
+    await _write(api, topics[0])
+
+    drafted = (await api.get("/api/topic-ideas?has_draft=true")).json()
+    assert [i["slug"] for i in drafted] == [topics[0]["slug"]]
+    assert (await api.get("/api/topic-ideas?has_draft=false")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_reuse_bumps_version(api):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post_id = (await api.get("/api/posts")).json()[0]["id"]
+
+    resp = await api.post(
+        f"/api/posts/{post_id}/regenerate",
+        json={"instructions": "Make it shorter", "reuse_research": True},
+    )
+    assert resp.status_code == 202
+    finished = await _wait_for(api, resp.json()["id"], timeout=90)
+    assert finished["status"] == "succeeded", finished.get("error")
+    assert finished["params"]["post_id"] == post_id
+    assert finished["params"]["instructions"] == "Make it shorter"
+    assert finished["params"]["reuse_research"] is True
+
+    detail = (await api.get(f"/api/posts/{post_id}")).json()
+    assert detail["version_count"] == 2
+    newest = detail["versions"][0]
+    assert newest["version"] == 2
+    assert newest["reused_research"] is True
+    assert newest["instructions"] == "Make it shorter"
+    # Each version keeps its own markdown file — the history is not overwritten.
+    files = {v["markdown_file"] for v in detail["versions"]}
+    assert len(files) == 2, "regeneration overwrote the previous version's file"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_fresh_research(api):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post_id = (await api.get("/api/posts")).json()[0]["id"]
+
+    resp = await api.post(
+        f"/api/posts/{post_id}/regenerate",
+        json={"instructions": "Rework the intro", "reuse_research": False},
+    )
+    assert resp.status_code == 202
+    finished = await _wait_for(api, resp.json()["id"], timeout=90)
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    detail = (await api.get(f"/api/posts/{post_id}")).json()
+    assert detail["version_count"] == 2
+    assert detail["versions"][0]["reused_research"] is False
+
+
+@pytest.mark.asyncio
+async def test_backfill_is_idempotent(api):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+
+    ideas_before = (await api.get("/api/topic-ideas")).json()
+    posts_before = (await api.get("/api/posts")).json()
+
+    from ppn_blogger.server import catalog
+
+    await catalog.backfill()
+    await catalog.backfill()
+
+    ideas_after = (await api.get("/api/topic-ideas")).json()
+    posts_after = (await api.get("/api/posts")).json()
+    assert len(ideas_after) == len(ideas_before)
+    assert len(posts_after) == len(posts_before)
+    assert posts_after[0]["version_count"] == posts_before[0]["version_count"]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_unknown_post_is_404(api):
+    resp = await api.post("/api/posts/9999/regenerate", json={"instructions": "x"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_regenerate_cover_enqueues_a_cover_run(api):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+
+    resp = await api.post(
+        f"/api/posts/{post['id']}/cover", json={"instructions": "deep violet light shards"}
+    )
+    assert resp.status_code == 202
+    finished = await _wait_for(api, resp.json()["id"], timeout=60)
+    # The run carries the concept and the post it belongs to. (Cover generation
+    # itself needs an image endpoint; disabled in tests, so it finishes without
+    # writing a file — the point here is the wiring.)
+    assert finished["params"]["post_id"] == post["id"]
+    assert finished["params"]["concept"] == "deep violet light shards"
+    assert finished["kind"] == "cover"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_cover_unknown_post_is_404(api):
+    resp = await api.post("/api/posts/9999/cover", json={"instructions": "x"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_record_cover_result_marks_versions(api):
+    """A successful cover run points the post's versions at the image."""
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+    assert post["current_version"]["has_cover"] is False
+
+    from ppn_blogger.server import catalog
+
+    await catalog.record_cover_result(
+        {"post_id": post["id"]}, {"path": "/drafts/covers/slug.png", "error": ""}
+    )
+    refreshed = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert all(v["has_cover"] for v in refreshed["versions"])
+    assert refreshed["current_version"]["cover_path"] == "/drafts/covers/slug.png"
+
+    # A failed generation records nothing.
+    await catalog.record_cover_result(
+        {"post_id": post["id"]}, {"path": "", "error": "boom"}
+    )
+    still = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert all(v["has_cover"] for v in still["versions"]), "a failed cover wiped the good one"

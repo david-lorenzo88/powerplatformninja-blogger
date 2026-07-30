@@ -1,269 +1,157 @@
-import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { draftCoverUrl, getDraft, listDrafts, publishDraft, putDraft } from '../api/client'
-import type { DraftListItem } from '../api/types'
-import { CodeEditor } from '../components/CodeEditor'
-import { Markdown } from '../components/Markdown'
-import { Modal } from '../components/Modal'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { listPosts } from '../api/client'
+import type { PostSummary } from '../api/types'
+import { formatTime } from '../lib/format'
+import { ScorePill } from './TopicIdeasScreen'
 
-type Tab = 'read' | 'edit' | 'review' | 'cover'
+const field =
+  'rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none'
+
+type Tri = 'all' | 'yes' | 'no'
 
 export function DraftsScreen() {
-  const [selected, setSelected] = useState<string | null>(null)
-  const drafts = useQuery({ queryKey: ['drafts'], queryFn: listDrafts })
-
-  useEffect(() => {
-    if (!selected && drafts.data && drafts.data.length > 0) setSelected(drafts.data[0].file)
-  }, [drafts.data, selected])
-
-  return (
-    <div className="flex h-full">
-      <aside className="w-72 shrink-0 overflow-auto border-r border-slate-800 p-3">
-        <h2 className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Drafts
-        </h2>
-        {drafts.data?.length === 0 && (
-          <p className="px-2 text-sm text-slate-500">No drafts yet. Run a write.</p>
-        )}
-        <ul className="space-y-1">
-          {drafts.data?.map((d) => (
-            <li key={d.file}>
-              <button
-                onClick={() => setSelected(d.file)}
-                className={`block w-full rounded-lg border px-3 py-2 text-left ${
-                  selected === d.file
-                    ? 'border-accent bg-accent/10'
-                    : 'border-slate-800 hover:border-slate-600'
-                }`}
-              >
-                <div className="text-sm font-medium text-slate-200">{d.title ?? d.file}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                  {d.review && (
-                    <span
-                      className={`rounded px-1.5 ${
-                        d.review.approved
-                          ? 'bg-emerald-500/15 text-emerald-300'
-                          : 'bg-amber-500/15 text-amber-300'
-                      }`}
-                    >
-                      {d.review.approved ? 'approved' : 'not approved'} · {d.review.score}
-                    </span>
-                  )}
-                  {d.word_count != null && <span>{d.word_count} words</span>}
-                  {d.read_minutes != null && <span>· {d.read_minutes} min</span>}
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </aside>
-
-      {selected ? (
-        <DraftDetail key={selected} name={selected} meta={drafts.data?.find((d) => d.file === selected)} />
-      ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
-          {drafts.isLoading ? 'loading…' : 'Select a draft.'}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DraftDetail({ name, meta }: { name: string; meta?: DraftListItem }) {
-  const qc = useQueryClient()
-  const [tab, setTab] = useState<Tab>('read')
-  const [publishing, setPublishing] = useState(false)
-
-  const draft = useQuery({ queryKey: ['draft', name], queryFn: () => getDraft(name) })
-
-  const [markdown, setMarkdown] = useState('')
-  const [dirty, setDirty] = useState(false)
-  useEffect(() => {
-    if (draft.data) {
-      setMarkdown(draft.data.markdown)
-      setDirty(false)
-    }
-  }, [draft.data])
-
-  const save = useMutation({
-    mutationFn: () => putDraft(name, markdown),
-    onSuccess: () => {
-      setDirty(false)
-      qc.invalidateQueries({ queryKey: ['draft', name] })
-      qc.invalidateQueries({ queryKey: ['drafts'] })
-    },
+  const navigate = useNavigate()
+  const posts = useQuery({
+    queryKey: ['posts'],
+    queryFn: () => listPosts(),
+    refetchInterval: 5000,
   })
 
+  const [q, setQ] = useState('')
+  const [approved, setApproved] = useState<Tri>('all')
+  const [published, setPublished] = useState<Tri>('all')
+  const [hasCover, setHasCover] = useState<Tri>('all')
+
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase()
+    return (posts.data ?? []).filter((p) => {
+      const isApproved = !!p.current_version?.approved
+      const isPublished = p.wordpress_post_id != null
+      const cover = !!p.current_version?.has_cover
+      if (approved !== 'all' && (approved === 'yes') !== isApproved) return false
+      if (published !== 'all' && (published === 'yes') !== isPublished) return false
+      if (hasCover !== 'all' && (hasCover === 'yes') !== cover) return false
+      if (term && !`${p.title} ${p.slug}`.toLowerCase().includes(term)) return false
+      return true
+    })
+  }, [posts.data, q, approved, published, hasCover])
+
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <div className="shrink-0 border-b border-slate-800 px-6 py-3">
-        <div className="flex items-center gap-3">
-          <h1 className="truncate text-lg font-semibold text-slate-100">
-            {meta?.title ?? name}
-          </h1>
-          <div className="ml-auto flex items-center gap-2">
-            {tab === 'edit' && (
-              <button
-                onClick={() => save.mutate()}
-                disabled={!dirty || save.isPending}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-accent disabled:opacity-40"
-              >
-                {save.isPending ? 'Saving…' : dirty ? 'Save edits' : 'Saved'}
-              </button>
-            )}
-            <button
-              onClick={() => setPublishing(true)}
-              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-slate-950 hover:bg-accent-strong"
-            >
-              Publish…
-            </button>
-          </div>
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 border-b border-slate-800 px-6 py-4">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-lg font-semibold text-slate-100">Drafts</h1>
+          <span className="text-sm text-slate-500">
+            {filtered.length}
+            {posts.data && filtered.length !== posts.data.length ? ` of ${posts.data.length}` : ''}
+          </span>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-          {meta?.category && <span>{meta.category}</span>}
-          {meta?.word_count != null && <span>· {meta.word_count} words</span>}
-          {meta?.read_minutes != null && <span>· {meta.read_minutes} min</span>}
-          {meta?.tags?.slice(0, 4).map((t) => (
-            <span key={t} className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">
-              {t}
-            </span>
-          ))}
-        </div>
-        <div className="mt-3 flex gap-1">
-          {(['read', 'edit', 'review', 'cover'] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`rounded-md px-3 py-1 text-sm font-medium capitalize ${
-                tab === t ? 'bg-accent/15 text-accent' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            className={`${field} w-56`}
+            placeholder="Search title or slug…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <TriSelect label="Approved" value={approved} onChange={setApproved} />
+          <TriSelect label="Published" value={published} onChange={setPublished} />
+          <TriSelect label="Cover" value={hasCover} onChange={setHasCover} />
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {draft.isLoading ? (
+        {posts.isLoading ? (
           <p className="p-6 text-sm text-slate-500">loading…</p>
-        ) : tab === 'read' ? (
-          <div className="mx-auto max-w-3xl p-6">
-            <Markdown>{draft.data?.markdown ?? ''}</Markdown>
-          </div>
-        ) : tab === 'edit' ? (
-          <CodeEditor
-            value={markdown}
-            format="markdown"
-            onChange={(v) => {
-              setMarkdown(v)
-              setDirty(true)
-            }}
-          />
-        ) : tab === 'review' ? (
-          <div className="mx-auto max-w-3xl p-6">
-            {draft.data?.review ? (
-              <Markdown>{draft.data.review}</Markdown>
-            ) : (
-              <p className="text-sm text-slate-500">No review report for this draft.</p>
-            )}
-          </div>
+        ) : filtered.length === 0 ? (
+          <p className="p-6 text-sm text-slate-500">
+            {posts.data?.length ? 'No drafts match these filters.' : 'No drafts yet. Run a write.'}
+          </p>
         ) : (
-          <div className="p-6">
-            {meta?.has_cover ? (
-              <img
-                src={draftCoverUrl(name)}
-                alt="cover"
-                className="max-h-[70vh] rounded-lg border border-slate-800"
-              />
-            ) : (
-              <p className="text-sm text-slate-500">No cover for this draft.</p>
-            )}
-          </div>
+          <table className="w-full border-collapse text-sm">
+            <thead className="sticky top-0 bg-slate-950/90 text-left text-xs uppercase tracking-wide text-slate-500 backdrop-blur">
+              <tr>
+                <th className="px-6 py-2 font-medium">Title</th>
+                <th className="px-3 py-2 font-medium">Review</th>
+                <th className="px-3 py-2 font-medium">Versions</th>
+                <th className="px-3 py-2 font-medium">WordPress</th>
+                <th className="px-3 py-2 font-medium">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((p) => (
+                <PostRow key={p.id} post={p} onOpen={() => navigate(`/drafts/${p.id}`)} />
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
-
-      {publishing && (
-        <PublishDialog name={name} title={meta?.title ?? name} onClose={() => setPublishing(false)} />
-      )}
     </div>
   )
 }
 
-function PublishDialog({
-  name,
-  title,
-  onClose,
-}: {
-  name: string
-  title: string
-  onClose: () => void
-}) {
-  const qc = useQueryClient()
-  const pub = useMutation({
-    mutationFn: (status: string) => publishDraft(name, status),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['drafts'] }),
-  })
-
-  const result = pub.data as { post_id?: number | string; edit_link?: string } | undefined
-
+function PostRow({ post, onOpen }: { post: PostSummary; onOpen: () => void }) {
+  const cur = post.current_version
   return (
-    <Modal title="Publish to WordPress" onClose={onClose}>
-      {result ? (
-        <div className="space-y-3 text-sm text-slate-300">
-          <p className="text-emerald-300">Pushed to WordPress.</p>
-          {result.post_id != null && <p>Post {String(result.post_id)}</p>}
-          {result.edit_link && (
-            <a
-              href={result.edit_link}
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent hover:underline"
-            >
-              Open in WordPress ↗
-            </a>
-          )}
-          <div className="flex justify-end">
-            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-slate-200">
-              Close
-            </button>
-          </div>
+    <tr
+      onClick={onOpen}
+      className="cursor-pointer border-b border-slate-800/70 hover:bg-slate-800/30"
+    >
+      <td className="px-6 py-3">
+        <div className="font-medium text-slate-200">{post.title || post.slug}</div>
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-500">
+          {post.slug}
+          {cur?.has_cover && <span className="text-slate-600">· cover</span>}
         </div>
-      ) : (
-        <div className="space-y-4">
-          <p className="text-sm text-slate-300">
-            This writes to the live blog. <span className="text-slate-100">{title}</span>
-          </p>
-          <p className="text-xs text-slate-500">
-            “WordPress draft” updates the post in place and leaves it unpublished for review.
-            “Publish live” makes it public immediately.
-          </p>
-          {pub.error != null && (
-            <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-              {pub.error instanceof Error ? pub.error.message : String(pub.error)}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-slate-200">
-              Cancel
-            </button>
-            <button
-              onClick={() => pub.mutate('draft')}
-              disabled={pub.isPending}
-              className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:border-accent disabled:opacity-50"
+      </td>
+      <td className="px-3 py-3">
+        {cur ? (
+          <span className="flex items-center gap-1.5">
+            <span
+              className={`rounded px-1.5 py-0.5 text-[11px] ${
+                cur.approved
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'bg-amber-500/15 text-amber-300'
+              }`}
             >
-              {pub.isPending ? 'Working…' : 'Save as WordPress draft'}
-            </button>
-            <button
-              onClick={() => pub.mutate('publish')}
-              disabled={pub.isPending}
-              className="rounded-lg bg-rose-500/90 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
-            >
-              Publish live
-            </button>
-          </div>
-        </div>
-      )}
-    </Modal>
+              {cur.approved ? 'approved' : 'not approved'}
+            </span>
+            <ScorePill score={cur.score} />
+          </span>
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
+      </td>
+      <td className="px-3 py-3 text-slate-400">{post.version_count}</td>
+      <td className="px-3 py-3">
+        {post.wordpress_post_id != null ? (
+          <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] text-sky-300">
+            {post.status === 'published' ? 'published' : 'draft'} · {post.wordpress_post_id}
+          </span>
+        ) : (
+          <span className="text-[11px] text-slate-600">not pushed</span>
+        )}
+      </td>
+      <td className="px-3 py-3 text-xs text-slate-500">{formatTime(post.updated_at)}</td>
+    </tr>
+  )
+}
+
+function TriSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: Tri
+  onChange: (v: Tri) => void
+}) {
+  return (
+    <select className={field} value={value} onChange={(e) => onChange(e.target.value as Tri)}>
+      <option value="all">{label}: any</option>
+      <option value="yes">{label}: yes</option>
+      <option value="no">{label}: no</option>
+    </select>
   )
 }

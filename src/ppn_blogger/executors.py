@@ -141,6 +141,23 @@ def _testimony(state: RunState) -> str:
     )
 
 
+def _editor_instructions(state: RunState) -> str:
+    """Editor guidance for a regeneration, injected into the writer's first draft.
+
+    A new version is written for a reason — "shorter", "lead with the migration
+    steps", "drop the FAQ". That instruction outranks the stylistic defaults, so
+    it goes to the writer verbatim alongside the topic and dossier.
+    """
+    if not state.extra_instructions.strip():
+        return ""
+    return (
+        "\n\n<editor_instructions>\n"
+        "The editor requested this version specifically. Honour these instructions "
+        "above your stylistic defaults, without inventing facts or contradicting the "
+        f"dossier:\n{state.extra_instructions.strip()}\n</editor_instructions>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared run state
 # ---------------------------------------------------------------------------
@@ -167,6 +184,9 @@ class RunState:
     revision_round: int = 0
     dossier_path: str = ""
     package: PostPackage | None = None
+    # Editor guidance for a regeneration, injected into the writer's first-draft
+    # prompt. Empty for an ordinary write.
+    extra_instructions: str = ""
     # Author notes: raw text in, typed claims and a voice mode out.
     notes_text: str = ""
     author_claims: list[AuthorClaim] = field(default_factory=list)
@@ -422,7 +442,7 @@ Write the first draft of this post.
 
 <dossier>
 {as_json(payload.dossier)}
-</dossier>
+</dossier>{_editor_instructions(self.state)}
 
 {_author_context(self.state, self.settings)}
 
@@ -528,7 +548,7 @@ Write the first draft of this post.
 
 <dossier>
 {as_json(dossier)}
-</dossier>{caveat}
+</dossier>{caveat}{_editor_instructions(self.state)}
 
 {_author_context(self.state, self.settings)}
 
@@ -826,7 +846,7 @@ class Finalizer(Executor):
         assert draft is not None and dossier is not None
 
         markdown_path = storage.save_draft(draft, outcome)
-        report_path = storage.save_review_report(draft, outcome)
+        report_path = storage.save_review_report(draft, outcome, markdown_path=markdown_path)
         package = PostPackage(
             draft=draft,
             dossier=dossier,
@@ -836,6 +856,7 @@ class Finalizer(Executor):
             notes_path=self.state.notes_path,
             markdown_path=str(markdown_path),
             report_path=str(report_path),
+            dossier_path=self.state.dossier_path,
         )
 
         if self.make_cover:

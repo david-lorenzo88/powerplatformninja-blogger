@@ -283,6 +283,7 @@ class PostPackage(BaseModel):
     notes_path: str = ""
     markdown_path: str = ""
     report_path: str = ""
+    dossier_path: str = Field("", description="Where the research JSON was saved on disk")
     cover: CoverImage | None = None
     published: PublishTarget | None = None
     translation: Draft | None = Field(None, description="Localised version of the draft")

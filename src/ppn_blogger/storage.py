@@ -24,6 +24,22 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M")
 
 
+def _unique_path(directory: Path, base: str, suffix: str) -> Path:
+    """A path in ``directory`` that does not exist yet: ``base``, then ``base-2``…
+
+    Draft filenames used to be ``<date>-<slug>.md`` and a same-day regeneration
+    for the same slug overwrote the previous file — which would silently destroy
+    an earlier version. Each save now claims its own filename, so the version
+    history the catalog records actually has content behind it.
+    """
+    candidate = directory / f"{base}{suffix}"
+    counter = 2
+    while candidate.exists():
+        candidate = directory / f"{base}-{counter}{suffix}"
+        counter += 1
+    return candidate
+
+
 def split_front_matter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
         return {}, text
@@ -115,6 +131,15 @@ def save_dossier(dossier: ResearchDossier) -> Path:
     return path
 
 
+def load_dossier(path: Path) -> ResearchDossier:
+    """Read a dossier saved by :func:`save_dossier`, for a resume/regenerate run."""
+    settings = get_settings()
+    if not path.is_absolute():
+        candidate = settings.run.research_dir / path
+        path = candidate if candidate.exists() else path
+    return ResearchDossier.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def save_notes(claims: list[AuthorClaim], slug_or_title: str) -> Path:
     """Write the normalised author claims beside the dossier.
 
@@ -178,8 +203,8 @@ def save_draft(
 ) -> Path:
     settings = get_settings()
     settings.ensure_dirs()
-    name = f"{date.today().isoformat()}-{draft.slug or slugify(draft.title)}.md"
-    path = settings.run.output_dir / name
+    base = f"{date.today().isoformat()}-{draft.slug or slugify(draft.title)}"
+    path = _unique_path(settings.run.output_dir, base, ".md")
     front = yaml.safe_dump(
         draft_front_matter(draft, outcome, language, translation_of),
         sort_keys=False,
@@ -189,11 +214,20 @@ def save_draft(
     return path
 
 
-def save_review_report(draft: Draft, outcome: ReviewOutcome) -> Path:
+def save_review_report(
+    draft: Draft, outcome: ReviewOutcome, markdown_path: Path | None = None
+) -> Path:
     settings = get_settings()
     settings.ensure_dirs()
-    name = f"{date.today().isoformat()}-{draft.slug or slugify(draft.title)}.review.md"
-    path = settings.run.output_dir / name
+    if markdown_path is not None:
+        # Pair with the draft's actual filename, which may carry a -N suffix, so
+        # list_drafts finds the report next to its draft (it derives the review
+        # name from the draft stem).
+        md = Path(markdown_path)
+        path = md.with_name(f"{md.stem}.review.md")
+    else:
+        name = f"{date.today().isoformat()}-{draft.slug or slugify(draft.title)}.review.md"
+        path = settings.run.output_dir / name
 
     lines = [
         f"# Review report — {draft.title}",

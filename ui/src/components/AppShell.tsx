@@ -5,8 +5,9 @@ import type { Health } from '../api/types'
 
 const NAV = [
   { to: '/runs', label: 'Runs', icon: '▷' },
-  { to: '/config', label: 'Config', icon: '⚙' },
+  { to: '/topic-ideas', label: 'Topic Ideas', icon: '◆' },
   { to: '/drafts', label: 'Drafts', icon: '✎' },
+  { to: '/config', label: 'Config', icon: '⚙' },
 ]
 
 function navClass({ isActive }: { isActive: boolean }): string {

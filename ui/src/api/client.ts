@@ -10,12 +10,18 @@ import type {
   ConfigVersion,
   Draft,
   DraftListItem,
+  DraftVersion,
   Health,
+  Post,
+  PostSummary,
+  RegenerateRequest,
   Run,
   RunDetail,
   RunEvent,
   RunStatus,
   SuggestRequest,
+  TopicIdea,
+  TopicIdeaSummary,
   WorkflowGraph,
   WriteRequest,
 } from './types'
@@ -128,6 +134,68 @@ export const draftCoverUrl = (name: string) => `${API_BASE}/drafts/${name}/cover
 export const publishDraft = (name: string, status = 'draft') =>
   request<Record<string, unknown>>(`/drafts/${name}/publish?status=${status}`, {
     method: 'POST',
+  })
+
+// -- Topic ideas ------------------------------------------------------------
+
+export interface TopicIdeaFilters {
+  watch_area?: string
+  post_format?: string
+  has_draft?: boolean
+  min_score?: number
+  q?: string
+}
+
+export const listTopicIdeas = (filters: TopicIdeaFilters = {}) => {
+  const query = new URLSearchParams()
+  if (filters.watch_area) query.set('watch_area', filters.watch_area)
+  if (filters.post_format) query.set('post_format', filters.post_format)
+  if (filters.has_draft != null) query.set('has_draft', String(filters.has_draft))
+  if (filters.min_score != null) query.set('min_score', String(filters.min_score))
+  if (filters.q) query.set('q', filters.q)
+  const qs = query.toString()
+  return request<TopicIdeaSummary[]>(`/topic-ideas${qs ? `?${qs}` : ''}`)
+}
+
+export const getTopicIdea = (id: number) => request<TopicIdea>(`/topic-ideas/${id}`)
+
+// -- Posts & draft versions -------------------------------------------------
+
+export interface PostFilters {
+  status?: string
+  approved?: boolean
+  has_cover?: boolean
+  published?: boolean
+  q?: string
+}
+
+export const listPosts = (filters: PostFilters = {}) => {
+  const query = new URLSearchParams()
+  if (filters.status) query.set('status', filters.status)
+  if (filters.approved != null) query.set('approved', String(filters.approved))
+  if (filters.has_cover != null) query.set('has_cover', String(filters.has_cover))
+  if (filters.published != null) query.set('published', String(filters.published))
+  if (filters.q) query.set('q', filters.q)
+  const qs = query.toString()
+  return request<PostSummary[]>(`/posts${qs ? `?${qs}` : ''}`)
+}
+
+export const getPost = (id: number) => request<Post>(`/posts/${id}`)
+
+export const getPostVersions = (id: number) => request<DraftVersion[]>(`/posts/${id}/versions`)
+
+export const getDraftVersion = (id: number) => request<DraftVersion>(`/draft-versions/${id}`)
+
+export const regeneratePost = (id: number, body: RegenerateRequest) =>
+  request<{ id: string; run_id: string }>(`/posts/${id}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const regenerateCover = (id: number, instructions: string) =>
+  request<{ id: string; run_id: string }>(`/posts/${id}/cover`, {
+    method: 'POST',
+    body: JSON.stringify({ instructions }),
   })
 
 export type { RunEvent }
