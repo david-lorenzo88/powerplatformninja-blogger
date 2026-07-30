@@ -110,8 +110,10 @@ jobs:
                       --revision "$rev" --query properties.runningState -o tsv 2>/dev/null || echo "")
             echo "runningState=$state"
             case "$state" in
-              Running) echo "Revision is running." && exit 0 ;;
-              Failed|Degraded) echo "::error::Revision $rev entered state $state" && exit 1 ;;
+              # Container Apps reports Running or RunningAtMaxScale (at min=max=1
+              # replicas the healthy state is the latter) — both mean live.
+              Running*) echo "Revision is running ($state)." && exit 0 ;;
+              Failed|Degraded|Stopped) echo "::error::Revision $rev entered state $state" && exit 1 ;;
             esac
             sleep 15
           done
