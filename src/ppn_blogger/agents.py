@@ -20,7 +20,7 @@ from .models import (
     ScoutReport,
     SourceVerdict,
     TopicSuggestionSet,
-    ValidationReport,
+    ValidationReportDraft,
 )
 from .settings import Settings
 
@@ -185,7 +185,7 @@ def build_content_validator(settings: Settings, clients: ClientBundle) -> Agent:
         id=CONTENT_VALIDATOR,
         name=CONTENT_VALIDATOR,
         description="Editorial gate: substance, accuracy, voice, traceability to the dossier.",
-        default_options=_opts(ValidationReport, temperature=0.2),
+        default_options=_opts(ValidationReportDraft, temperature=0.2),
     )
 
 
@@ -196,7 +196,7 @@ def build_design_validator(settings: Settings, clients: ClientBundle) -> Agent:
         id=DESIGN_VALIDATOR,
         name=DESIGN_VALIDATOR,
         description="Formatting, structure, readability and SEO gate.",
-        default_options=_opts(ValidationReport, temperature=0.2),
+        default_options=_opts(ValidationReportDraft, temperature=0.2),
     )
 
 

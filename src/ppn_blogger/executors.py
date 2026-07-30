@@ -35,6 +35,7 @@ from .models import (
     TopicSuggestion,
     TopicSuggestionSet,
     ValidationReport,
+    ValidationReportDraft,
 )
 from .settings import Settings, get_settings
 from .util import as_json, parse_model, user_message, word_count
@@ -705,7 +706,10 @@ class ReviewGate(Executor):
         reports: list[ValidationReport] = []
         for response in responses:
             try:
-                reports.append(parse_model(response, ValidationReport))
+                # The agent is bound to ValidationReportDraft (no measurements);
+                # upcast so the code-side detectors can attach measurements below.
+                draft = parse_model(response, ValidationReportDraft)
+                reports.append(ValidationReport.model_validate(draft.model_dump()))
             except ValueError as exc:
                 logger.warning("validator %s unparsable: %s", response.executor_id, exc)
                 reports.append(
