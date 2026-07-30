@@ -34,6 +34,7 @@ from .models import (
     TopicSuggestion,
     TopicSuggestionSet,
     ValidationReport,
+    ValidationReportDraft,
 )
 
 TODAY = date.today().isoformat()
@@ -504,7 +505,7 @@ class StubChatClient(BaseChatClient):
             if "Translate this approved post" in full:
                 return _translated_draft()
             return _draft(revision=self._bump("draft"))
-        if model is ValidationReport:
+        if model in (ValidationReport, ValidationReportDraft):
             n = self._bump("validation")
             validator = "design" if "Structure & Design" in full or n % 2 == 0 else "content"
             strict = self._exercise_loops and n <= 2

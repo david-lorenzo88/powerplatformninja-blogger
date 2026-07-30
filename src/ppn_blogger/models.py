@@ -218,21 +218,35 @@ class RuleFinding(BaseModel):
     fix: str = Field(..., description="Concrete rewrite instruction the writer can act on")
 
 
-class ValidationReport(BaseModel):
+class ValidationReportDraft(BaseModel):
+    """The validator agent's structured output — everything the model produces.
+
+    ``measurements`` is deliberately absent here: it is a free-form ``dict`` that
+    the code-side detectors fill in afterwards, and a free-form dict cannot be
+    expressed under Azure's strict structured-output rule (every object must set
+    ``additionalProperties: false``, which an open dict by definition cannot).
+    Binding this slim schema as the agent ``response_format`` is what keeps the
+    validator call valid; ``ValidationReport`` adds the code-only field back for
+    internal use. See the output_schema block in validation_rules.yaml.
+    """
+
     validator: str
     score: int = Field(..., ge=0, le=100)
     passed: bool
     findings: list[RuleFinding] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     summary: str = ""
-    # Filled by the code-side detectors, not the model: numeric facts the model
-    # must never be asked to count (avg_sentence_words, section_word_counts,
-    # h2_count, dash_hits, banned_word_hits, ...). See the output_schema block
-    # in validation_rules.yaml.
-    measurements: dict[str, Any] = Field(default_factory=dict)
     resolved_since_last_iteration: list[str] = Field(
         default_factory=list, description="Rule ids that fired last round and no longer do"
     )
+
+
+class ValidationReport(ValidationReportDraft):
+    # Filled by the code-side detectors, not the model: numeric facts the model
+    # must never be asked to count (avg_sentence_words, section_word_counts,
+    # h2_count, dash_hits, banned_word_hits, ...). Never bind this schema to an
+    # agent — bind ValidationReportDraft, which omits this open dict.
+    measurements: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReviewOutcome(BaseModel):
