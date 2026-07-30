@@ -628,3 +628,78 @@ async def test_notes_yield_field_report_with_traceable_claim_ids(tmp_path, monke
     # The claims are filed to disk next to the dossier, and every id is traceable.
     saved = json.loads(Path(package.notes_path).read_text())
     assert {c["id"] for c in saved["claims"]} == set(ids)
+
+
+def test_editor_instructions_helper_wraps_only_when_present():
+    from ppn_blogger.executors import RunState, _editor_instructions
+
+    assert _editor_instructions(RunState()) == ""
+    out = _editor_instructions(RunState(extra_instructions="  shorten it  "))
+    assert "<editor_instructions>" in out and "shorten it" in out
+
+
+def _capturing_clients():
+    """A stub client bundle that records the writer's first-draft prompts."""
+    from ppn_blogger.clients import ClientBundle
+    from ppn_blogger.models import Draft
+    from ppn_blogger.testing import StubChatClient
+
+    captured: list[str] = []
+
+    class _Capturing(StubChatClient):
+        def _payload(self, model, messages):
+            if model is Draft:
+                full = " ".join(m.text or "" for m in messages)
+                if "Write the first draft" in full:
+                    captured.append(full)
+            return super()._payload(model, messages)
+
+    client = _Capturing(exercise_loops=False)
+    return ClientBundle(reasoning=client, fast=client), captured
+
+
+@pytest.mark.asyncio
+async def test_editor_instructions_reach_the_writer_fresh(tmp_path, monkeypatch):
+    """The fresh-write path (SourceGate) injects the editor instructions."""
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients, captured = _capturing_clients()
+    topics = await discover_topics(clients=clients)
+    await write_post(
+        topics.suggestions[0],
+        clients=clients,
+        push_to_wordpress=False,
+        extra_instructions="LEAD WITH THE MIGRATION STEPS",
+    )
+
+    assert captured, "writer never received a first-draft prompt"
+    assert any(
+        "<editor_instructions>" in p and "LEAD WITH THE MIGRATION STEPS" in p for p in captured
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_instructions_reach_the_writer_resume(tmp_path, monkeypatch):
+    """The resume-from-dossier path (DossierEntry) injects them too."""
+    from ppn_blogger.testing import _dossier
+    from ppn_blogger.workflows import write_post_from_dossier
+
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients, captured = _capturing_clients()
+    topics = await discover_topics(clients=clients)
+    await write_post_from_dossier(
+        topics.suggestions[0],
+        _dossier(clean=True),
+        clients=clients,
+        push_to_wordpress=False,
+        skip_source_check=True,
+        extra_instructions="DROP THE FAQ SECTION",
+    )
+
+    assert captured, "writer never received a first-draft prompt"
+    assert any("<editor_instructions>" in p and "DROP THE FAQ SECTION" in p for p in captured)

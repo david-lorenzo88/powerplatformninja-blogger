@@ -134,6 +134,30 @@ reference, but edit through the UI.
 
 Paths are resolved inside `drafts/` and rejected otherwise.
 
+### Catalog — topic ideas, posts, versions
+
+The crew's artefacts stay as files; three DB tables (`topic_ideas`, `posts`,
+`draft_versions` in `server/db.py`) index them so the UI can browse the backlog,
+link ideas to the posts they became, and keep a version history.
+`server/catalog.py` owns the tables: it writes rows when a run finishes
+(`record_run_result`, called from `RunManager`) and reconciles existing runs and
+on-disk drafts on first start (`backfill`, idempotent — see the lifespan).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/topic-ideas?watch_area=&post_format=&has_draft=&min_score=&q=` | one row per suggestion, deduped by slug; `has_draft` says whether a post exists |
+| `GET` | `/topic-ideas/{id}` | full idea + the posts written from it |
+| `GET` | `/posts?status=&approved=&has_cover=&published=&q=` | one row per logical draft, with `version_count` + a `current_version` summary |
+| `GET` | `/posts/{id}` | post + linked `topic_idea` + all `versions` |
+| `GET` | `/posts/{id}/versions` · `GET /draft-versions/{id}` | version rows; `markdown_file` resolves through `/drafts/{name}` |
+| `POST` | `/posts/{id}/regenerate` | `{instructions, reuse_research, push, cover}` → **202 {id}**; enqueues a `write` run that appends a new version |
+
+A regeneration reuses the `write` run kind: with `reuse_research` it loads the
+saved dossier and skips the source check (`write_post_from_dossier`), otherwise it
+researches afresh; either way the `instructions` reach the writer's first-draft
+prompt as an `<editor_instructions>` block. Each save claims its own filename
+(`<date>-<slug>[-N].md`), so a version's markdown is never overwritten by the next.
+
 ## Running it
 
 ```bash
@@ -148,8 +172,10 @@ First start imports `config/*.yaml` into the database and logs that it did.
 
 `ui/`, Vite + React + TypeScript (Tailwind, TanStack Query, React Flow, CodeMirror).
 Screens: **Runs** (queue, history, launch), **Run detail** (canvas + per-node
-output), **Config** (editor, history, rollback), **Drafts** (review, cover,
-publish). Build/run notes: [ui/README.md](../ui/README.md).
+output), **Topic Ideas** (filterable backlog → idea detail with a "write a draft"
+action), **Drafts** (filterable posts → post detail with version history, links to
+the source idea and WordPress, publish, and a regenerate-with-instructions dialog),
+**Config** (editor, history, rollback). Build/run notes: [ui/README.md](../ui/README.md).
 
 The canvas parses the Mermaid from `/api/workflows` into React Flow nodes once
 (`ui/src/lib/parseMermaid.ts` + dagre layout), then colours nodes from the folded

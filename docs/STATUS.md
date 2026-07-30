@@ -88,6 +88,31 @@ Production is a single process: `npm run build` → `ui/dist`, served by `ppn se
 
 ---
 
+## Catalog: topic ideas & draft management (new)
+
+A DB-backed catalog now indexes the crew's artefacts so the UI can manage the
+backlog end to end. **Built and tested offline; not yet driven against real Azure.**
+
+- **Three tables** (`server/db.py`): `topic_ideas` (deduped by slug), `posts` (the
+  logical draft, one per subject), `draft_versions` (the version chain). Content
+  (markdown/review/cover) stays as files; the DB holds the index, links and versions.
+- **`server/catalog.py`** populates rows when a run finishes and **backfills** from
+  existing runs + on-disk drafts on first start (idempotent, runs in the lifespan).
+- **New endpoints** (`server/api.py`): `/topic-ideas`, `/posts`, `/posts/{id}`,
+  `/posts/{id}/versions`, `/draft-versions/{id}`, and `POST /posts/{id}/regenerate`.
+  See the Catalog table in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Regeneration** reuses the `write` kind with `{instructions, reuse_research}`;
+  instructions reach the writer as an `<editor_instructions>` block (both the fresh
+  and resume-from-dossier prompt sites). `save_draft` is now non-clobbering
+  (`<date>-<slug>[-N].md`) so version markdown is never overwritten.
+- **UI** (`ui/`): new **Topic Ideas** section (filterable list + detail with a
+  "write a draft" action) and an evolved **Drafts** section (filterable posts list +
+  post detail with version history, idea/WordPress links, publish, and a regenerate
+  dialog with a reuse-research toggle).
+- **Tests**: 10 new (7 server + 3 pipeline), all offline; suite is **48 passing**.
+- **Next real test:** drive a suggest → write → regenerate through the deployed
+  server/UI to confirm population, links and the reuse-research path against Azure.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

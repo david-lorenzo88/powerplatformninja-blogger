@@ -131,6 +131,88 @@ export interface Draft {
   review: string
 }
 
+// Catalog: topic ideas, posts and draft versions (server/catalog.py).
+
+export interface TopicIdeaSummary {
+  id: number
+  slug: string
+  title: string
+  watch_area: string
+  post_format: string
+  primary_keyword: string
+  score: number
+  audience_fit: number
+  timeliness: number
+  effort: number
+  duplicate_risk: string
+  generated_on: string
+  created_at: string | null
+  has_draft: boolean
+  post_id: number | null
+  posts: { id: number; slug: string; status: string }[]
+}
+
+export interface TopicIdea extends TopicIdeaSummary {
+  angle: string
+  problem_statement: string
+  why_now: string
+  novelty: string
+  key_questions: string[]
+  seed_sources: string[]
+  data: Topic
+  suggest_run_id: string | null
+}
+
+export interface DraftVersion {
+  id: number
+  post_id: number
+  version: number
+  write_run_id: string | null
+  instructions: string
+  reused_research: boolean
+  title: string
+  slug: string
+  approved: boolean
+  score: number
+  blockers: number
+  markdown_path: string
+  markdown_file: string
+  report_path: string
+  cover_path: string
+  has_cover: boolean
+  dossier_path: string
+  wordpress_post_id: number | null
+  edit_link: string
+  created_at: string | null
+}
+
+export interface PostSummary {
+  id: number
+  slug: string
+  title: string
+  status: string
+  topic_idea_id: number | null
+  wordpress_post_id: number | null
+  edit_link: string
+  link: string
+  version_count: number
+  current_version: DraftVersion | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface Post extends PostSummary {
+  topic_idea: TopicIdeaSummary | null
+  versions: DraftVersion[]
+}
+
+export interface RegenerateRequest {
+  instructions?: string
+  reuse_research?: boolean
+  push?: boolean | null
+  cover?: boolean | null
+}
+
 // Request bodies.
 export interface SuggestRequest {
   instruction?: string

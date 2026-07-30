@@ -33,6 +33,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await config_store.refresh_active_source()
     if seeded:
         logger.info("configuration imported from config/ — the database is now authoritative")
+    from . import catalog
+
+    await catalog.backfill()
     await manager().start()
     logger.info("ppn server ready")
     try:

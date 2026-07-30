@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 
 from ..settings import get_settings
-from . import config_store, drafts
+from . import catalog, config_store, drafts
 from .db import Run, session
 from .runs import TERMINAL, manager
 
@@ -431,3 +431,118 @@ async def publish_draft(name: str, status: str = "draft") -> dict[str, Any]:
         raise HTTPException(404, "No such draft") from exc
     target = await push_draft(draft, status=status)
     return target.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Catalog: topic ideas, posts and draft versions
+#
+# The DB indexes the crew's artefacts so the UI can browse the backlog of ideas,
+# see which became posts, filter drafts, and keep a version history. Content
+# (markdown, review, cover) is still served by the /drafts endpoints above; a
+# version points at its markdown file by name.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/topic-ideas")
+async def list_topic_ideas(
+    watch_area: str | None = None,
+    post_format: str | None = None,
+    has_draft: bool | None = None,
+    min_score: float | None = None,
+    q: str | None = None,
+    limit: int = Query(200, le=500),
+) -> list[dict[str, Any]]:
+    return await catalog.list_topic_ideas(
+        watch_area=watch_area,
+        post_format=post_format,
+        has_draft=has_draft,
+        min_score=min_score,
+        q=q,
+        limit=limit,
+    )
+
+
+@router.get("/topic-ideas/{idea_id}")
+async def get_topic_idea(idea_id: int) -> dict[str, Any]:
+    idea = await catalog.get_topic_idea(idea_id)
+    if idea is None:
+        raise HTTPException(404, "No such topic idea")
+    return idea
+
+
+@router.get("/posts")
+async def list_posts(
+    status: str | None = None,
+    approved: bool | None = None,
+    has_cover: bool | None = None,
+    published: bool | None = None,
+    q: str | None = None,
+    limit: int = Query(200, le=500),
+) -> list[dict[str, Any]]:
+    return await catalog.list_posts(
+        status=status,
+        approved=approved,
+        has_cover=has_cover,
+        published=published,
+        q=q,
+        limit=limit,
+    )
+
+
+@router.get("/posts/{post_id}")
+async def get_post(post_id: int) -> dict[str, Any]:
+    post = await catalog.get_post(post_id)
+    if post is None:
+        raise HTTPException(404, "No such post")
+    return post
+
+
+@router.get("/posts/{post_id}/versions")
+async def get_post_versions(post_id: int) -> list[dict[str, Any]]:
+    if await catalog.get_post(post_id) is None:
+        raise HTTPException(404, "No such post")
+    return await catalog.list_versions(post_id)
+
+
+@router.get("/draft-versions/{version_id}")
+async def get_draft_version(version_id: int) -> dict[str, Any]:
+    version = await catalog.get_version(version_id)
+    if version is None:
+        raise HTTPException(404, "No such draft version")
+    return version
+
+
+class RegenerateRequest(BaseModel):
+    instructions: str = ""
+    reuse_research: bool = True
+    push: bool | None = None
+    cover: bool | None = None
+
+
+@router.post("/posts/{post_id}/regenerate", status_code=202)
+async def regenerate_post(post_id: int, body: RegenerateRequest) -> dict[str, str]:
+    """Launch a write run that produces a new version of an existing post."""
+    post = await catalog.get_post(post_id)
+    if post is None:
+        raise HTTPException(404, "No such post")
+    try:
+        topic, dossier_path = await catalog.post_topic_and_dossier(post_id)
+    except KeyError as exc:
+        raise HTTPException(404, "No such post") from exc
+    if body.reuse_research and dossier_path is None:
+        raise HTTPException(
+            422, "No saved research for this post — regenerate with fresh research instead."
+        )
+    run_id = await manager().enqueue(
+        "write",
+        {
+            "topic": topic.model_dump(mode="json"),
+            "post_id": post_id,
+            "instructions": body.instructions,
+            "reuse_research": body.reuse_research,
+            "push": body.push,
+            "cover": body.cover,
+        },
+        f"Regenerate · {post.get('title') or topic.title}"[:300],
+    )
+    return {"id": run_id, "run_id": run_id}

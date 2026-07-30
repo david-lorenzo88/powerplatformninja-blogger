@@ -148,10 +148,14 @@ def build_post_workflow(
     resume_from_dossier: bool = False,
     skip_source_check: bool = False,
     notes_text: str = "",
+    extra_instructions: str = "",
+    dossier_path: str = "",
 ) -> PostWorkflow:
     settings = settings or get_settings()
     clients = clients or default_clients()
-    state = RunState(notes_text=notes_text)
+    state = RunState(
+        notes_text=notes_text, extra_instructions=extra_instructions, dossier_path=dossier_path
+    )
 
     brief = BriefBuilder(state, settings)
     entry = (
@@ -237,6 +241,7 @@ async def write_post(
     make_cover: bool | None = None,
     translate: bool | None = None,
     notes_text: str = "",
+    extra_instructions: str = "",
     on_event: Any = None,
 ) -> PostPackage:
     built = build_post_workflow(
@@ -246,6 +251,7 @@ async def write_post(
         make_cover=make_cover,
         translate=translate,
         notes_text=notes_text,
+        extra_instructions=extra_instructions,
     )
 
     if on_event is None:
@@ -275,6 +281,8 @@ async def write_post_from_dossier(
     translate: bool | None = None,
     skip_source_check: bool = False,
     notes_text: str = "",
+    extra_instructions: str = "",
+    dossier_path: str = "",
     on_event: Any = None,
 ) -> PostPackage:
     """Run the pipeline from an existing dossier, skipping the research stage."""
@@ -287,6 +295,8 @@ async def write_post_from_dossier(
         resume_from_dossier=True,
         skip_source_check=skip_source_check,
         notes_text=notes_text,
+        extra_instructions=extra_instructions,
+        dossier_path=dossier_path,
     )
     payload = ResumePayload(topic=topic, dossier=dossier)
 

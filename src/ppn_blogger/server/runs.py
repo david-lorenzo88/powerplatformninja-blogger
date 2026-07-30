@@ -422,6 +422,14 @@ class RunManager:
         token = current_run_id.set(run_id)
         try:
             result = await self._dispatch(run_id, kind, params)
+            # Index the artefacts (topic ideas / posts / versions). Bookkeeping
+            # must never sink a finished run — the run matters more than its row.
+            try:
+                from . import catalog
+
+                await catalog.record_run_result(run_id, kind, params, result)
+            except Exception:  # noqa: BLE001
+                logger.exception("catalog population failed for run %s", run_id)
             self.emit(run_id, kind="status", message="Finished",
                       data={"status": SUCCEEDED, "result": result})
             # Flush before the row goes terminal: readers that see "succeeded"
@@ -506,13 +514,36 @@ class RunManager:
 
         if kind == "write":
             topic = TopicSuggestion.model_validate(params["topic"])
-            package = await write_post(
-                topic,
+            instructions = params.get("instructions") or ""
+            common = dict(
                 push_to_wordpress=params.get("push"),
                 make_cover=params.get("cover"),
                 translate=params.get("translate"),
                 on_event=self._on_event(run_id),
             )
+            # A regeneration reusing prior research: load the saved dossier and
+            # skip the (already-passed) source check, so it costs only the write.
+            if params.get("reuse_research") and params.get("post_id") is not None:
+                from ..storage import load_dossier
+                from ..workflows import write_post_from_dossier
+                from . import catalog
+
+                _topic, dossier_path = await catalog.post_topic_and_dossier(params["post_id"])
+                if dossier_path is None:
+                    raise RuntimeError(
+                        "No saved research for this post — regenerate with fresh research instead."
+                    )
+                dossier = load_dossier(dossier_path)
+                package = await write_post_from_dossier(
+                    topic,
+                    dossier,
+                    skip_source_check=True,
+                    extra_instructions=instructions,
+                    dossier_path=str(dossier_path),
+                    **common,
+                )
+            else:
+                package = await write_post(topic, extra_instructions=instructions, **common)
             return {
                 "title": package.draft.title,
                 "slug": package.draft.slug,
@@ -523,9 +554,11 @@ class RunManager:
                 "report_path": package.report_path,
                 "cover_path": package.cover.path if package.cover else "",
                 "cover_error": package.cover.error if package.cover else "",
+                "dossier_path": package.dossier_path,
                 "translation_path": package.translation_path,
                 "post_id": package.published.post_id if package.published else None,
                 "edit_link": package.published.edit_link if package.published else "",
+                "link": package.published.link if package.published else "",
             }
 
         if kind == "cover":
