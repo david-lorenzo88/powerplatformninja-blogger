@@ -45,6 +45,8 @@ async def record_run_result(
         await upsert_topic_ideas(run_id, result.get("suggestions", []), result.get("generated_on", ""))
     elif kind == "write":
         await record_write_result(run_id, params, result)
+    elif kind == "cover":
+        await record_cover_result(params, result)
 
 
 async def upsert_topic_ideas(
@@ -141,6 +143,30 @@ async def record_write_result(
         post.updated_at = utcnow()
         await s.commit()
         return version.id
+
+
+async def record_cover_result(params: dict[str, Any], result: dict[str, Any]) -> None:
+    """Point a post's versions at a freshly generated cover.
+
+    There is one cover per post (``covers/<slug>.png``, overwritten in place), so
+    every version shares it — recording the path on all of them keeps ``has_cover``
+    honest whichever version the UI is showing. A failed generation carries an
+    ``error`` and no path; nothing is recorded then.
+    """
+    post_id = params.get("post_id")
+    path = (result or {}).get("path") or ""
+    if post_id is None or not path or (result or {}).get("error"):
+        return
+    async with session() as s:
+        versions = (
+            await s.execute(select(DraftVersion).where(DraftVersion.post_id == int(post_id)))
+        ).scalars().all()
+        for v in versions:
+            v.cover_path = path
+        post = await s.get(Post, int(post_id))
+        if post is not None:
+            post.updated_at = utcnow()
+        await s.commit()
 
 
 async def _resolve_post(s: Any, params: dict[str, Any], result: dict[str, Any]) -> Post:

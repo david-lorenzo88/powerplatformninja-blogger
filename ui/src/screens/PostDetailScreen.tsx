@@ -6,6 +6,7 @@ import {
   getDraft,
   getPost,
   putDraft,
+  regenerateCover,
   regeneratePost,
 } from '../api/client'
 import type { DraftVersion, Post } from '../api/types'
@@ -258,18 +259,81 @@ function VersionView({ version, postId }: { version: DraftVersion; postId: numbe
             )}
           </div>
         ) : (
-          <div className="p-6">
-            {version.has_cover ? (
-              <img
-                src={draftCoverUrl(name)}
-                alt="cover"
-                className="max-h-[70vh] rounded-lg border border-slate-800"
-              />
-            ) : (
-              <p className="text-sm text-slate-500">No cover for this version.</p>
-            )}
-          </div>
+          <CoverPanel postId={postId} name={name} hasCover={version.has_cover} />
         )}
+      </div>
+    </div>
+  )
+}
+
+function CoverPanel({
+  postId,
+  name,
+  hasCover,
+}: {
+  postId: number
+  name: string
+  hasCover: boolean
+}) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [instructions, setInstructions] = useState('')
+  const [broken, setBroken] = useState(false)
+
+  const gen = useMutation({
+    mutationFn: () => regenerateCover(postId, instructions),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['runs'] })
+      qc.invalidateQueries({ queryKey: ['post', postId] })
+      navigate(`/runs/${res.id}`)
+    },
+  })
+
+  const showImage = hasCover && !broken
+
+  return (
+    <div className="mx-auto max-w-2xl p-6">
+      {showImage ? (
+        <img
+          src={draftCoverUrl(name)}
+          alt="cover"
+          onError={() => setBroken(true)}
+          className="mb-6 max-h-[60vh] rounded-lg border border-slate-800"
+        />
+      ) : (
+        <p className="mb-6 rounded-lg border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
+          No cover yet. Generate one below.
+        </p>
+      )}
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+        <h3 className="text-sm font-semibold text-slate-200">
+          {showImage ? 'Regenerate the cover' : 'Generate a cover'}
+        </h3>
+        <p className="mt-1 text-xs text-slate-500">
+          There is one cover per post — this replaces it. Describe the art you want; leave blank to
+          use the draft's own concept. You will land on the run to watch it.
+        </p>
+        <textarea
+          className="mt-3 h-24 w-full resize-none rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none"
+          placeholder="e.g. glowing wireframe data tables splitting into light shards, deep violet and cyan…"
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+        />
+        {gen.error != null && (
+          <p className="mt-2 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            {gen.error instanceof Error ? gen.error.message : String(gen.error)}
+          </p>
+        )}
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={() => gen.mutate()}
+            disabled={gen.isPending}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-accent-strong disabled:opacity-50"
+          >
+            {gen.isPending ? 'Starting…' : showImage ? 'Regenerate cover' : 'Generate cover'}
+          </button>
+        </div>
       </div>
     </div>
   )

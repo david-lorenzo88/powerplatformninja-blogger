@@ -490,3 +490,53 @@ async def test_backfill_is_idempotent(api):
 async def test_regenerate_unknown_post_is_404(api):
     resp = await api.post("/api/posts/9999/regenerate", json={"instructions": "x"})
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_regenerate_cover_enqueues_a_cover_run(api):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+
+    resp = await api.post(
+        f"/api/posts/{post['id']}/cover", json={"instructions": "deep violet light shards"}
+    )
+    assert resp.status_code == 202
+    finished = await _wait_for(api, resp.json()["id"], timeout=60)
+    # The run carries the concept and the post it belongs to. (Cover generation
+    # itself needs an image endpoint; disabled in tests, so it finishes without
+    # writing a file — the point here is the wiring.)
+    assert finished["params"]["post_id"] == post["id"]
+    assert finished["params"]["concept"] == "deep violet light shards"
+    assert finished["kind"] == "cover"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_cover_unknown_post_is_404(api):
+    resp = await api.post("/api/posts/9999/cover", json={"instructions": "x"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_record_cover_result_marks_versions(api):
+    """A successful cover run points the post's versions at the image."""
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+    assert post["current_version"]["has_cover"] is False
+
+    from ppn_blogger.server import catalog
+
+    await catalog.record_cover_result(
+        {"post_id": post["id"]}, {"path": "/drafts/covers/slug.png", "error": ""}
+    )
+    refreshed = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert all(v["has_cover"] for v in refreshed["versions"])
+    assert refreshed["current_version"]["cover_path"] == "/drafts/covers/slug.png"
+
+    # A failed generation records nothing.
+    await catalog.record_cover_result(
+        {"post_id": post["id"]}, {"path": "", "error": "boom"}
+    )
+    still = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert all(v["has_cover"] for v in still["versions"]), "a failed cover wiped the good one"

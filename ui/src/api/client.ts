@@ -192,4 +192,10 @@ export const regeneratePost = (id: number, body: RegenerateRequest) =>
     body: JSON.stringify(body),
   })
 
+export const regenerateCover = (id: number, instructions: string) =>
+  request<{ id: string; run_id: string }>(`/posts/${id}/cover`, {
+    method: 'POST',
+    body: JSON.stringify({ instructions }),
+  })
+
 export type { RunEvent }

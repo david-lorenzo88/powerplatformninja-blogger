@@ -546,3 +546,29 @@ async def regenerate_post(post_id: int, body: RegenerateRequest) -> dict[str, st
         f"Regenerate · {post.get('title') or topic.title}"[:300],
     )
     return {"id": run_id, "run_id": run_id}
+
+
+class CoverInstructions(BaseModel):
+    instructions: str = ""
+
+
+@router.post("/posts/{post_id}/cover", status_code=202)
+async def regenerate_cover(post_id: int, body: CoverInstructions) -> dict[str, str]:
+    """Generate a new cover for a post from custom instructions (the concept).
+
+    One cover per post: this overwrites ``covers/<slug>.png`` in place. The
+    instructions become the visual concept; blank reuses the draft's own.
+    """
+    post = await catalog.get_post(post_id)
+    if post is None:
+        raise HTTPException(404, "No such post")
+    version = post.get("current_version")
+    source = (version or {}).get("markdown_path") or (version or {}).get("markdown_file") or ""
+    if not source:
+        raise HTTPException(422, "This post has no draft file to base a cover on.")
+    run_id = await manager().enqueue(
+        "cover",
+        {"path": source, "concept": body.instructions, "post_id": post_id},
+        f"Cover · {post.get('title') or post.get('slug')}"[:300],
+    )
+    return {"id": run_id, "run_id": run_id}
