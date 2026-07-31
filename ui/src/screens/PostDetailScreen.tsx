@@ -85,6 +85,11 @@ function PostDetail({ post }: { post: Post }) {
               ← from topic idea
             </Link>
           )}
+          {post.wordpress_post_id != null && (
+            <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] text-sky-300">
+              {post.status === 'published' ? 'published' : 'draft'} · {post.wordpress_post_id}
+            </span>
+          )}
           {post.edit_link ? (
             <a
               href={post.edit_link}
