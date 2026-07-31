@@ -515,6 +515,16 @@ class RunManager:
         if kind == "write":
             topic = TopicSuggestion.model_validate(params["topic"])
             instructions = params.get("instructions") or ""
+            # A regeneration carries the whole guidance history, not just the
+            # newest note, so earlier revision requests keep applying. Only the
+            # new note is stored per version (record_write_result); the fold of
+            # all prior guidance happens here, for both reuse- and fresh-research.
+            if params.get("post_id") is not None:
+                from . import catalog
+
+                instructions = catalog.accumulate_guidance(
+                    await catalog.prior_guidance(params["post_id"]), instructions
+                )
             common = dict(
                 push_to_wordpress=params.get("push"),
                 make_cover=params.get("cover"),

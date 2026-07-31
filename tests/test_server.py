@@ -447,6 +447,61 @@ async def test_regenerate_reuse_bumps_version(api):
     assert len(files) == 2, "regeneration overwrote the previous version's file"
 
 
+def test_accumulate_guidance_folds_history_newest_last():
+    from ppn_blogger.server.catalog import accumulate_guidance
+
+    # No history: the new note passes through untouched.
+    assert accumulate_guidance([], "Make it shorter") == "Make it shorter"
+    assert accumulate_guidance([""], "  Make it shorter  ") == "Make it shorter"
+
+    folded = accumulate_guidance(["Make it shorter", "Lead with the steps"], "Add a FAQ")
+    # Every earlier note survives, in order, with the new one flagged last.
+    assert "Make it shorter" in folded
+    assert "Lead with the steps" in folded
+    assert folded.rfind("Add a FAQ") > folded.rfind("Lead with the steps")
+    assert "most recent one wins" in folded
+
+
+@pytest.mark.asyncio
+async def test_regeneration_carries_all_prior_guidance(api, monkeypatch):
+    topics = await _suggest(api)
+    await _write(api, topics[0])
+    post_id = (await api.get("/api/posts")).json()[0]["id"]
+
+    async def regenerate(instructions):
+        resp = await api.post(
+            f"/api/posts/{post_id}/regenerate",
+            json={"instructions": instructions, "reuse_research": True},
+        )
+        finished = await _wait_for(api, resp.json()["id"], timeout=90)
+        assert finished["status"] == "succeeded", finished.get("error")
+
+    await regenerate("Make it shorter")  # v2
+
+    # Capture what actually reaches the writer on the v3 regeneration.
+    from ppn_blogger import workflows as wf
+
+    seen: dict[str, str] = {}
+    real = wf.write_post_from_dossier
+
+    async def capturing(topic, dossier, **kw):
+        seen["extra"] = kw.get("extra_instructions", "")
+        return await real(topic, dossier, **kw)
+
+    monkeypatch.setattr(wf, "write_post_from_dossier", capturing)
+
+    await regenerate("Add a FAQ")  # v3
+
+    # v3 honours both its own note and v2's, newest last.
+    assert "Make it shorter" in seen["extra"]
+    assert "Add a FAQ" in seen["extra"]
+    assert seen["extra"].rfind("Add a FAQ") > seen["extra"].rfind("Make it shorter")
+
+    # Storage still records only the per-version note, not the folded blob.
+    detail = (await api.get(f"/api/posts/{post_id}")).json()
+    assert detail["versions"][0]["instructions"] == "Add a FAQ"
+
+
 @pytest.mark.asyncio
 async def test_regenerate_fresh_research(api):
     topics = await _suggest(api)
