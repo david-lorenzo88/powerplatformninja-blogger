@@ -150,7 +150,7 @@ function PostDetail({ post }: { post: Post }) {
         </aside>
 
         {selected ? (
-          <VersionView key={selected.id} version={selected} postId={post.id} />
+          <VersionView key={selected.id} version={selected} versions={versions} postId={post.id} />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
             This post has no versions yet.
@@ -176,11 +176,26 @@ function PostDetail({ post }: { post: Post }) {
   )
 }
 
-function VersionView({ version, postId }: { version: DraftVersion; postId: number }) {
+function VersionView({
+  version,
+  versions,
+  postId,
+}: {
+  version: DraftVersion
+  versions: DraftVersion[]
+  postId: number
+}) {
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('read')
   const [guidanceOpen, setGuidanceOpen] = useState(false)
   const name = version.markdown_file
+
+  // Every guidance note that shaped this version — its own plus the earlier
+  // ones it still inherits (the writer accumulates them server-side). Oldest
+  // first, so reading top-to-bottom follows how the intent built up.
+  const guidanceHistory = versions
+    .filter((v) => v.version <= version.version && v.instructions.trim())
+    .sort((a, b) => a.version - b.version)
   const draft = useQuery({
     queryKey: ['draft', name],
     queryFn: () => getDraft(name),
@@ -230,7 +245,7 @@ function VersionView({ version, postId }: { version: DraftVersion; postId: numbe
         )}
       </div>
 
-      {version.instructions && (
+      {guidanceHistory.length > 0 && (
         <div className="shrink-0 border-b border-slate-800 bg-slate-900/40">
           <button
             onClick={() => setGuidanceOpen((o) => !o)}
@@ -247,15 +262,33 @@ function VersionView({ version, postId }: { version: DraftVersion; postId: numbe
               <path d="M4 2.5 8 6l-4 3.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             <span className="font-semibold uppercase tracking-wide">Guidance</span>
+            <span className="rounded bg-slate-700/60 px-1.5 text-[10px] text-slate-300">
+              {guidanceHistory.length}
+            </span>
             {!guidanceOpen && (
-              <span className="min-w-0 flex-1 truncate text-slate-500">{version.instructions}</span>
+              <span className="min-w-0 flex-1 truncate text-slate-500">
+                {guidanceHistory[guidanceHistory.length - 1].instructions}
+              </span>
             )}
           </button>
           {guidanceOpen && (
-            <div className="max-h-56 overflow-auto px-6 pb-3">
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">
-                {version.instructions}
-              </p>
+            <div className="max-h-56 space-y-3 overflow-auto px-6 pb-3">
+              {guidanceHistory.map((v) => (
+                <div key={v.id} className="flex gap-3">
+                  <span
+                    className={`mt-0.5 shrink-0 rounded px-1.5 text-[11px] ${
+                      v.id === version.id
+                        ? 'bg-accent/15 text-accent'
+                        : 'bg-slate-800 text-slate-400'
+                    }`}
+                  >
+                    v{v.version}
+                  </span>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">
+                    {v.instructions}
+                  </p>
+                </div>
+              ))}
             </div>
           )}
         </div>
