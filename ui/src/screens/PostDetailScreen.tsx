@@ -179,6 +179,7 @@ function PostDetail({ post }: { post: Post }) {
 function VersionView({ version, postId }: { version: DraftVersion; postId: number }) {
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('read')
+  const [guidanceOpen, setGuidanceOpen] = useState(false)
   const name = version.markdown_file
   const draft = useQuery({
     queryKey: ['draft', name],
@@ -218,11 +219,6 @@ function VersionView({ version, postId }: { version: DraftVersion; postId: numbe
             {t}
           </button>
         ))}
-        {version.instructions && (
-          <span className="ml-3 truncate text-xs text-slate-500" title={version.instructions}>
-            guidance: {version.instructions}
-          </span>
-        )}
         {tab === 'edit' && (
           <button
             onClick={() => save.mutate()}
@@ -233,6 +229,37 @@ function VersionView({ version, postId }: { version: DraftVersion; postId: numbe
           </button>
         )}
       </div>
+
+      {version.instructions && (
+        <div className="shrink-0 border-b border-slate-800 bg-slate-900/40">
+          <button
+            onClick={() => setGuidanceOpen((o) => !o)}
+            className="flex w-full items-center gap-2 px-6 py-2 text-left text-xs text-slate-400 hover:text-slate-200"
+            aria-expanded={guidanceOpen}
+          >
+            <svg
+              className={`h-3 w-3 shrink-0 transition-transform ${guidanceOpen ? 'rotate-90' : ''}`}
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path d="M4 2.5 8 6l-4 3.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span className="font-semibold uppercase tracking-wide">Guidance</span>
+            {!guidanceOpen && (
+              <span className="min-w-0 flex-1 truncate text-slate-500">{version.instructions}</span>
+            )}
+          </button>
+          {guidanceOpen && (
+            <div className="max-h-56 overflow-auto px-6 pb-3">
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">
+                {version.instructions}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-auto">
         {draft.isLoading ? (

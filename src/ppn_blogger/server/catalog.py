@@ -255,6 +255,48 @@ async def post_topic_and_dossier(post_id: int) -> tuple[TopicSuggestion, Path | 
     return topic, dossier_path
 
 
+async def prior_guidance(post_id: int) -> list[str]:
+    """Every non-empty editor guidance already recorded for a post, oldest first.
+
+    Each regeneration stores only the guidance that produced *that* version, so
+    the running history has to be reassembled here. A later revision should keep
+    honouring what earlier ones asked for — "shorter" plus "lead with the steps"
+    plus the newest note — not silently drop the accumulated intent.
+    """
+    async with session() as s:
+        versions = (
+            await s.execute(
+                select(DraftVersion)
+                .where(DraftVersion.post_id == post_id)
+                .order_by(DraftVersion.version.asc())
+            )
+        ).scalars().all()
+    return [v.instructions.strip() for v in versions if v.instructions.strip()]
+
+
+def accumulate_guidance(history: list[str], new_instructions: str) -> str:
+    """Fold prior guidance and the new note into one instruction for the writer.
+
+    The newest note is repeated last and flagged highest-priority so that, where
+    two revisions conflict ("make it longer" then "make it shorter"), the writer
+    follows the most recent. When there is no history this is just the new note.
+    """
+    new = new_instructions.strip()
+    history = [h for h in history if h]
+    if not history:
+        return new
+    lines = [
+        "This post has been revised before. Apply the full history of editor "
+        "guidance below. Where two items conflict, the most recent one wins.",
+        "",
+        "Guidance from previous revisions (oldest first):",
+    ]
+    lines += [f"- {h}" for h in history]
+    if new:
+        lines += ["", "New guidance for this revision (highest priority):", new]
+    return "\n".join(lines)
+
+
 def _topic_from_idea(idea: TopicIdea) -> TopicSuggestion:
     if idea.data:
         try:
