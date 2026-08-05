@@ -502,14 +502,59 @@ class RunManager:
 
         settings = get_settings()
 
+        default_instruction = (
+            "Find what is worth writing about on the Power Platform Ninja blog right now."
+        )
+
         if kind == "suggest":
-            instruction = params.get("instruction") or (
-                "Find what is worth writing about on the Power Platform Ninja blog right now."
-            )
+            instruction = params.get("instruction") or default_instruction
             result = await discover_topics(instruction, on_event=self._on_event(run_id))
             return {
                 "suggestions": [s.model_dump(mode="json") for s in result.suggestions],
                 "generated_on": result.generated_on,
+            }
+
+        if kind == "explore":
+            # Half a topic run: the scouts sweep wide and stop. The result is
+            # deliberately thin — counts and a review id — because the candidate
+            # list itself lives in source_reviews, which is what the operator
+            # acts on and what the follow-up run reads.
+            from ..workflows import explore_sources
+            from . import reviews
+
+            instruction = params.get("instruction") or default_instruction
+            review = await explore_sources(instruction, on_event=self._on_event(run_id))
+            review_id = await reviews.create(run_id, review)
+            return {
+                "awaiting_source_approval": True,
+                "review_id": review_id,
+                "generated_on": review.generated_on,
+                "candidate_count": len(review.candidates),
+                "new_count": sum(1 for c in review.candidates if not c.known),
+                "signal_count": sum(c.item_count for c in review.candidates),
+            }
+
+        if kind == "shortlist":
+            from ..workflows import shortlist_from_sources
+            from . import reviews
+
+            review_id = int(params["review_id"])
+            reports, approved, instruction = await reviews.material(review_id)
+            if not approved:
+                raise RuntimeError(
+                    f"Source review {review_id} approved no sites — nothing to build a shortlist from."
+                )
+            result = await shortlist_from_sources(
+                reports,
+                approved,
+                instruction=params.get("instruction") or instruction,
+                on_event=self._on_event(run_id),
+            )
+            return {
+                "suggestions": [s.model_dump(mode="json") for s in result.suggestions],
+                "generated_on": result.generated_on,
+                "review_id": review_id,
+                "approved_sources": approved,
             }
 
         if kind == "write":

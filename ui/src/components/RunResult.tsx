@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import type { Run } from '../api/types'
 
 // Compact summary of a finished run's result, shaped per kind. The result dicts
@@ -40,7 +41,30 @@ export function RunResult({ run }: { run: Run }) {
     )
   }
 
-  if (run.kind === 'suggest') {
+  // An exploration sweep ends waiting on a person. Say so loudly: the run reads
+  // as "succeeded", but nothing further happens until the review is answered.
+  if (r.awaiting_source_approval) {
+    return (
+      <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+        <span className="font-semibold text-amber-200">
+          {String(r.candidate_count ?? 0)} sites found
+        </span>
+        <span className="text-amber-200/70">
+          {' '}
+          · {String(r.new_count ?? 0)} new · {String(r.signal_count ?? 0)} signals · waiting for
+          your approval
+        </span>
+        <Link
+          to={`/source-reviews/${String(r.review_id)}`}
+          className="ml-2 font-semibold text-accent hover:underline"
+        >
+          Review sources →
+        </Link>
+      </div>
+    )
+  }
+
+  if (run.kind === 'suggest' || run.kind === 'shortlist') {
     const suggestions = (r.suggestions as Array<Record<string, unknown>> | undefined) ?? []
     return (
       <div className="mt-2 text-xs text-slate-400">

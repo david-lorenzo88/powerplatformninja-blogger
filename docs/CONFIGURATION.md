@@ -329,9 +329,28 @@ substring, so `github.com/microsoft` is official and the rest of GitHub is not.
 Adding a blog you trust to `community_trusted` is how you let the Researcher lean
 on it.
 
+Adding domains by hand is one way in. The other is **exploration mode**: run
+`ppn suggest --explore` (or tick *Search the whole web* in the UI), and every site
+the scouts read comes back for approval with a tier dropdown. Approving one appends
+it here as a new config version. See
+[HOW-IT-WORKS](HOW-IT-WORKS.md#workflow-1b--exploration-mode-and-the-source-review).
+
 ### `blocked_domains`
 
 Never citable. A citation from one of these is a hard fail, not a deduction.
+
+### `declined_domains`
+
+Sites turned down in a source review. **Not** blocked — merely never offered for
+approval again, so the same rejects do not reappear in every sweep. A declined site
+does not fail a draft that cites it; it is simply never suggested. Approving the
+domain in a later review removes it from this list, and deleting a line by hand puts
+the site back in circulation.
+
+Only sites the config had never heard of land here. Unticking a site that already
+carries a tier means "not for this shortlist" and changes nothing on disk — demoting
+a trusted feed is a bigger decision than unticking a box, and belongs in
+`trust_tiers`.
 
 ### `policy`
 

@@ -219,6 +219,10 @@ puedas vivir sin agregación relacional. Si dudas, no migres todavía.
 
 
 def _scout_report(name: str) -> ScoutReport:
+    # Three domains on purpose, spanning the three cases the source review has to
+    # handle: already official, already community_trusted, and an unknown site
+    # nobody has classified. A stub that only ever returned learn.microsoft.com
+    # would let an exploration dry run pass with an empty approval list.
     return ScoutReport(
         scout=name,
         items=[
@@ -229,7 +233,23 @@ def _scout_report(name: str) -> ScoutReport:
                 source_name="Microsoft Learn",
                 why_it_matters="High-volume Dataverse scenarios now have a supported path.",
                 watch_area="dataverse",
-            )
+            ),
+            SignalItem(
+                title="What elastic tables cost you in practice",
+                url="https://www.matthewdevaney.com/elastic-tables-in-practice/",
+                published=TODAY,
+                source_name="Matthew Devaney",
+                why_it_matters="Field numbers for the throughput the docs only describe abstractly.",
+                watch_area="dataverse",
+            ),
+            SignalItem(
+                title="Dataverse throughput benchmarks nobody publishes",
+                url="https://dataverse-notes.example/benchmarks",
+                published=TODAY,
+                source_name="Dataverse Notes",
+                why_it_matters="An independent benchmark of the documented request limits.",
+                watch_area="dataverse",
+            ),
         ],
         notes=f"stub output from {name}",
     )

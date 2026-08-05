@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Never
 
 from agent_framework import (
@@ -31,6 +32,7 @@ from .models import (
     ReviewOutcome,
     RuleFinding,
     ScoutReport,
+    SourceReviewSet,
     SourceVerdict,
     TopicSuggestion,
     TopicSuggestionSet,
@@ -239,6 +241,46 @@ class ScoutDispatcher(Executor):
         await ctx.send_message(AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True))
 
 
+def _parse_scout_reports(
+    responses: list[AgentExecutorResponse],
+) -> tuple[list[ScoutReport], list[str]]:
+    """Parse the scout responses into reports, and into blocks for the editor.
+
+    A scout that returns unparsable output still contributes its raw text to the
+    editor's brief — losing one scout's findings to a schema slip would be a
+    worse outcome than handing the editor slightly messier input. Such a report
+    cannot be harvested for sources, so the two return values differ in length
+    exactly when a scout failed to parse.
+    """
+    reports: list[ScoutReport] = []
+    blocks: list[str] = []
+    for response in responses:
+        label = response.executor_id
+        try:
+            report = parse_model(response, ScoutReport)
+            # The executor id is the scout's real identity; whatever the model
+            # put in `scout` is a self-description and drifts between runs.
+            report.scout = label or report.scout
+            reports.append(report)
+            blocks.append(f"<scout name=\"{label}\">\n{as_json(report)}\n</scout>")
+            logger.info("scout %s returned %d items", label, len(report.items))
+        except ValueError as exc:
+            logger.warning("scout %s produced unparsable output: %s", label, exc)
+            blocks.append(
+                f"<scout name=\"{label}\" parse_error=\"true\">\n"
+                f"{(response.agent_response.text if response.agent_response else '')[:4000]}\n</scout>"
+            )
+    return reports, blocks
+
+
+def _editor_brief(blocks: list[str], preamble: str = "") -> str:
+    lead = preamble or (
+        "Here are the raw scout reports. Synthesise them into the ranked topic "
+        "shortlist as instructed."
+    )
+    return lead + "\n\n" + "\n\n".join(blocks)
+
+
 class ScoutAggregator(Executor):
     """Fan-in: collects the three scout reports and briefs the topic editor."""
 
@@ -252,25 +294,104 @@ class ScoutAggregator(Executor):
         responses: list[AgentExecutorResponse],
         ctx: WorkflowContext[AgentExecutorRequest],
     ) -> None:
-        blocks: list[str] = []
-        for response in responses:
-            label = response.executor_id
-            try:
-                report = parse_model(response, ScoutReport)
-                blocks.append(f"<scout name=\"{label}\">\n{as_json(report)}\n</scout>")
-                logger.info("scout %s returned %d items", label, len(report.items))
-            except ValueError as exc:
-                logger.warning("scout %s produced unparsable output: %s", label, exc)
-                blocks.append(
-                    f"<scout name=\"{label}\" parse_error=\"true\">\n"
-                    f"{(response.agent_response.text if response.agent_response else '')[:4000]}\n</scout>"
-                )
-
-        prompt = (
-            "Here are the raw scout reports. Synthesise them into the ranked topic "
-            "shortlist as instructed.\n\n" + "\n\n".join(blocks)
+        _, blocks = _parse_scout_reports(responses)
+        await ctx.send_message(
+            AgentExecutorRequest(messages=[user_message(_editor_brief(blocks))], should_respond=True)
         )
-        await ctx.send_message(AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True))
+
+
+class SourceHarvester(Executor):
+    """Fan-in for an exploration sweep: ends the run with a list of sites to vet.
+
+    This is where a wide sweep deliberately stops. The scouts have read the open
+    web, but nothing they found may reach the topic editor until a human has said
+    which sites are acceptable — so this executor yields the candidate list and
+    the raw reports, and the run finishes. The shortlist is built later, by
+    :class:`ScoutReplay`, once the verdict exists.
+    """
+
+    def __init__(
+        self, settings: Settings, instruction: str = "", id: str = "source_harvester"
+    ) -> None:
+        super().__init__(id)
+        self.settings = settings
+        self.instruction = instruction
+        self.result: SourceReviewSet | None = None
+
+    @handler
+    async def collect(
+        self,
+        responses: list[AgentExecutorResponse],
+        ctx: WorkflowContext[Never, SourceReviewSet],
+    ) -> None:
+        from .sources import harvest_candidates
+
+        reports, _ = _parse_scout_reports(responses)
+        candidates = harvest_candidates(reports, declined=self.settings.declined_domains)
+        review = SourceReviewSet(
+            generated_on=date.today().isoformat(),
+            instruction=self.instruction,
+            candidates=candidates,
+            reports=reports,
+        )
+        self.result = review
+        logger.info(
+            "harvested %d sites (%d new) from %d signals — awaiting approval",
+            len(candidates),
+            sum(1 for c in candidates if not c.known),
+            sum(len(r.items) for r in reports),
+        )
+        await ctx.yield_output(review)
+
+
+@dataclass
+class ShortlistRequest:
+    """Start message for the second half of an exploration run."""
+
+    reports: list[ScoutReport]
+    approved: list[str] = field(default_factory=list)
+    instruction: str = ""
+
+
+class ScoutReplay(Executor):
+    """Entry point for the shortlist half: vetted reports in, editor brief out.
+
+    The filtering happens here rather than at the caller so there is exactly one
+    place where "the editor only ever sees approved sources" is enforced.
+    """
+
+    def __init__(self, settings: Settings, id: str = "scout_replay") -> None:
+        super().__init__(id)
+        self.settings = settings
+
+    @handler
+    async def start(
+        self, request: ShortlistRequest, ctx: WorkflowContext[AgentExecutorRequest]
+    ) -> None:
+        from .sources import filter_reports
+
+        reports = filter_reports(request.reports, request.approved)
+        kept = sum(len(r.items) for r in reports)
+        logger.info(
+            "replaying %d signals from %d approved sources", kept, len(request.approved)
+        )
+        preamble = (
+            f"{request.instruction.strip()}\n\n" if request.instruction.strip() else ""
+        ) + (
+            "Here are the scout reports for this run. They have already been filtered "
+            "to the sources the blog's editor approved:\n"
+            f"{', '.join(sorted(request.approved)) or '(none)'}\n\n"
+            "Everything from a source the editor turned down has been removed. Work "
+            "only from what is here — do not reintroduce material from memory, and do "
+            "not lower the bar because the volume is smaller. Synthesise the ranked "
+            "topic shortlist as instructed."
+        )
+        blocks = [f"<scout name=\"{r.scout}\">\n{as_json(r)}\n</scout>" for r in reports]
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(_editor_brief(blocks, preamble))], should_respond=True
+            )
+        )
 
 
 class TopicPublisher(Executor):

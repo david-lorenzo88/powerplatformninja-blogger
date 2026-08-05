@@ -26,8 +26,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 
+from ..models import SourceDecision
 from ..settings import get_settings
-from . import catalog, config_store, drafts
+from . import catalog, config_store, drafts, reviews
 from .db import Run, session
 from .runs import TERMINAL, manager
 
@@ -189,11 +190,22 @@ async def workflows() -> list[dict[str, Any]]:
     from agent_framework import WorkflowViz
 
     from ..testing import stub_clients
-    from ..workflows import build_post_workflow, build_topic_discovery_workflow
+    from ..workflows import (
+        build_post_workflow,
+        build_shortlist_workflow,
+        build_source_exploration_workflow,
+        build_topic_discovery_workflow,
+    )
 
     clients = stub_clients()
     built = [
         ("suggest", "Topic discovery", build_topic_discovery_workflow(clients=clients).workflow),
+        (
+            "explore",
+            "Source exploration",
+            build_source_exploration_workflow(clients=clients).workflow,
+        ),
+        ("shortlist", "Topic shortlist", build_shortlist_workflow(clients=clients).workflow),
         ("write", "Post pipeline", build_post_workflow(clients=clients).workflow),
     ]
     out = []
@@ -218,6 +230,10 @@ async def workflows() -> list[dict[str, Any]]:
 class SuggestRequest(BaseModel):
     instruction: str = ""
     label: str = ""
+    # Exploration mode: sweep the open web and stop at a source review instead of
+    # going straight to a shortlist. Enqueued as its own run kind, because it is
+    # a different graph and the canvas is keyed by kind.
+    explore: bool = False
 
 
 class WriteRequest(BaseModel):
@@ -251,8 +267,10 @@ def _run_dict(run: Run) -> dict[str, Any]:
 
 @router.post("/runs/suggest", status_code=202)
 async def start_suggest(body: SuggestRequest) -> dict[str, str]:
+    kind = "explore" if body.explore else "suggest"
+    default_label = "Source exploration" if body.explore else "Topic discovery"
     run_id = await manager().enqueue(
-        "suggest", {"instruction": body.instruction}, body.label or "Topic discovery"
+        kind, {"instruction": body.instruction}, body.label or default_label
     )
     return {"id": run_id}
 
@@ -375,6 +393,61 @@ def derive_nodes(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if event.get("kind") == "log":
             node["logs"] += 1
     return nodes
+
+
+# ---------------------------------------------------------------------------
+# Source reviews — the approval step in the middle of an exploration run
+# ---------------------------------------------------------------------------
+
+
+class DecideRequest(BaseModel):
+    decisions: list[SourceDecision]
+    # Approving without building a shortlist is a legitimate outcome: the sites
+    # are filed into sources.yaml for future runs either way.
+    start_shortlist: bool = True
+    instruction: str = ""
+    label: str = ""
+
+
+@router.get("/source-reviews")
+async def list_source_reviews(
+    status: str | None = None, limit: int = Query(50, le=200)
+) -> list[dict[str, Any]]:
+    return await reviews.list_reviews(status, limit)
+
+
+@router.get("/source-reviews/{review_id}")
+async def get_source_review(review_id: int) -> dict[str, Any]:
+    review = await reviews.get(review_id)
+    if review is None:
+        raise HTTPException(404, "No such source review")
+    return review
+
+
+@router.post("/source-reviews/{review_id}/decide")
+async def decide_source_review(review_id: int, body: DecideRequest) -> dict[str, Any]:
+    """File the verdict into sources.yaml and, by default, build the shortlist."""
+    try:
+        outcome = await reviews.decide(review_id, body.decisions)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    run_id = ""
+    if body.start_shortlist and outcome["approved"]:
+        run_id = await manager().enqueue(
+            "shortlist",
+            {"review_id": review_id, "instruction": body.instruction},
+            body.label or f"Topic shortlist · review #{review_id}",
+        )
+        await reviews.attach_shortlist_run(review_id, run_id)
+    return {**outcome, "run_id": run_id}
+
+
+@router.post("/source-reviews/{review_id}/cancel")
+async def cancel_source_review(review_id: int) -> dict[str, bool]:
+    return {"cancelled": await reviews.cancel(review_id)}
 
 
 # ---------------------------------------------------------------------------

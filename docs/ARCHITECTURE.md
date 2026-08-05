@@ -64,7 +64,7 @@ Base: `/api`
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/runs/suggest` | `{instruction, label}` → `202 {id}` |
+| `POST` | `/runs/suggest` | `{instruction, label, explore}` → `202 {id}`. `explore: true` enqueues kind `explore` instead of `suggest`. |
 | `POST` | `/runs/write` | `{topic, push, cover, translate, label}` → `202 {id}` |
 | `POST` | `/runs/cover` | `{path, concept}` → `202 {id}` |
 | `GET` | `/runs?status=&limit=` | newest first |
@@ -74,6 +74,32 @@ Base: `/api`
 
 Statuses: `queued · running · succeeded · failed · cancelled · interrupted`.
 `interrupted` is applied at startup to runs a crash left mid-flight.
+
+Kinds: `suggest · explore · shortlist · write · cover`. Each has its own graph in
+`GET /workflows`, which is why exploration is a separate kind rather than a flag —
+the canvas is keyed by kind.
+
+### Source reviews
+
+An `explore` run finishes `succeeded` with
+`result = {awaiting_source_approval: true, review_id, candidate_count, new_count,
+signal_count}` and produces **no suggestions**. The candidate sites wait in
+`source_reviews` until a human answers; approving them files the verdict into
+`sources.yaml` and (by default) enqueues the `shortlist` run that finishes the job.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/source-reviews?status=&limit=` | newest first; `status=pending` is the inbox |
+| `GET` | `/source-reviews/{id}` | adds `candidates`, `decisions` and the `tiers` menu (read from `sources.yaml`, never hard-coded client-side) |
+| `POST` | `/source-reviews/{id}/decide` | `{decisions: [{domain, approved, tier}], start_shortlist, instruction, label}` → `{review_id, approved, declined, config_version, run_id}` |
+| `POST` | `/source-reviews/{id}/cancel` | drop a pending review without deciding |
+
+`decide` is where the config write happens, before the review is marked decided: a
+crash between the two leaves a review that can simply be approved again, whereas the
+reverse order would leave approved sources in a "decided" review that never reached
+the config. It returns `409` for a review that was already answered or a domain that
+was not in it, and `404` for an unknown review. `run_id` is empty when
+`start_shortlist` is false or nothing was approved.
 
 ### The event stream
 

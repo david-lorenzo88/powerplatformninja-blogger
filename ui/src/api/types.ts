@@ -1,7 +1,11 @@
 // Mirrors the server contract in docs/ARCHITECTURE.md and src/ppn_blogger/server.
 // Kept in one place so every screen shares one source of truth for shapes.
 
-export type RunKind = 'suggest' | 'write' | 'cover'
+// `explore` sweeps the open web and stops at a source review; `shortlist` is the
+// second half, run once the operator has approved sources. They are separate
+// kinds rather than a flag because each is a different workflow graph, and the
+// canvas is keyed by kind.
+export type RunKind = 'suggest' | 'explore' | 'shortlist' | 'write' | 'cover'
 
 export type RunStatus =
   | 'queued'
@@ -213,8 +217,84 @@ export interface RegenerateRequest {
   cover?: boolean | null
 }
 
+// Source reviews: the approval step in the middle of an exploration run
+// (server/reviews.py).
+
+export type SourceReviewStatus = 'pending' | 'approved' | 'cancelled'
+
+export interface SignalItem {
+  title: string
+  url: string
+  published: string | null
+  source_name: string | null
+  why_it_matters: string
+  watch_area: string
+}
+
+export interface SourceCandidate {
+  domain: string
+  name: string
+  known: boolean
+  current_tier: string
+  suggested_tier: string
+  item_count: number
+  scouts: string[]
+  items: SignalItem[]
+}
+
+export interface SourceReviewSummary {
+  id: number
+  run_id: string | null
+  status: SourceReviewStatus
+  instruction: string
+  generated_on: string
+  candidate_count: number
+  new_count: number
+  signal_count: number
+  config_version: number | null
+  shortlist_run_id: string | null
+  created_at: string | null
+  decided_at: string | null
+}
+
+export interface SourceDecision {
+  domain: string
+  approved: boolean
+  tier?: string
+}
+
+export interface TrustTier {
+  id: string
+  label: string
+  score: number
+}
+
+export interface SourceReview extends SourceReviewSummary {
+  candidates: SourceCandidate[]
+  decisions: SourceDecision[]
+  // The tier menu comes from the server so the UI never hard-codes a list that
+  // lives in sources.yaml.
+  tiers: TrustTier[]
+}
+
+export interface DecideResult {
+  review_id: number
+  approved: string[]
+  declined: string[]
+  config_version: number | null
+  run_id: string
+}
+
 // Request bodies.
 export interface SuggestRequest {
+  instruction?: string
+  label?: string
+  explore?: boolean
+}
+
+export interface DecideRequest {
+  decisions: SourceDecision[]
+  start_shortlist?: boolean
   instruction?: string
   label?: string
 }

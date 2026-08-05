@@ -6,10 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from ppn_blogger.models import PostPackage, TopicSuggestionSet
+from ppn_blogger.models import PostPackage, SourceReviewSet, TopicSuggestionSet
 from ppn_blogger.settings import get_settings
 from ppn_blogger.testing import stub_clients
-from ppn_blogger.workflows import discover_topics, write_post
+from ppn_blogger.workflows import (
+    discover_topics,
+    explore_sources,
+    shortlist_from_sources,
+    write_post,
+)
 
 
 @pytest.mark.asyncio
@@ -17,6 +22,32 @@ async def test_topic_discovery_produces_suggestions(tmp_path, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings.run, "topics_dir", tmp_path)
     result = await discover_topics(clients=stub_clients())
+    assert isinstance(result, TopicSuggestionSet)
+    assert result.suggestions
+    assert (tmp_path / f"suggestions-{result.generated_on}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_exploration_stops_at_the_sources_and_resumes_from_them(tmp_path, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings.run, "topics_dir", tmp_path)
+    clients = stub_clients()
+
+    review = await explore_sources("wide sweep", clients=clients)
+    assert isinstance(review, SourceReviewSet)
+    assert review.instruction == "wide sweep"
+    # The sweep must not have produced topics: nothing may be proposed before a
+    # human has said which sites are acceptable.
+    assert not list(tmp_path.glob("suggestions-*.json"))
+    assert {c.domain for c in review.candidates} == {
+        "learn.microsoft.com",
+        "matthewdevaney.com",
+        "dataverse-notes.example",
+    }
+
+    result = await shortlist_from_sources(
+        review.reports, ["learn.microsoft.com"], instruction="wide sweep", clients=clients
+    )
     assert isinstance(result, TopicSuggestionSet)
     assert result.suggestions
     assert (tmp_path / f"suggestions-{result.generated_on}.json").exists()

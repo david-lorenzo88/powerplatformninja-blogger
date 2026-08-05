@@ -75,10 +75,10 @@ def _searchable(base: list[Any], client: Any) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_news_scout(settings: Settings, clients: ClientBundle) -> Agent:
+def build_news_scout(settings: Settings, clients: ClientBundle, *, explore: bool = False) -> Agent:
     return Agent(
         clients.fast,
-        prompts.news_scout_instructions(settings),
+        prompts.news_scout_instructions(settings, explore=explore),
         id=NEWS_SCOUT,
         name=NEWS_SCOUT,
         description="Scans the open web for recent, substantive Power Platform news.",
