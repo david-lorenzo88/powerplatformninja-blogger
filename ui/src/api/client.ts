@@ -8,6 +8,8 @@ import type {
   ConfigHistoryItem,
   ConfigListItem,
   ConfigVersion,
+  DecideRequest,
+  DecideResult,
   Draft,
   DraftListItem,
   DraftVersion,
@@ -19,6 +21,9 @@ import type {
   RunDetail,
   RunEvent,
   RunStatus,
+  SourceReview,
+  SourceReviewStatus,
+  SourceReviewSummary,
   SuggestRequest,
   TopicIdea,
   TopicIdeaSummary,
@@ -89,6 +94,22 @@ export const cancelRun = (id: string) =>
 // SSE URL for EventSource. Replays from `after`, then follows live.
 export const runEventsUrl = (id: string, after = 0) =>
   `${API_BASE}/runs/${id}/events?after=${after}`
+
+// -- Source reviews ---------------------------------------------------------
+
+export const listSourceReviews = (status?: SourceReviewStatus) =>
+  request<SourceReviewSummary[]>(`/source-reviews${status ? `?status=${status}` : ''}`)
+
+export const getSourceReview = (id: number) => request<SourceReview>(`/source-reviews/${id}`)
+
+export const decideSourceReview = (id: number, body: DecideRequest) =>
+  request<DecideResult>(`/source-reviews/${id}/decide`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const cancelSourceReview = (id: number) =>
+  request<{ cancelled: boolean }>(`/source-reviews/${id}/cancel`, { method: 'POST' })
 
 // -- Workflows (the canvas topology) ---------------------------------------
 

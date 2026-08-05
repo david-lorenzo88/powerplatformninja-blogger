@@ -67,6 +67,52 @@ class TopicSuggestionSet(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Source exploration
+#
+# A wide-web sweep is only useful if the sites it turns up can be vetted before
+# they influence anything. These three models carry that review: what the
+# scouts drew on, what the operator decided, and the raw reports the shortlist
+# is later built from. None of them is bound to an agent — the harvest is code,
+# not judgement, which is what keeps the candidate list honest about where the
+# scouts actually went.
+# ---------------------------------------------------------------------------
+
+
+class SourceCandidate(BaseModel):
+    """One site the scouts drew on, offered to the operator for approval."""
+
+    domain: str
+    name: str = Field("", description="Human label, taken from the scout's source_name")
+    known: bool = Field(False, description="True when sources.yaml already gives it a tier")
+    current_tier: str = Field("unknown", description="Tier it classifies as today")
+    suggested_tier: str = Field(
+        "community_unverified", description="Tier to apply on approval unless the operator changes it"
+    )
+    item_count: int = 0
+    scouts: list[str] = Field(default_factory=list, description="Which scouts reported it")
+    items: list[SignalItem] = Field(default_factory=list, description="What was found there")
+
+
+class SourceDecision(BaseModel):
+    """The operator's verdict on one candidate."""
+
+    domain: str
+    approved: bool = False
+    tier: str = Field(
+        "community_unverified", description="Trust tier to file an approved domain under"
+    )
+
+
+class SourceReviewSet(BaseModel):
+    """Everything the shortlist stage needs once the review is settled."""
+
+    generated_on: str
+    instruction: str = ""
+    candidates: list[SourceCandidate] = Field(default_factory=list)
+    reports: list[ScoutReport] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Author notes
 #
 # The one place the Writer is allowed to draw first person, real numbers and

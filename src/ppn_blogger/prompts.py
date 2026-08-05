@@ -79,7 +79,37 @@ Return your findings as JSON matching the ScoutReport schema.
 """.strip()
 
 
-def news_scout_instructions(settings: Settings) -> str:
+# Appended in exploration mode. The default scout brief is implicitly conservative
+# — it is written for a crew that only ever reads nine curated feeds — so an
+# unknown domain reads as a risk to be avoided. Under review that is backwards:
+# every new site is inspected by a human before it can influence anything, so the
+# expensive mistake is a narrow sweep, not an unfamiliar source.
+_EXPLORATION_MODE = """
+## Exploration mode
+
+You are **not** limited to the sites this blog already trusts. Range across the
+open web and come back with the best material you can find, wherever it lives.
+
+- Actively look beyond the usual suspects: independent consultants, engineering
+  blogs, conference write-ups, community newsletters, GitHub discussions,
+  regional Power Platform communities, non-English sources with real substance.
+- An unfamiliar domain is not a problem. Every new site you report is shown to
+  the blog's editor for approval before it is used, so surfacing a good unknown
+  source is the most valuable thing you can do here. Reporting only
+  learn.microsoft.com is the failure case.
+- Judge on substance, not familiarity: does the page contain a concrete detail,
+  number, reproduction or limitation that a working consultant could act on?
+- Still refuse content farms, SEO reposts, AI-spun summaries and pages that only
+  restate an official announcement.
+- Set `source_name` to the publication or author behind each item — that is the
+  label the editor will see when deciding whether to trust the site.
+
+Aim for breadth: at least 8 distinct domains across your report if the material
+is there. Report up to 25 items.
+""".strip()
+
+
+def news_scout_instructions(settings: Settings, *, explore: bool = False) -> str:
     areas = [
         {"id": a["id"], "label": a.get("label"), "keywords": a.get("keywords", []),
          "angle": a.get("angle", ""), "freshness_days": a.get("freshness_days", 30)}
@@ -100,7 +130,8 @@ it. If you have no web search tool at all, say so in `notes` and fall back to
 </watch_areas>
 
 Exclude anything matching: {', '.join(settings.topics.get('exclude_keywords', []))}
-Report at most 4 items per watch area, at most 15 in total.
+Report at most {8 if explore else 4} items per watch area, at most {25 if explore else 15} in total.
+{_EXPLORATION_MODE if explore else ''}
 """
 
 

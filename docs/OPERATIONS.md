@@ -68,15 +68,42 @@ to paste into an issue.
 ```bash
 ppn suggest
 ppn suggest --instruction "focus on governance and DLP changes this month"
+ppn suggest --explore
 ppn suggest --dry-run
 ```
 
 | Option | Default | Effect |
 |---|---|---|
 | `--instruction` / `-i` | *"Find what is worth writing about…"* | Steers the scouts. |
+| `--explore` | off | Search the whole web, then approve the sites it read before any topic is proposed. |
+| `--yes` / `-y` | off | With `--explore`, approve every site found at its suggested tier without prompting. |
 | `--dry-run` | off | Offline stub. No network, no cost. |
 
 Writes `topics/suggestions-<date>.json` and a readable `.md`. Takes 10–20 minutes.
+
+**`--explore`** widens the news scout past the curated feeds and stops halfway to
+show you every site it read, one row per domain, with what was found there:
+
+```
+                       Sites the scouts read — 2026-08-05
+ #    ✓   Site                     Status    Tier                   Items
+ 1        powerplatform-diary.io   new       community_unverified       4
+ 2    ✓   learn.microsoft.com      trusted   official                  11
+ 3    ✓   matthewdevaney.com       trusted   community_trusted          3
+
+Type numbers to toggle (e.g. 2 5), a for all, n for none, ?N to see what was
+found on site N, or press Enter to accept.
+```
+
+Already-trusted sites start ticked; a site nobody has vetted has to be said yes to
+explicitly. Each newly approved site is then asked for a trust tier — the choice
+that decides whether a draft resting on it passes the Source Checker. Approved sites
+are written into `config/sources.yaml`, so they apply to every later run and to the
+Researcher on every later draft. Refused sites go to `declined_domains` and are
+never offered again.
+
+On the server the same approval happens under **Sources** in the UI, where the sweep
+and the shortlist are two runs with your decision in between.
 
 #### `ppn write`
 

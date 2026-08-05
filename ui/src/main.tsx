@@ -11,6 +11,8 @@ import { DraftsScreen } from './screens/DraftsScreen'
 import { PostDetailScreen } from './screens/PostDetailScreen'
 import { TopicIdeasScreen } from './screens/TopicIdeasScreen'
 import { TopicIdeaDetailScreen } from './screens/TopicIdeaDetailScreen'
+import { SourceReviewsScreen } from './screens/SourceReviewsScreen'
+import { SourceReviewScreen } from './screens/SourceReviewScreen'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +30,8 @@ const router = createBrowserRouter([
       { path: 'runs/:id', element: <RunDetailScreen /> },
       { path: 'topic-ideas', element: <TopicIdeasScreen /> },
       { path: 'topic-ideas/:id', element: <TopicIdeaDetailScreen /> },
+      { path: 'source-reviews', element: <SourceReviewsScreen /> },
+      { path: 'source-reviews/:id', element: <SourceReviewScreen /> },
       { path: 'config', element: <ConfigScreen /> },
       { path: 'drafts', element: <DraftsScreen /> },
       { path: 'drafts/:id', element: <PostDetailScreen /> },

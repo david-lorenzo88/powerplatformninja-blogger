@@ -43,12 +43,14 @@ src/ppn_blogger/
   workflows.py      the two Agent Framework graphs + the entry-point functions
   covers.py         neon cover art (MAI / OpenAI-compatible / OpenAI-direct)
   wordpress.py      REST client + Markdown → Gutenberg block conversion
+  sources.py        harvest sites from a wide sweep; file the operator's verdict
   storage.py        drafts, dossiers, review reports, package JSON
   testing.py        offline stub chat client
   cli.py            typer commands
-  server/           FastAPI: run queue, SSE, versioned config store, drafts API
+  server/           FastAPI: run queue, SSE, versioned config store, drafts API,
+                    source reviews (server/reviews.py)
 config/             editorial policy — the thing you actually tune
-tests/              31 tests, fully offline
+tests/              67 tests, fully offline
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -61,11 +63,12 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 31 tests, ~6s, no network, no credentials
+pytest                      # 67 tests, ~25s, no network, no credentials
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
 ppn preflight               # 2 cheap real model calls; detects temperature support
 ppn suggest --dry-run       # whole graph offline
+ppn suggest --explore --dry-run --yes   # wide sweep + source approval, offline
 ppn write --index 1 --dry-run
 ```
 
@@ -102,6 +105,13 @@ counters in the system, each with exactly one bound
 (`PPN_MAX_SOURCE_ROUNDS`, `PPN_MAX_REVISION_ROUNDS`). Exhausting a budget
 finalises the run anyway — producing nothing after 40 minutes is worse than
 producing a draft marked NOT APPROVED.
+
+**The source review is code, never judgement.** In exploration mode the candidate
+list is harvested from the scouts' own reported URLs by `sources.py`, so what the
+operator approves is a faithful record of where the scouts went — never a model's
+account of it. `ScoutReplay` is the single place that filters to approved sites;
+keep it that way, or "the editor only ever sees approved sources" stops being an
+invariant and becomes a hope.
 
 **Nothing downstream of research may destroy research.** `DossierGate` writes the
 dossier to `research/` before sending it on, which is what makes

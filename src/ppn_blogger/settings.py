@@ -351,6 +351,15 @@ class Settings:
         return [d.lower() for d in self.sources.get("blocked_domains", [])]
 
     @property
+    def declined_domains(self) -> list[str]:
+        """Sites turned down in a source review — never proposed again.
+
+        Weaker than ``blocked_domains``: a declined site is simply not offered
+        for approval, whereas a blocked one fails the draft that cites it.
+        """
+        return [d.lower() for d in self.sources.get("declined_domains") or []]
+
+    @property
     def source_policy(self) -> dict[str, Any]:
         return dict(self.sources.get("policy", {}))
 

@@ -2,6 +2,7 @@
 
     ppn doctor                     check configuration and connectivity
     ppn suggest                    run the topic discovery crew
+    ppn suggest --explore          sweep the whole web, approve the sites, then rank
     ppn write --index 1            research → source-check → write → validate → publish
     ppn run                        suggest, then write the top-ranked topic
     ppn wp check                   verify the WordPress connection
@@ -26,7 +27,7 @@ from rich.table import Table
 
 from . import storage
 from .models import Draft, TopicSuggestion
-from .settings import get_settings
+from .settings import CONFIG_DIR, get_settings
 from .util import setup_logging
 
 app = typer.Typer(add_completion=False, help="Power Platform Ninja blogging crew.")
@@ -47,6 +48,8 @@ PHASE_LABELS = {
     "feed_scout": "Feed scout — reading curated feeds",
     "docs_scout": "Docs scout — mining Microsoft Learn",
     "scout_aggregator": "Merging scout findings",
+    "source_harvester": "Collecting every site the scouts read",
+    "scout_replay": "Replaying the approved sources",
     "topic_editor": "Topic editor — ranking and de-duplicating (the slow step)",
     "topic_publisher": "Writing the shortlist",
     "brief_builder": "Building the research brief",
@@ -251,6 +254,17 @@ def suggest(
         "-i",
         help="Steer the scouts, e.g. 'focus on governance changes this month'.",
     ),
+    explore: bool = typer.Option(
+        False,
+        "--explore",
+        help="Search the whole web, then approve the sites it read before any topic is proposed.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="With --explore, approve every site found at its suggested tier without prompting.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Use the offline stub client."),
 ) -> None:
     """Scan news, feeds and Microsoft Learn, then propose ranked blog topics."""
@@ -258,11 +272,14 @@ def suggest(
     from .workflows import discover_topics
 
     clients = _clients(dry_run)
-    result = _run_with_progress(
-        lambda on_event: discover_topics(instruction, clients=clients, on_event=on_event),
-        timeout_minutes=get_settings().run.suggest_timeout_minutes,
-        what="suggest",
-    )
+    if explore:
+        result = _explore_and_shortlist(instruction, clients, approve_all=yes)
+    else:
+        result = _run_with_progress(
+            lambda on_event: discover_topics(instruction, clients=clients, on_event=on_event),
+            timeout_minutes=get_settings().run.suggest_timeout_minutes,
+            what="suggest",
+        )
 
     table = Table(title=f"Topic suggestions — {result.generated_on}")
     table.add_column("#", width=3)
@@ -275,6 +292,142 @@ def suggest(
     console.print(table)
     console.print(f"Saved to [bold]{get_settings().run.topics_dir}[/]. "
                   f"Write one with: [bold]ppn write --index 1[/]")
+
+
+def _explore_and_shortlist(instruction: str, clients, *, approve_all: bool):
+    """The two halves of an exploration run, with the operator in between.
+
+    The server splits these across two runs because a worker cannot be held open
+    for a human. The CLI has no such problem: one process, one prompt, and the
+    approved sites are written straight back into ``config/sources.yaml``.
+    """
+    from .sources import merge_into_yaml_text
+    from .workflows import explore_sources, shortlist_from_sources
+
+    settings = get_settings()
+    review = _run_with_progress(
+        lambda on_event: explore_sources(instruction, clients=clients, on_event=on_event),
+        timeout_minutes=settings.run.suggest_timeout_minutes,
+        what="suggest",
+    )
+    if not review.candidates:
+        console.print("[red]The sweep found no usable sources.[/]")
+        raise typer.Exit(1)
+
+    decisions = _approve_sources(review, approve_all=approve_all)
+    approved = [d.domain for d in decisions if d.approved]
+    if not approved:
+        console.print("[yellow]No sources approved — nothing to build a shortlist from.[/]")
+        raise typer.Exit(1)
+
+    # Count before the write: afterwards every approved site is "known".
+    known = _known_domains()
+    newly_trusted = sum(1 for d in decisions if d.approved and d.domain not in known)
+    path = CONFIG_DIR / "sources.yaml"
+    merged = merge_into_yaml_text(path.read_text(encoding="utf-8"), decisions)
+    path.write_text(merged, encoding="utf-8")
+    console.print(
+        f"[green]Wrote {path}[/] — {len(approved)} approved"
+        + (f", {newly_trusted} newly trusted" if newly_trusted else "")
+    )
+
+    return _run_with_progress(
+        lambda on_event: shortlist_from_sources(
+            review.reports, approved, instruction=instruction, clients=clients, on_event=on_event
+        ),
+        timeout_minutes=settings.run.suggest_timeout_minutes,
+        what="suggest",
+    )
+
+
+def _known_domains() -> set[str]:
+    return {
+        str(domain).lower()
+        for tier in get_settings().trust_tiers.values()
+        for domain in tier.get("domains", [])
+    }
+
+
+def _approve_sources(review, *, approve_all: bool):
+    """Show what the scouts read and take the operator's verdict, site by site."""
+    from .models import SourceDecision
+
+    candidates = review.candidates
+    # Sites already carrying a tier start approved; a site nobody has vetted has
+    # to be said yes to explicitly. --yes approves the lot.
+    chosen = {c.domain: (True if approve_all else c.known) for c in candidates}
+    tiers = {c.domain: c.suggested_tier for c in candidates}
+
+    def render() -> None:
+        table = Table(title=f"Sites the scouts read — {review.generated_on}")
+        table.add_column("#", width=3)
+        table.add_column("✓", width=2)
+        table.add_column("Site", overflow="fold")
+        table.add_column("Status", width=10)
+        table.add_column("Tier", width=20)
+        table.add_column("Items", width=5, justify="right")
+        for i, c in enumerate(candidates, 1):
+            table.add_row(
+                str(i),
+                "[green]✓[/]" if chosen[c.domain] else " ",
+                f"{c.domain}\n[dim]{c.name}[/]" if c.name != c.domain else c.domain,
+                "[yellow]new[/]" if not c.known else "trusted",
+                tiers[c.domain],
+                str(c.item_count),
+            )
+        console.print(table)
+
+    render()
+    if not approve_all:
+        console.print(
+            "Only approved sites reach the topic editor, and approving one adds it to "
+            "config/sources.yaml for every future run.\n"
+            "Type numbers to toggle (e.g. [bold]2 5[/]), [bold]a[/] for all, [bold]n[/] for "
+            "none, [bold]?N[/] to see what was found on site N, or press Enter to accept."
+        )
+        while True:
+            answer = typer.prompt("Toggle", default="", show_default=False).strip().lower()
+            if not answer:
+                break
+            if answer == "a" or answer == "n":
+                chosen = dict.fromkeys(chosen, answer == "a")
+            elif answer.startswith("?") and answer[1:].strip().isdigit():
+                _show_items(candidates, int(answer[1:].strip()))
+                continue
+            else:
+                for token in answer.replace(",", " ").split():
+                    if token.isdigit() and 1 <= int(token) <= len(candidates):
+                        domain = candidates[int(token) - 1].domain
+                        chosen[domain] = not chosen[domain]
+            render()
+
+        # A newly trusted site needs a tier: it decides whether a draft resting
+        # on it will pass the Source Checker at all.
+        tier_ids = list(get_settings().trust_tiers)
+        for candidate in candidates:
+            if not chosen[candidate.domain] or candidate.known:
+                continue
+            tiers[candidate.domain] = typer.prompt(
+                f"Trust tier for {candidate.domain} ({'/'.join(tier_ids)})",
+                default=candidate.suggested_tier,
+            ).strip()
+
+    return [
+        SourceDecision(
+            domain=c.domain, approved=chosen[c.domain], tier=tiers[c.domain]
+        )
+        for c in candidates
+    ]
+
+
+def _show_items(candidates, index: int) -> None:
+    if not 1 <= index <= len(candidates):
+        return
+    candidate = candidates[index - 1]
+    console.print(f"\n[bold]{candidate.domain}[/] — {candidate.item_count} item(s)")
+    for item in candidate.items:
+        console.print(f"  • {item.title}\n    [dim]{item.url}[/]\n    {item.why_it_matters}")
+    console.print()
 
 
 # ---------------------------------------------------------------------------

@@ -40,8 +40,9 @@ function SuggestForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const [instruction, setInstruction] = useState('')
   const [labelText, setLabelText] = useState('')
+  const [explore, setExplore] = useState(false)
   const mut = useMutation({
-    mutationFn: () => startSuggest({ instruction, label: labelText }),
+    mutationFn: () => startSuggest({ instruction, label: labelText, explore }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['runs'] })
       onClose()
@@ -68,12 +69,33 @@ function SuggestForm({ onClose }: { onClose: () => void }) {
         <label className={label}>Label (optional)</label>
         <input
           className={field}
-          placeholder="Topic discovery"
+          placeholder={explore ? 'Source exploration' : 'Topic discovery'}
           value={labelText}
           onChange={(e) => setLabelText(e.target.value)}
         />
       </div>
-      <FormFooter onClose={onClose} pending={mut.isPending} error={mut.error} label="Start discovery" />
+      <label className="flex cursor-pointer gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 accent-cyan-400"
+          checked={explore}
+          onChange={(e) => setExplore(e.target.checked)}
+        />
+        <span className="text-sm">
+          <span className="font-medium text-slate-200">Search the whole web</span>
+          <span className="mt-0.5 block text-xs text-slate-500">
+            The scouts range beyond the curated feeds and stop with a list of every site they
+            read. You approve the sites before any topic is proposed, and the ones you approve
+            are added to the blog&rsquo;s trusted sources for future runs.
+          </span>
+        </span>
+      </label>
+      <FormFooter
+        onClose={onClose}
+        pending={mut.isPending}
+        error={mut.error}
+        label={explore ? 'Start sweep' : 'Start discovery'}
+      />
     </form>
   )
 }

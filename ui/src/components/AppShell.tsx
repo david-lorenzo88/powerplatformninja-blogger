@@ -1,11 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
-import { getHealth } from '../api/client'
+import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
 
 const NAV = [
   { to: '/runs', label: 'Runs', icon: '▷' },
   { to: '/topic-ideas', label: 'Topic Ideas', icon: '◆' },
+  { to: '/source-reviews', label: 'Sources', icon: '⌖' },
   { to: '/drafts', label: 'Drafts', icon: '✎' },
   { to: '/config', label: 'Config', icon: '⚙' },
 ]
@@ -50,6 +51,13 @@ export function AppShell() {
     queryFn: getHealth,
     refetchInterval: 30_000,
   })
+  // A pending review is a paid-for run that has stopped until it is answered,
+  // so it gets a count in the nav rather than waiting to be stumbled upon.
+  const { data: pending } = useQuery({
+    queryKey: ['source-reviews', 'pending'],
+    queryFn: () => listSourceReviews('pending'),
+    refetchInterval: 15_000,
+  })
 
   return (
     <div className="flex h-full">
@@ -63,6 +71,11 @@ export function AppShell() {
             <NavLink key={item.to} to={item.to} className={navClass}>
               <span className="text-accent/70">{item.icon}</span>
               {item.label}
+              {item.to === '/source-reviews' && pending && pending.length > 0 && (
+                <span className="ml-auto rounded-full bg-amber-500/20 px-2 text-xs font-semibold text-amber-300">
+                  {pending.length}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

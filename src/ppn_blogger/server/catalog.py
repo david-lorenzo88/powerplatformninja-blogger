@@ -41,7 +41,8 @@ async def record_run_result(
     """Fold a finished run's output into the catalog. The switchboard."""
     if not result:
         return
-    if kind == "suggest":
+    if kind in ("suggest", "shortlist"):
+        # An `explore` run has no suggestions to record — it stops at a review.
         await upsert_topic_ideas(run_id, result.get("suggestions", []), result.get("generated_on", ""))
     elif kind == "write":
         await record_write_result(run_id, params, result)
@@ -645,7 +646,7 @@ async def _backfill_suggest_runs() -> int:
     async with session() as s:
         runs = (
             await s.execute(
-                select(Run).where(Run.kind == "suggest", Run.status == "succeeded")
+                select(Run).where(Run.kind.in_(["suggest", "shortlist"]), Run.status == "succeeded")
             )
         ).scalars().all()
     touched = 0

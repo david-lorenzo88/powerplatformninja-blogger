@@ -90,6 +90,11 @@ blocked_domains:
   - contentfarm.example
   - answers-generated-by-ai.example
 
+# Sites turned down in a source review. Not blocked — merely never offered for
+# approval again. Approving a domain in a later review removes it from here;
+# deleting a line by hand puts the site back in circulation.
+declined_domains: []
+
 # ---------------------------------------------------------------------------
 # Source Checker policy
 # ---------------------------------------------------------------------------

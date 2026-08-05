@@ -198,6 +198,108 @@ the exact `ppn write --topic … --index N` command for each suggestion.
 
 ---
 
+## Workflow 1b — exploration mode, and the source review
+
+The crew above is deliberately narrow: nine curated feeds, Microsoft Learn, and a
+news scout whose trust tiers pull it back toward the same domains. That is what
+makes the research defensible, and it is also why a tenth topic run keeps finding
+the ninth run's material.
+
+**Exploration mode** lifts the ceiling without lowering the bar. The scouts range
+across the open web, and the run then *stops* — with a list of every site they
+read — until a human says which of those sites the blog is allowed to use.
+
+```mermaid
+flowchart LR
+    scout_dispatcher --> news_scout
+    scout_dispatcher --> feed_scout
+    scout_dispatcher --> docs_scout
+    news_scout --> source_harvester
+    feed_scout --> source_harvester
+    docs_scout --> source_harvester
+    source_harvester --> review[/"source review — you"/]
+    review --> scout_replay
+    scout_replay --> topic_editor
+    topic_editor --> topic_publisher
+```
+
+Two graphs — `build_source_exploration_workflow()` and `build_shortlist_workflow()`
+— rather than one paused graph. The approval sits *between two runs*, so no worker
+(and no model connection) is held open for however long you take, and a server
+restart mid-review costs nothing: the sweep is already banked in the database.
+
+### The wide sweep
+
+Only the **News Scout** changes: `news_scout_instructions(settings, explore=True)`
+appends an exploration block that tells it to look past the usual suspects —
+independent consultants, engineering blogs, conference write-ups, GitHub
+discussions, regional communities, non-English sources with real substance — and
+that an unfamiliar domain is *not* a problem, because every new site is shown to a
+human before it can influence anything. Its cap rises from 4/15 items to 8/25, and
+it is asked for at least 8 distinct domains. The feed and docs scouts are unchanged:
+they are the counterweight the sweep is measured against.
+
+### `source_harvester`
+
+A fan-in node that ends the run. It parses the scout reports, then calls
+`harvest_candidates()` in `sources.py` to group every reported item **by the site it
+came from**:
+
+- domain (`www.` stripped), the most common `source_name` as a label
+- `known` — whether `sources.yaml` already gives it a tier
+- `current_tier` / `suggested_tier` — an already-trusted site is offered at the tier
+  it has; a site nobody has classified is offered at `community_unverified`
+- which scouts found it, and every item they found there
+
+New sites sort first, then by contribution, so the list opens on the decisions that
+actually need making. Sites already on `declined_domains` are never offered again.
+
+This grouping is **code, not judgement** — no agent is asked what it searched. What
+you approve is a faithful record of where the scouts actually went.
+
+### The review
+
+The run finishes `succeeded` with `awaiting_source_approval: true` and a review id.
+`source_reviews` in the database holds the candidates *and the raw scout reports*,
+so the shortlist is later built from exactly the material you were shown.
+
+You answer it in the UI (**Sources**) or, on the CLI, in the prompt that
+`ppn suggest --explore` puts in front of you. Each site gets a checkbox and a trust
+tier. Approving one:
+
+1. adds its domain to that tier's `domains` list in `sources.yaml`, as a **new
+   config version** — so it is trusted by every future topic run *and* by the
+   Researcher and Source Checker on every future draft;
+2. lets its findings through to the topic editor for this run.
+
+Turning down a site the config has never seen records it in `declined_domains`:
+never proposed again, but **not** blocked — a declined site does not fail a draft
+that cites it, it is simply never suggested. Turning down a site that already has a
+tier only skips it for this shortlist; silently demoting a trusted feed would be a
+much larger decision than unticking a box.
+
+The tier choice is the consequential part, and the UI says so: `policy.min_average_trust`
+is 3.5, so a draft resting mainly on `community_unverified` (score 2) sources will
+fail the source gate. Promote a genuinely good MVP blog to `community_trusted` (4)
+and it will not.
+
+`sources.yaml` is edited **line by line**, not re-serialised: half the file is
+explanation, and a round-trip through `yaml.safe_dump` would throw all of it away.
+`merge_into_yaml_text()` verifies its own edit against the mapping `apply_decisions()`
+computes, and falls back to a full dump if the two ever disagree — losing the
+comments is bad, writing config nobody predicted is worse.
+
+### `scout_replay`
+
+Entry point of the second run. It calls `filter_reports()` to drop every item that
+did not come from an approved site, then briefs the same `topic_editor` with the
+same envelope, plus a preamble naming the approved sources and telling it not to
+reintroduce anything from memory. The filtering lives here rather than at the caller
+so there is exactly one place enforcing *the editor only ever sees approved
+sources*. From `topic_editor` on, the graph is identical to ordinary discovery.
+
+---
+
 ## Workflow 2 — writing a post
 
 `build_post_workflow()`. Entry point: `brief_builder` (or `dossier_entry` when

@@ -5,6 +5,12 @@
                       ├─▶ feed_scout  ─┼─▶ scout_aggregator ─▶ topic_editor ─▶ topic_publisher
                       └─▶ docs_scout  ─┘
 
+`build_source_exploration_workflow` / `build_shortlist_workflow`
+    The same discovery, cut in two at a human decision: the scouts sweep the open
+    web and stop at `source_harvester`, which reports every site they read; once
+    the operator has approved sites, `scout_replay` feeds only that material to
+    the same topic editor. See the block comment above them.
+
 `build_post_workflow`
     brief_builder ─▶ researcher ─▶ dossier_gate ─▶ source_checker ─▶ source_gate
                           ▲                                              │
@@ -46,11 +52,21 @@ from .executors import (
     RunState,
     ScoutAggregator,
     ScoutDispatcher,
+    ScoutReplay,
+    ShortlistRequest,
     SourceGate,
+    SourceHarvester,
     TopicPublisher,
     TranslationGate,
 )
-from .models import PostPackage, ResearchDossier, TopicSuggestion, TopicSuggestionSet
+from .models import (
+    PostPackage,
+    ResearchDossier,
+    ScoutReport,
+    SourceReviewSet,
+    TopicSuggestion,
+    TopicSuggestionSet,
+)
 from .settings import Settings, get_settings
 
 logger = logging.getLogger("ppn.workflow")
@@ -124,6 +140,141 @@ async def discover_topics(
     if built.publisher.result is not None:
         return built.publisher.result
     raise RuntimeError("Topic discovery produced no shortlist. Check the run log above.")
+
+
+# ---------------------------------------------------------------------------
+# Topic discovery, exploration mode
+#
+# Same scouts, cut in half at the point where a human has to decide:
+#
+#   build_source_exploration_workflow
+#       scout_dispatcher ─┬─▶ news_scout (wide) ─┐
+#                         ├─▶ feed_scout         ┼─▶ source_harvester ─▶ output
+#                         └─▶ docs_scout         ┘
+#
+#   ...operator approves sites...
+#
+#   build_shortlist_workflow
+#       scout_replay ─▶ topic_editor ─▶ topic_publisher
+#
+# Two graphs rather than one paused graph: the approval sits between two runs,
+# so nothing has to hold a worker (or a model connection) open for however long
+# the operator takes, and a server restart mid-review costs nothing.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExplorationWorkflow:
+    workflow: Workflow
+    harvester: SourceHarvester
+
+
+def build_source_exploration_workflow(
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+    *,
+    instruction: str = "",
+) -> ExplorationWorkflow:
+    settings = settings or get_settings()
+    clients = clients or default_clients()
+
+    dispatcher = ScoutDispatcher(settings)
+    news = AgentExecutor(A.build_news_scout(settings, clients, explore=True), id=A.NEWS_SCOUT)
+    feeds = AgentExecutor(A.build_feed_scout(settings, clients), id=A.FEED_SCOUT)
+    docs = AgentExecutor(A.build_docs_scout(settings, clients), id=A.DOCS_SCOUT)
+    harvester = SourceHarvester(settings, instruction=instruction)
+
+    workflow = (
+        WorkflowBuilder(
+            start_executor=dispatcher,
+            name="ppn-source-exploration",
+            description="Sweep the open web and report every site found, for approval.",
+            max_iterations=30,
+        )
+        .add_fan_out_edges(dispatcher, [news, feeds, docs])
+        .add_fan_in_edges([news, feeds, docs], harvester)
+        .build()
+    )
+    return ExplorationWorkflow(workflow=workflow, harvester=harvester)
+
+
+async def explore_sources(
+    instruction: str = DEFAULT_TOPIC_INSTRUCTION,
+    *,
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+    on_event: Any = None,
+) -> SourceReviewSet:
+    """Run the scouts wide and come back with the sites they read."""
+    built = build_source_exploration_workflow(settings, clients, instruction=instruction)
+
+    if on_event is None:
+        result = await built.workflow.run(instruction)
+    else:
+        stream = built.workflow.run(instruction, stream=True)
+        async for event in stream:
+            on_event(event)
+        result = await stream.get_final_response()
+
+    outputs = [o for o in result.get_outputs() if isinstance(o, SourceReviewSet)]
+    if outputs:
+        return outputs[-1]
+    if built.harvester.result is not None:
+        return built.harvester.result
+    raise RuntimeError("The sweep found no sources at all. Check the run log above.")
+
+
+def build_shortlist_workflow(
+    settings: Settings | None = None, clients: ClientBundle | None = None
+) -> TopicWorkflow:
+    settings = settings or get_settings()
+    clients = clients or default_clients()
+
+    replay = ScoutReplay(settings)
+    editor = AgentExecutor(A.build_topic_editor(settings, clients), id=A.TOPIC_EDITOR)
+    publisher = TopicPublisher()
+
+    workflow = (
+        WorkflowBuilder(
+            start_executor=replay,
+            name="ppn-topic-shortlist",
+            description="Turn approved sources into a ranked blog topic shortlist.",
+            max_iterations=20,
+        )
+        .add_edge(replay, editor)
+        .add_edge(editor, publisher)
+        .build()
+    )
+    return TopicWorkflow(workflow=workflow, publisher=publisher)
+
+
+async def shortlist_from_sources(
+    reports: list[ScoutReport],
+    approved: list[str],
+    *,
+    instruction: str = "",
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+    on_event: Any = None,
+) -> TopicSuggestionSet:
+    """Build the shortlist from a sweep whose sources have been approved."""
+    built = build_shortlist_workflow(settings, clients)
+    payload = ShortlistRequest(reports=reports, approved=approved, instruction=instruction)
+
+    if on_event is None:
+        result = await built.workflow.run(payload)
+    else:
+        stream = built.workflow.run(payload, stream=True)
+        async for event in stream:
+            on_event(event)
+        result = await stream.get_final_response()
+
+    outputs = [o for o in result.get_outputs() if isinstance(o, TopicSuggestionSet)]
+    if outputs:
+        return outputs[-1]
+    if built.publisher.result is not None:
+        return built.publisher.result
+    raise RuntimeError("The approved sources produced no shortlist. Check the run log above.")
 
 
 # ---------------------------------------------------------------------------

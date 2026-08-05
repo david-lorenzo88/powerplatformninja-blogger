@@ -75,7 +75,8 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    kind: Mapped[str] = mapped_column(String(32), index=True)  # suggest | write | translate | cover
+    # suggest | explore | shortlist | write | cover
+    kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -104,6 +105,35 @@ class RunEvent(Base):
 
 
 Index("ix_run_events_run_seq", RunEvent.run_id, RunEvent.seq)
+
+
+class SourceReview(Base):
+    """One wide-web sweep, paused for the operator's verdict on its sources.
+
+    The scout reports are stored verbatim rather than re-derived: the shortlist
+    is built from exactly the material the operator was shown, and a sweep costs
+    real model calls that a server restart must not throw away. This row is what
+    lets the approval sit between two runs instead of holding a worker open.
+    """
+
+    __tablename__ = "source_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runs.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    generated_on: Mapped[str] = mapped_column(String(32), default="")
+    candidates: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    reports: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    decisions: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # The config version the approval produced, so a review is traceable to the
+    # sources.yaml edit it caused.
+    config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shortlist_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +297,7 @@ __all__ = [
     "Post",
     "Run",
     "RunEvent",
+    "SourceReview",
     "TopicIdea",
     "engine",
     "func",

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-07-28. The React management UI (Stage 2) is **built, verified
+Last updated: 2026-08-05. The React management UI (Stage 2) is **built, verified
 and merged into `main`** (PR #1). Read this before starting anything.
 
 ---
@@ -112,6 +112,44 @@ backlog end to end. **Built and tested offline; not yet driven against real Azur
 - **Tests**: 10 new (7 server + 3 pipeline), all offline; suite is **48 passing**.
 - **Next real test:** drive a suggest → write → regenerate through the deployed
   server/UI to confirm population, links and the reuse-research path against Azure.
+
+## Exploration mode & source review (new)
+
+Topic discovery could only draw on the nine curated feeds and Microsoft Learn, which
+kept the research defensible and the shortlist repetitive. Exploration mode lets the
+scouts range across the open web and then **stops for a human verdict on every site
+they read** before a single topic is proposed. **Built and tested offline; not yet
+driven against real Azure.**
+
+- **Two graphs, one decision between them** (`workflows.py`):
+  `build_source_exploration_workflow()` ends at `source_harvester`; once sites are
+  approved, `build_shortlist_workflow()` (`scout_replay → topic_editor →
+  topic_publisher`) finishes the job. The approval sits between two *runs*, so no
+  worker is held open for a human and a restart mid-review costs nothing.
+- **`sources.py`** — pure: harvest candidates from the scouts' own URLs, filter
+  reports to approved sites, and merge the verdict into `sources.yaml` **line by
+  line** so the file's comments survive (verified against `apply_decisions`, with a
+  full-dump fallback).
+- **`source_reviews` table + `server/reviews.py`** with
+  `/api/source-reviews{,/{id},/{id}/decide,/{id}/cancel}`. Run kinds are now
+  `suggest · explore · shortlist · write · cover`.
+- **Approved sites are permanent**: each lands in `sources.yaml` at the chosen trust
+  tier as a new config version, so it is trusted by later topic runs *and* by the
+  Researcher and Source Checker on later drafts. Refused new sites go to
+  `declined_domains` and are never offered again.
+- **UI**: a *Search the whole web* toggle on the suggest dialog, a **Sources**
+  section (pending count badged in the nav) with per-site checkboxes, trust-tier
+  dropdowns and the findings behind each site, and a banner on a finished sweep
+  linking straight to its review.
+- **`ppn suggest --explore`** does the same in one process with a terminal prompt
+  (`--yes` to accept everything at its suggested tier).
+- **Also fixed here:** `config_store` used to re-serialise `config/*.yaml` on import,
+  which stripped every comment from the documents shown in the Config screen. It now
+  stores the file text verbatim.
+- **Tests**: 14 new (8 pure, 5 server, 1 pipeline); suite is **67 passing**.
+- **Next real test:** an `--explore` sweep against live Foundry — the candidate list
+  is only as good as what the scouts actually report, and the stub cannot tell you
+  whether a real wide sweep returns 8 useful new domains or 40 useless ones.
 
 ## Still open / not yet exercised
 

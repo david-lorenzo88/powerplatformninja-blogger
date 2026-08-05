@@ -18,7 +18,7 @@ from typing import Any
 import yaml
 from sqlalchemy import select
 
-from ..config_source import DOCUMENTS, MappingConfigSource, YamlConfigSource, set_config_source
+from ..config_source import DOCUMENTS, MappingConfigSource, filename_for, set_config_source
 from ..settings import CONFIG_DIR
 from .db import ConfigDocument, session, utcnow
 
@@ -47,21 +47,28 @@ async def latest_versions() -> dict[str, ConfigDocument]:
         return newest
 
 
+def _file_text(name: str) -> str:
+    """The config file exactly as written, comments and all.
+
+    Deliberately not ``yaml.safe_dump(get_mapping(name))``: half of
+    ``sources.yaml`` and nearly all of ``validation_rules.yaml`` is explanation,
+    and a round-trip through the parser throws every line of it away — which
+    then shows up as an unreadable document in the Config screen. The file is
+    already valid YAML; ``save_document`` validates it again on the way in.
+    """
+    path = CONFIG_DIR / filename_for(name)
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
 async def seed_from_yaml_if_empty() -> bool:
     """Import ``config/*.yaml`` as version 1 the first time the server runs."""
     existing = await latest_versions()
     if existing:
         return False
 
-    source = YamlConfigSource(CONFIG_DIR)
     async with session() as s:
         for name, fmt in DOCUMENTS.items():
-            if fmt == "markdown":
-                content = source.get_text(name)
-            else:
-                content = yaml.safe_dump(
-                    source.get_mapping(name), sort_keys=False, allow_unicode=True
-                )
+            content = _file_text(name)
             s.add(
                 ConfigDocument(
                     name=name,
@@ -85,16 +92,9 @@ async def reimport_from_yaml(note: str = "Re-imported from config/") -> list[tup
     server. ``ppn config reload`` calls this to append each file as a new
     version, so the new editorial ruleset takes effect without wiping history.
     """
-    source = YamlConfigSource(CONFIG_DIR)
     out: list[tuple[str, int]] = []
-    for name, fmt in DOCUMENTS.items():
-        if fmt == "markdown":
-            content = source.get_text(name)
-        else:
-            content = yaml.safe_dump(
-                source.get_mapping(name), sort_keys=False, allow_unicode=True
-            )
-        row = await save_document(name, content, note=note)
+    for name in DOCUMENTS:
+        row = await save_document(name, _file_text(name), note=note)
         out.append((name, row.version))
     return out
 

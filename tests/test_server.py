@@ -35,10 +35,19 @@ async def api(tmp_path, monkeypatch):
 
     real_discover, real_write = wf.discover_topics, wf.write_post
     real_write_from_dossier = wf.write_post_from_dossier
+    real_explore, real_shortlist = wf.explore_sources, wf.shortlist_from_sources
 
     async def stub_discover(instruction="", **kw):
         kw.setdefault("clients", stub_clients(exercise_loops=False))
         return await real_discover(instruction, **kw)
+
+    async def stub_explore(instruction="", **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        return await real_explore(instruction, **kw)
+
+    async def stub_shortlist(reports, approved, **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        return await real_shortlist(reports, approved, **kw)
 
     async def stub_write(topic, **kw):
         kw.setdefault("clients", stub_clients(exercise_loops=False))
@@ -57,6 +66,8 @@ async def api(tmp_path, monkeypatch):
     monkeypatch.setattr(wf, "discover_topics", stub_discover)
     monkeypatch.setattr(wf, "write_post", stub_write)
     monkeypatch.setattr(wf, "write_post_from_dossier", stub_write_from_dossier)
+    monkeypatch.setattr(wf, "explore_sources", stub_explore)
+    monkeypatch.setattr(wf, "shortlist_from_sources", stub_shortlist)
 
     import httpx
 
@@ -142,7 +153,7 @@ async def test_invalid_yaml_is_rejected_before_it_can_break_a_run(api):
 async def test_workflow_graphs_come_from_the_code(api):
     graphs = (await api.get("/api/workflows")).json()
     kinds = {g["kind"]: g for g in graphs}
-    assert set(kinds) == {"suggest", "write"}
+    assert set(kinds) == {"suggest", "explore", "shortlist", "write"}
 
     post = kinds["write"]["mermaid"]
     assert post.startswith("flowchart TD")
@@ -150,6 +161,13 @@ async def test_workflow_graphs_come_from_the_code(api):
     assert "source_gate --> researcher" in post
     assert "review_gate --> writer" in post
     assert "finalizer --> translator" in post
+
+    # An exploration sweep must stop at the harvester: no path to the editor,
+    # because nothing may reach it before the operator has approved the sources.
+    explore = kinds["explore"]["mermaid"]
+    assert "--> source_harvester" in explore
+    assert "topic_editor" not in explore
+    assert "scout_replay --> topic_editor" in kinds["shortlist"]["mermaid"]
 
 
 @pytest.mark.asyncio
@@ -337,6 +355,149 @@ async def test_config_reload_endpoint_is_token_guarded(api, monkeypatch):
     # Seeded at v1 by the lifespan, so a reload bumps every document to v2.
     for name, version in before.items():
         assert reloaded[name] == version + 1
+
+
+# ---------------------------------------------------------------------------
+# Source exploration and approval
+# ---------------------------------------------------------------------------
+
+# The stub scouts report these three domains: one official, one already trusted,
+# one nobody has classified. See testing._scout_report.
+NEW_DOMAIN = "dataverse-notes.example"
+
+
+async def _explore(api, instruction="wide sweep"):
+    run_id = (
+        await api.post("/api/runs/suggest", json={"instruction": instruction, "explore": True})
+    ).json()["id"]
+    finished = await _wait_for(api, run_id)
+    assert finished["status"] == "succeeded", finished.get("error")
+    return finished
+
+
+@pytest.mark.asyncio
+async def test_exploration_run_stops_at_a_source_review(api):
+    finished = await _explore(api)
+    assert finished["kind"] == "explore"
+    assert finished["result"]["awaiting_source_approval"] is True
+    # The sweep must not produce topics — that is the whole point of stopping.
+    assert "suggestions" not in finished["result"]
+    assert "topic_editor" not in finished["nodes"]
+
+    review_id = finished["result"]["review_id"]
+    pending = (await api.get("/api/source-reviews?status=pending")).json()
+    assert [r["id"] for r in pending] == [review_id]
+
+    review = (await api.get(f"/api/source-reviews/{review_id}")).json()
+    assert review["instruction"] == "wide sweep"
+    by_domain = {c["domain"]: c for c in review["candidates"]}
+    assert set(by_domain) == {"learn.microsoft.com", "matthewdevaney.com", NEW_DOMAIN}
+    # A site the config has never heard of is offered as new, at the cautious
+    # default tier; sites already in sources.yaml keep the tier they have.
+    assert by_domain[NEW_DOMAIN]["known"] is False
+    assert by_domain[NEW_DOMAIN]["suggested_tier"] == "community_unverified"
+    assert by_domain["learn.microsoft.com"]["known"] is True
+    assert by_domain["learn.microsoft.com"]["suggested_tier"] == "official"
+    # Every candidate carries what was found there, so the decision is informed.
+    assert by_domain[NEW_DOMAIN]["items"][0]["url"].startswith(f"https://{NEW_DOMAIN}")
+
+
+@pytest.mark.asyncio
+async def test_approval_writes_sources_config_and_builds_the_shortlist(api):
+    review_id = (await _explore(api))["result"]["review_id"]
+
+    decided = await api.post(
+        f"/api/source-reviews/{review_id}/decide",
+        json={
+            "decisions": [
+                {"domain": NEW_DOMAIN, "approved": True, "tier": "community_trusted"},
+                {"domain": "learn.microsoft.com", "approved": True, "tier": "official"},
+                {"domain": "matthewdevaney.com", "approved": False},
+            ]
+        },
+    )
+    assert decided.status_code == 200, decided.text
+    body = decided.json()
+    assert body["approved"] == [NEW_DOMAIN, "learn.microsoft.com"]
+
+    finished = await _wait_for(api, body["run_id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    # The verdict lands in sources.yaml as a new version, so it applies to every
+    # later topic run and to the Researcher and Source Checker on every draft.
+    sources = (await api.get("/api/config/sources")).json()
+    assert sources["version"] == body["config_version"]
+    assert f"- {NEW_DOMAIN}" in sources["content"]
+    assert "# Trust tiers used by the Source Checker" in sources["content"], "comments lost"
+    from ppn_blogger.settings import get_settings
+
+    assert NEW_DOMAIN in get_settings().trust_tiers["community_trusted"]["domains"]
+    # Declining a site that already carries a tier only skips it for this run —
+    # it must not silently disappear from the trust tiers.
+    assert "matthewdevaney.com" not in get_settings().declined_domains
+    assert "matthewdevaney.com" in get_settings().trust_tiers["community_trusted"]["domains"]
+    assert finished["kind"] == "shortlist"
+    assert finished["result"]["suggestions"]
+    assert finished["result"]["approved_sources"] == [NEW_DOMAIN, "learn.microsoft.com"]
+    assert {"scout_replay", "topic_editor", "topic_publisher"} <= set(finished["nodes"])
+
+    # The shortlist is a topic run like any other: its ideas reach the catalog.
+    ideas = (await api.get("/api/topic-ideas")).json()
+    assert ideas and ideas[0]["slug"]
+
+    review = (await api.get(f"/api/source-reviews/{review_id}")).json()
+    assert review["status"] == "approved"
+    assert review["shortlist_run_id"] == body["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_declined_sites_are_never_offered_again(api):
+    review_id = (await _explore(api))["result"]["review_id"]
+    await api.post(
+        f"/api/source-reviews/{review_id}/decide",
+        json={
+            "decisions": [
+                {"domain": NEW_DOMAIN, "approved": False},
+                {"domain": "learn.microsoft.com", "approved": True, "tier": "official"},
+            ],
+            "start_shortlist": False,
+        },
+    )
+    from ppn_blogger.settings import get_settings
+
+    assert get_settings().declined_domains == [NEW_DOMAIN]
+
+    second = (await _explore(api))["result"]["review_id"]
+    review = (await api.get(f"/api/source-reviews/{second}")).json()
+    assert NEW_DOMAIN not in {c["domain"] for c in review["candidates"]}
+
+
+@pytest.mark.asyncio
+async def test_a_review_can_only_be_decided_once(api):
+    review_id = (await _explore(api))["result"]["review_id"]
+    payload = {
+        "decisions": [{"domain": "learn.microsoft.com", "approved": True, "tier": "official"}],
+        "start_shortlist": False,
+    }
+    assert (await api.post(f"/api/source-reviews/{review_id}/decide", json=payload)).status_code == 200
+    again = await api.post(f"/api/source-reviews/{review_id}/decide", json=payload)
+    assert again.status_code == 409
+
+    unknown = await api.post(
+        f"/api/source-reviews/{review_id + 99}/decide", json=payload
+    )
+    assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_decisions_must_name_sites_from_the_review(api):
+    review_id = (await _explore(api))["result"]["review_id"]
+    response = await api.post(
+        f"/api/source-reviews/{review_id}/decide",
+        json={"decisions": [{"domain": "somewhere-else.example", "approved": True}]},
+    )
+    assert response.status_code == 409
+    assert "somewhere-else.example" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
