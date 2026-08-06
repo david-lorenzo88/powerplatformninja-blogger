@@ -495,9 +495,11 @@ never verifies them; the Translator receives neither and preserves first person.
 
 `ppn serve` imports `config/` into its database once, on first start, and the
 database is authoritative from then on. After a git-only swap of the YAML (like this
-editorial ruleset), run **`ppn config reload`** to append the current files as a new
-version of each document — the change goes live for the UI and any queued run, and
-the edit history is kept. The CLI path (no server) reads `config/` directly and
+editorial ruleset), run **`ppn config reload`** to append the **changed** files as a
+new version — the change goes live for the UI and any queued run, and the edit
+history is kept. A file whose exact content is already in that document's history is
+left alone, so a reload can never silently supersede an edit you made in the Config
+screen (this is what makes it safe to run on every deploy). The CLI path (no server) reads `config/` directly and
 needs no reload.
 
 ---

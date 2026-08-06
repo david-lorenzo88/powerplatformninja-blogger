@@ -163,15 +163,20 @@ async def reload_config(
         raise HTTPException(401, "Invalid or missing admin token.")
 
     # First boot after a fresh database still needs the initial seed; after that,
-    # append the current files as a new version of each document.
+    # append each *changed* file as a new version. A document whose content is
+    # already in its history is left alone, so a deploy that did not touch
+    # config/ cannot silently supersede an edit made in the Config screen.
     if await config_store.seed_from_yaml_if_empty():
         await config_store.refresh_active_source()
-        results = [(name, 1) for name in config_store.DOCUMENTS]
+        results = [(name, 1, True) for name in config_store.DOCUMENTS]
     else:
         results = await config_store.reimport_from_yaml(
             note="Reloaded via POST /api/config/reload"
         )
-    return {"reloaded": [{"name": n, "version": v} for n, v in results]}
+    return {
+        "reloaded": [{"name": n, "version": v, "applied": a} for n, v, a in results],
+        "applied": [n for n, _, a in results if a],
+    }
 
 
 # ---------------------------------------------------------------------------

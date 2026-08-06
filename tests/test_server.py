@@ -346,15 +346,59 @@ async def test_config_reload_endpoint_is_token_guarded(api, monkeypatch):
         await api.post("/api/config/reload", headers={"X-Admin-Token": "wrong"})
     ).status_code == 401
 
-    # The right token re-imports config as a new version of each document.
+    # The right token is accepted — but config/ is byte-identical to the seed the
+    # lifespan just imported, so there is nothing to apply and nothing is touched.
     before = {d["name"]: d["version"] for d in (await api.get("/api/config")).json()}
     resp = await api.post("/api/config/reload", headers={"X-Admin-Token": "s3cret-token"})
     assert resp.status_code == 200
-    reloaded = {r["name"]: r["version"] for r in resp.json()["reloaded"]}
-    assert "validation_rules" in reloaded
-    # Seeded at v1 by the lifespan, so a reload bumps every document to v2.
-    for name, version in before.items():
-        assert reloaded[name] == version + 1
+    assert resp.json()["applied"] == []
+    after = {d["name"]: d["version"] for d in (await api.get("/api/config")).json()}
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_reload_applies_changed_files_but_spares_ui_edits(api, monkeypatch, tmp_path):
+    """The deploy workflow reloads config on *every* merge to main.
+
+    Re-applying all five files each time silently superseded whatever had been
+    edited in the Config screen — the edit survived in the history, but the
+    effective config quietly reverted to git. Only genuinely changed files may
+    be applied.
+    """
+    monkeypatch.setenv("PPN_ADMIN_TOKEN", "s3cret-token")
+    headers = {"X-Admin-Token": "s3cret-token"}
+
+    # An operator tunes a rule in the UI.
+    original = (await api.get("/api/config/topics")).json()
+    edited = original["content"].replace("suggestions_per_run: 6", "suggestions_per_run: 9")
+    await api.put("/api/config/topics", json={"content": edited, "note": "tuned in the UI"})
+    assert (await api.get("/api/config/topics")).json()["version"] == 2
+
+    # Meanwhile a deploy ships a genuinely new ruleset for a different document.
+    from ppn_blogger.server import config_store
+
+    real_file_text = config_store._file_text
+    monkeypatch.setattr(
+        config_store,
+        "_file_text",
+        lambda name: (
+            real_file_text(name).replace("min_average_trust: 3.5", "min_average_trust: 4.0")
+            if name == "sources"
+            else real_file_text(name)
+        ),
+    )
+
+    resp = await api.post("/api/config/reload", headers=headers)
+    assert resp.status_code == 200
+    # The changed file lands; every other document is left exactly where it was.
+    assert resp.json()["applied"] == ["sources"]
+
+    from ppn_blogger.settings import get_settings
+
+    assert get_settings().source_policy["min_average_trust"] == 4.0
+    topics = (await api.get("/api/config/topics")).json()
+    assert topics["version"] == 2, "a deploy superseded an edit made in the UI"
+    assert get_settings().topics["suggestions_per_run"] == 9
 
 
 # ---------------------------------------------------------------------------

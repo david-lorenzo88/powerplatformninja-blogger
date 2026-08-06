@@ -128,6 +128,11 @@ jobs:
         # and re-imports config/ from the already-deployed image. Skipped when
         # PPN_ADMIN_TOKEN is not set; non-fatal if the call does not return 200,
         # since nothing about the image changed either way.
+        #
+        # This runs on EVERY merge, not only when config/ changed — so the endpoint
+        # skips any document whose exact content is already in its history. Without
+        # that, each deploy silently superseded whatever had been edited in the
+        # Config screen. `applied` in the response says what actually landed.
         if: ${{ env.ADMIN_TOKEN != '' }}
         run: |
           set -uo pipefail
@@ -140,7 +145,8 @@ jobs:
           body=$(cat /tmp/reload.json 2>/dev/null || true)
           if [ "$code" = "200" ]; then
             echo "Config reloaded: ${body}"
-            echo "Config reloaded ✓" >> "$GITHUB_STEP_SUMMARY"
+            applied=$(python3 -c "import json,sys; print(', '.join(json.load(sys.stdin).get('applied') or []) or 'nothing changed')" </tmp/reload.json 2>/dev/null || echo "see log")
+            echo "Config reload ✓ — applied: ${applied}" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::config reload returned HTTP ${code}. ${body}"
             echo "The image is deployed; run 'ppn config reload' manually if the new config/ must apply."

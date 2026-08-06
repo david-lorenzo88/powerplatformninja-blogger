@@ -1056,13 +1056,13 @@ def config_reload() -> None:
     """
     setup_logging()
 
-    async def run() -> tuple[list[tuple[str, int]], bool]:
+    async def run() -> tuple[list[tuple[str, int, bool]], bool]:
         from .server import config_store
         from .server.db import init_db
 
         await init_db()
         if await config_store.seed_from_yaml_if_empty():
-            return [(n, 1) for n in config_store.DOCUMENTS], True
+            return [(n, 1, True) for n in config_store.DOCUMENTS], True
         return await config_store.reimport_from_yaml(note="Reloaded via `ppn config reload`"), False
 
     try:
@@ -1078,10 +1078,20 @@ def config_reload() -> None:
     verb = "seeded (first import)" if seeded else "reloaded"
     table = Table(title=f"Config {verb}")
     table.add_column("Document")
-    table.add_column("New version")
-    for name, version in results:
-        table.add_row(name, f"v{version}")
+    table.add_column("Version")
+    table.add_column("")
+    for name, version, applied in results:
+        table.add_row(
+            name,
+            f"v{version}",
+            "[green]applied[/]" if applied else "[dim]unchanged — left alone[/]",
+        )
     console.print(table)
+    if not seeded and not any(applied for *_, applied in results):
+        console.print(
+            "[dim]Nothing in config/ differs from what this database has already "
+            "held, so nothing was touched. Edits made in the Config screen stand.[/]"
+        )
 
 
 @app.command("show-config")

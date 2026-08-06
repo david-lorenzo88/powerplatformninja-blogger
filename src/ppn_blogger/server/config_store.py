@@ -84,18 +84,57 @@ async def seed_from_yaml_if_empty() -> bool:
     return True
 
 
-async def reimport_from_yaml(note: str = "Re-imported from config/") -> list[tuple[str, int]]:
-    """Push the current ``config/`` files into the DB as new versions.
+async def all_versions(name: str) -> list[str]:
+    """Every stored revision of one document, as raw content."""
+    async with session() as s:
+        rows = await s.execute(
+            select(ConfigDocument.content).where(ConfigDocument.name == name)
+        )
+        return [r for (r,) in rows]
+
+
+async def reimport_from_yaml(
+    note: str = "Re-imported from config/",
+) -> list[tuple[str, int, bool]]:
+    """Push changed ``config/`` files into the DB as new versions.
 
     ``seed_from_yaml_if_empty`` only fires on the very first start, so once the
     database is authoritative a git-only config swap never reaches a running
-    server. ``ppn config reload`` calls this to append each file as a new
-    version, so the new editorial ruleset takes effect without wiping history.
+    server. ``ppn config reload`` — and the deploy workflow, on every merge —
+    calls this so a new editorial ruleset takes effect without wiping history.
+
+    **A file is skipped when its exact content is already somewhere in that
+    document's history.** Without this, every deploy re-applied all five files
+    and silently superseded whatever had been edited in the Config screen: the
+    edit survived in the history, but the effective config quietly reverted to
+    git. A deploy that did not touch ``config/`` should not change the running
+    configuration at all.
+
+    The known cost: reverting ``config/`` in git to a state that was shipped
+    before will *not* re-apply, because that content is already in the history.
+    Roll the document back from the Config screen instead — which appends the old
+    content as a new version, and is auditable in a way a silent overwrite is not.
+
+    Returns ``(name, version, applied)`` per document; ``version`` is the current
+    one either way.
     """
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, int, bool]] = []
+    current = await latest_versions()
     for name in DOCUMENTS:
-        row = await save_document(name, _file_text(name), note=note)
-        out.append((name, row.version))
+        text = _file_text(name)
+        if text in await all_versions(name):
+            row = current.get(name)
+            out.append((name, row.version if row else 0, False))
+            continue
+        row = await save_document(name, text, note=note)
+        out.append((name, row.version, True))
+    applied = [name for name, _, changed in out if changed]
+    logger.info(
+        "config reload: %d applied%s, %d unchanged",
+        len(applied),
+        f" ({', '.join(applied)})" if applied else "",
+        len(out) - len(applied),
+    )
     return out
 
 

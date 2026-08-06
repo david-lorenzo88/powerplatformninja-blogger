@@ -608,10 +608,23 @@ authenticates to everything with its managed identity.
   is up or not.
 - **Config reload:** after the new revision is running, it calls
   `POST /api/config/reload`, which re-imports the image's `config/` into the
-  database as a new version of each document. The database is authoritative after
-  first boot, so without this a new editorial ruleset would ship in the image but
-  never reach the app. The step is opt-in (see below) and non-fatal — a failed
-  reload never fails a deploy that already rolled the image.
+  database as a new version of each **changed** document. The database is
+  authoritative after first boot, so without this a new editorial ruleset would
+  ship in the image but never reach the app. The step is opt-in (see below) and
+  non-fatal — a failed reload never fails a deploy that already rolled the image.
+
+  A file whose exact content is already somewhere in that document's history is
+  **skipped**. This matters, because the reload runs on *every* merge to `main`,
+  not only when `config/` changed: re-applying all five files each time silently
+  superseded whatever had been edited in the Config screen — the edit survived in
+  the history, but the effective config quietly reverted to git. The response
+  lists what was actually applied (`{"applied": ["sources"]}`), and the deploy log
+  prints it.
+
+  The known cost: reverting `config/` in git to a state that shipped before will
+  *not* re-apply, because that content is already in the history. Roll the document
+  back from the Config screen instead — which appends the old content as a new
+  version, and is auditable in a way a silent overwrite is not.
 - **`main` only, image only.** It does not touch Bicep, roles, or Easy Auth.
 
 ### Enabling the post-deploy config reload
@@ -640,14 +653,17 @@ az rest --method patch \
 # 3. Add PPN_ADMIN_TOKEN as a GitHub *secret* (same value as step 1).
 ```
 
-With all three in place, every merge to `main` re-imports the new `config/` after
-the image rolls. Leave any of them out and the step logs a warning and skips — the
-image still deploys, and you can always run `ppn config reload` by hand.
+With all three in place, every merge to `main` re-imports any **changed** `config/`
+file after the image rolls, and leaves the rest — including anything you have edited
+in the Config screen — untouched. Leave any of them out and the step logs a warning
+and skips: the image still deploys, and you can always run `ppn config reload` by
+hand.
 
 **On demand:** run the workflow manually (Actions → Deploy to Azure → *Run
 workflow*) with **`reload_only` = true** to re-import `config/` from the
 already-deployed image without rebuilding or rolling it — handy if a reload was
-skipped, or to re-apply config after editing it in place.
+skipped. Note this obeys the same skip rule, so it is a safe no-op when nothing in
+`config/` has changed.
 
 (For a *fresh* provision, `infra/main.bicep` takes an optional `adminToken`
 parameter that wires the same secret and env var, so step 1 is handled by the
