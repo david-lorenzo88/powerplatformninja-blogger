@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { cancelSourceReview, decideSourceReview, getSourceReview } from '../api/client'
 import type { SourceCandidate, SourceReview, TrustTier } from '../api/types'
+import { StatusChip } from '../components/Pills'
 import { fieldSm as field, ghostBtn, primaryBtn } from '../lib/ui'
 
 interface Choice {
@@ -378,12 +379,3 @@ function DecidedSummary({ review }: { review: SourceReview }) {
   )
 }
 
-export function StatusChip({ status }: { status: string }) {
-  const tone =
-    status === 'pending'
-      ? 'bg-amber-500/15 text-amber-300'
-      : status === 'approved'
-        ? 'bg-emerald-500/15 text-emerald-300'
-        : 'bg-slate-700/40 text-slate-400'
-  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${tone}`}>{status}</span>
-}

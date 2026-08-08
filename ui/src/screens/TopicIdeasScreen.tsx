@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { listTopicIdeas } from '../api/client'
 import type { TopicIdeaSummary } from '../api/types'
+import { ScorePill } from '../components/Pills'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { field, quietBtn, rowCard } from '../lib/ui'
 
@@ -214,17 +215,6 @@ function IdeaRow({ idea, onOpen }: { idea: TopicIdeaSummary; onOpen: () => void 
   )
 }
 
-export function ScorePill({ score }: { score: number }) {
-  const tone =
-    score >= 80
-      ? 'bg-emerald-500/15 text-emerald-300'
-      : score >= 60
-        ? 'bg-amber-500/15 text-amber-300'
-        : 'bg-slate-700/40 text-slate-300'
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${tone}`}>{Math.round(score)}</span>
-  )
-}
 
 function distinct(
   items: TopicIdeaSummary[] | undefined,

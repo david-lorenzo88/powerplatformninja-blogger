@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
+import { clearChunkReloadFlag } from '../lib/chunkReload'
+import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 
 const NAV = [
   { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷' },
@@ -111,6 +113,10 @@ export function AppShell() {
   const pendingCount = pending?.length ?? 0
   const [healthOpen, setHealthOpen] = useState(false)
 
+  // The shell mounted, so whatever chunk failure triggered a reload is behind
+  // us; release the latch so the next deploy gets its own single retry.
+  useEffect(clearChunkReloadFlag, [])
+
   return (
     <div className="flex h-full flex-col lg:flex-row">
       {/* The desktop sidebar. Below lg it is not rendered at all rather than
@@ -164,8 +170,15 @@ export function AppShell() {
           </div>
         )}
 
+        {/* One Suspense for every route, placed here so the header and tab bar
+            stay painted across a chunk load — on a phone a boundary inside the
+            route would flash the whole shell away. */}
         <main className="min-h-0 flex-1 overflow-auto overscroll-contain">
-          <Outlet />
+          <ChunkErrorBoundary>
+            <Suspense fallback={<p className="p-6 text-sm text-slate-500">loading…</p>}>
+              <Outlet />
+            </Suspense>
+          </ChunkErrorBoundary>
         </main>
 
         {/* An ordinary flex child rather than `position: fixed` — so <main> can
