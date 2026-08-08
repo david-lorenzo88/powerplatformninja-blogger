@@ -167,17 +167,26 @@ export function AppShell() {
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-950/40 px-4 lg:px-6">
-          <span className="text-sm font-semibold tracking-tight text-slate-100 lg:hidden">
-            PPN Blogger
-          </span>
-          <div className="ml-auto lg:ml-0">
-            <HealthBar
-              health={health}
-              error={isError}
-              open={healthOpen}
-              onToggle={() => setHealthOpen((o) => !o)}
-            />
+        {/* pt-safe on the header, not the row inside it, so the bar's own
+            background extends up behind the status bar rather than leaving a
+            bare strip above it.
+            This is not optional decoration: `apple-mobile-web-app-status-bar-style`
+            is black-translucent, which is what gives an installed app the full
+            screen — and it means iOS paints the page *underneath* the clock and
+            the battery. Without the inset the title sits directly behind them. */}
+        <header className="shrink-0 border-b border-slate-800 bg-slate-950/40 pt-safe">
+          <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
+            <span className="text-sm font-semibold tracking-tight text-slate-100 lg:hidden">
+              PPN Blogger
+            </span>
+            <div className="ml-auto lg:ml-0">
+              <HealthBar
+                health={health}
+                error={isError}
+                open={healthOpen}
+                onToggle={() => setHealthOpen((o) => !o)}
+              />
+            </div>
           </div>
         </header>
 
