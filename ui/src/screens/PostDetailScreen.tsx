@@ -20,6 +20,7 @@ const CodeEditor = lazy(() =>
 import { Markdown } from '../components/Markdown'
 import { Modal } from '../components/Modal'
 import { PublishDialog } from '../components/PublishDialog'
+import { useOnline } from '../hooks/useOnline'
 import { formatTime } from '../lib/format'
 import { ghostBtn, primaryBtn } from '../lib/ui'
 import { ScorePill } from '../components/Pills'
@@ -56,6 +57,9 @@ function PostDetail({ post }: { post: Post }) {
   )
   const [publishing, setPublishing] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
+  // A draft can be read from the cache offline; publishing it cannot be
+  // faked, and a queued-then-lost action is worse than a disabled button.
+  const online = useOnline()
 
   const selected = versions.find((v) => v.id === selectedId) ?? versions[0]
 
@@ -69,11 +73,19 @@ function PostDetail({ post }: { post: Post }) {
         <div className="mt-1 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
           <h1 className="truncate text-lg font-semibold text-slate-100">{post.title || post.slug}</h1>
           <div className="flex items-center gap-2 sm:ml-auto">
-            <button onClick={() => setRegenerating(true)} className={`${ghostBtn} flex-1 sm:flex-none`}>
+            <button
+              onClick={() => setRegenerating(true)}
+              disabled={!online}
+              className={`${ghostBtn} flex-1 sm:flex-none`}
+            >
               Regenerate…
             </button>
             {selected && (
-              <button onClick={() => setPublishing(true)} className={`${primaryBtn} flex-1 sm:flex-none`}>
+              <button
+                onClick={() => setPublishing(true)}
+                disabled={!online}
+                className={`${primaryBtn} flex-1 sm:flex-none`}
+              >
                 Publish…
               </button>
             )}

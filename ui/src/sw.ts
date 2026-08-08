@@ -31,7 +31,14 @@ declare const self: ServiceWorkerGlobalScope & {
 const VERSION = 'v1'
 const SHELL_CACHE = `ppn-shell-${VERSION}`
 const ASSET_CACHE = `ppn-assets-${VERSION}`
+const COVER_CACHE = `ppn-covers-${VERSION}`
 const SHELL = '/index.html'
+
+// GET /api/drafts/{name}/cover — the one API response worth keeping.
+const COVER = /^\/api\/drafts\/[^/]+\/cover$/
+// Covers are ~1MB each, so this is bounded rather than unbounded: a phone should
+// not hand a year of drafts' artwork to the storage quota.
+const COVER_LIMIT = 40
 
 const MANIFEST = self.__WB_MANIFEST
 
@@ -60,7 +67,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      const keep = new Set<string>([SHELL_CACHE, ASSET_CACHE])
+      const keep = new Set<string>([SHELL_CACHE, ASSET_CACHE, COVER_CACHE])
       const keys = await caches.keys()
       await Promise.all(keys.filter((k) => !keep.has(k)).map((k) => caches.delete(k)))
       await self.clients.claim()
@@ -88,9 +95,18 @@ self.addEventListener('fetch', (event) => {
   //   - anything cross-origin, and anything that is not a GET
   if (request.method !== 'GET') return
   if (url.origin !== self.location.origin) return
-  if (url.pathname.startsWith('/api/')) return
   if (url.pathname.startsWith('/.auth/')) return
   if (request.headers.get('accept')?.includes('text/event-stream')) return
+
+  // The single deliberate exception to leaving /api alone. A cover is a PNG
+  // that only changes when it is explicitly regenerated, and a draft read
+  // offline without its cover is half the page missing. Everything else under
+  // /api stays untouched — above all the SSE stream.
+  if (COVER.test(url.pathname)) {
+    event.respondWith(cacheFirstBounded(request))
+    return
+  }
+  if (url.pathname.startsWith('/api/')) return
 
   if (request.mode === 'navigate') {
     event.respondWith(networkFirstShell(request))
@@ -170,6 +186,25 @@ async function networkFirstShell(request: Request): Promise<Response> {
     const cached = await caches.match(SHELL, { cacheName: SHELL_CACHE })
     return cached ?? Response.error()
   }
+}
+
+// A cover changes only when it is explicitly regenerated, so cache-first is
+// right — and the FIFO trim keeps a phone from accumulating every draft's
+// artwork. Crude on purpose: an LRU would need a second store to track access
+// times, for a cache that holds pictures.
+async function cacheFirstBounded(request: Request): Promise<Response> {
+  const cache = await caches.open(COVER_CACHE)
+  const cached = await cache.match(request)
+  if (cached) return cached
+  const response = await fetch(request)
+  if (safeToCache(response)) {
+    await cache.put(request, response.clone())
+    const keys = await cache.keys()
+    if (keys.length > COVER_LIMIT) {
+      await Promise.all(keys.slice(0, keys.length - COVER_LIMIT).map((k) => cache.delete(k)))
+    }
+  }
+  return response
 }
 
 // Names under /assets/ carry a content hash, so a hit can never be stale and a

@@ -7,6 +7,7 @@ import { isTerminal } from '../api/types'
 import { StatusBadge } from '../components/StatusBadge'
 import { StartRunDialog } from '../components/StartRunDialog'
 import { useIsDesktop } from '../hooks/useMediaQuery'
+import { useOnline } from '../hooks/useOnline'
 import { duration, relativeTime } from '../lib/format'
 import { ghostBtn, primaryBtn, rowCard } from '../lib/ui'
 
@@ -15,6 +16,7 @@ export function RunsScreen() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const isDesktop = useIsDesktop()
+  const online = useOnline()
 
   const { data: runs, isLoading } = useQuery({
     queryKey: ['runs'],
@@ -58,7 +60,12 @@ export function RunsScreen() {
             )}
           </div>
         </div>
-        <button onClick={() => setShowStart(true)} className={primaryBtn}>
+        <button
+          onClick={() => setShowStart(true)}
+          disabled={!online}
+          title={online ? undefined : "You are offline"}
+          className={primaryBtn}
+        >
           + Start run
         </button>
       </div>

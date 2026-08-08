@@ -9,7 +9,12 @@ import { VitePWA } from 'vite-plugin-pwa'
 // never has to negotiate CORS. Point the proxy elsewhere with PPN_API_TARGET.
 const apiTarget = process.env.PPN_API_TARGET ?? 'http://127.0.0.1:8000'
 
+// Stamped into the bundle so the persisted query cache can be busted per
+// build — see lib/persist.ts.
+const buildId = String(Date.now())
+
 export default defineConfig({
+  define: { __BUILD_ID__: JSON.stringify(buildId) },
   plugins: [
     react(),
     tailwindcss(),
