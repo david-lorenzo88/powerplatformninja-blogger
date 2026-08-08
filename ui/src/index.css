@@ -9,10 +9,28 @@
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
+/* The notch and the home indicator. `viewport-fit=cover` in index.html lets the
+   app paint under both; these give the bottom tab bar somewhere safe to sit. */
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
 html,
-body,
+body {
+  height: 100%;
+}
+
+/* 100dvh rather than 100%: iOS Safari sizes the initial containing block to the
+   viewport with the toolbar *collapsed*, so a `height: 100%` shell puts the
+   bottom tab bar underneath the browser chrome until the user scrolls. The
+   `height: 100%` above it is the fallback for engines without dvh. */
 #root {
   height: 100%;
+  height: 100dvh;
 }
 
 body {
@@ -22,6 +40,21 @@ body {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* <main> is the scroller, never the document — so the browser's own
+     pull-to-refresh can never fire over the run canvas or a code editor. */
+  overscroll-behavior-y: none;
+}
+
+@layer base {
+  /* Two touch defaults worth having everywhere: no grey flash on tap, and none
+     of the 300ms double-tap-to-zoom delay on anything meant to be pressed. */
+  button,
+  a,
+  summary,
+  [role='button'] {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
 }
 
 /* Thin dark scrollbars so long logs and YAML don't get a chunky light bar. */
