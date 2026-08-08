@@ -272,6 +272,30 @@ class RunSettings:
 
 
 @dataclass(slots=True)
+class PushSettings:
+    """VAPID keys for Web Push. Unset means the feature is simply off.
+
+    `PPN_` rather than a vendor prefix because this is app-runtime configuration,
+    like PPN_ADMIN_TOKEN — the vendor prefixes here (FOUNDRY_, WP_, COVER_) name
+    a third-party service, and there is no push vendor: VAPID identifies *this*
+    application to whichever push service the browser happens to use.
+
+    The public key is not a secret and is handed to the browser through
+    /api/health; only the private key needs protecting.
+    """
+
+    public_key: str = field(default_factory=lambda: _env("PPN_VAPID_PUBLIC_KEY"))
+    private_key: str = field(default_factory=lambda: _env("PPN_VAPID_PRIVATE_KEY"))
+    # Push services require a contact so they can reach the operator about a
+    # misbehaving sender; a mailto: is the conventional form.
+    subject: str = field(default_factory=lambda: _env("PPN_VAPID_SUBJECT"))
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.public_key and self.private_key and self.subject)
+
+
+@dataclass(slots=True)
 class Settings:
     foundry: FoundrySettings = field(default_factory=FoundrySettings)
     wordpress: WordPressSettings = field(default_factory=WordPressSettings)
@@ -279,6 +303,7 @@ class Settings:
     cover: CoverSettings = field(default_factory=CoverSettings)
     translation: TranslationSettings = field(default_factory=TranslationSettings)
     run: RunSettings = field(default_factory=RunSettings)
+    push: PushSettings = field(default_factory=PushSettings)
 
     # Config documents are pulled from the active ConfigSource (YAML files by
     # default, the database when the server is running) and cached until that

@@ -29,6 +29,9 @@ server = [
     "uvicorn[standard]>=0.32",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
+    # Web Push. Synchronous (built on requests), so every send goes through
+    # asyncio.to_thread; py-vapid and http-ece come with it.
+    "pywebpush>=2.0",
 ]
 dev = [
     "pytest>=8.3",

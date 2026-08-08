@@ -1,0 +1,101 @@
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { getHealth, sendTestPush } from '../api/client'
+import { disablePush, enablePush, isStandalone, pushState } from '../lib/push'
+import type { PushState } from '../lib/push'
+import { card, ghostBtn, primaryBtn } from '../lib/ui'
+
+// Why this is a card on /config rather than a toggle in a menu: turning it on is
+// a one-time decision with three separate ways to fail, each needing its own
+// explanation. A toggle that silently does nothing on an un-installed iPhone is
+// worse than no toggle.
+export function NotificationsCard() {
+  const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
+  const [state, setState] = useState<PushState | null>(null)
+  const [error, setError] = useState('')
+  const [testResult, setTestResult] = useState('')
+
+  useEffect(() => {
+    void pushState().then(setState)
+  }, [])
+
+  const toggle = useMutation({
+    mutationFn: async () => {
+      setError('')
+      setTestResult('')
+      const key = health.data?.push.public_key ?? ''
+      return state === 'on' ? disablePush() : enablePush(key)
+    },
+    onSuccess: setState,
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  })
+
+  const test = useMutation({
+    mutationFn: sendTestPush,
+    onSuccess: (r) =>
+      setTestResult(
+        r.delivered
+          ? `Sent to ${r.delivered} device${r.delivered === 1 ? '' : 's'}.`
+          : 'No devices are registered.',
+      ),
+    onError: (e) => setTestResult(e instanceof Error ? e.message : String(e)),
+  })
+
+  const configured = health.data?.push.configured ?? false
+
+  return (
+    <div className={`${card} p-4`}>
+      <h2 className="text-sm font-semibold text-slate-100">Notifications</h2>
+      <p className="mt-1 text-xs text-slate-400">
+        Get told when a run finishes or a sweep needs your verdict, even with the app closed.
+      </p>
+
+      {!configured ? (
+        <p className="mt-3 text-xs text-amber-300">
+          The server has no VAPID keys. Set <span className="font-mono">PPN_VAPID_PUBLIC_KEY</span>,{' '}
+          <span className="font-mono">PPN_VAPID_PRIVATE_KEY</span> and{' '}
+          <span className="font-mono">PPN_VAPID_SUBJECT</span> — see docs/DEPLOYMENT.md.
+        </p>
+      ) : state === 'needs-install' ? (
+        <p className="mt-3 text-xs text-amber-300">
+          On iPhone and iPad, notifications only work once this is added to the Home Screen. Tap
+          Share, then <strong>Add to Home Screen</strong>, and open it from there.
+        </p>
+      ) : state === 'unsupported' ? (
+        <p className="mt-3 text-xs text-slate-500">This browser has no Push API.</p>
+      ) : state === 'denied' ? (
+        <p className="mt-3 text-xs text-rose-300">
+          Notifications are blocked for this site. Only your browser or OS settings can undo that —
+          the page cannot ask again.
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => toggle.mutate()}
+            disabled={toggle.isPending || state == null}
+            className={state === 'on' ? ghostBtn : primaryBtn}
+          >
+            {toggle.isPending
+              ? 'Working…'
+              : state === 'on'
+                ? 'Turn off on this device'
+                : 'Turn on for this device'}
+          </button>
+          {state === 'on' && (
+            <button onClick={() => test.mutate()} disabled={test.isPending} className={ghostBtn}>
+              {test.isPending ? 'Sending…' : 'Send a test'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {state === 'on' && !isStandalone() && (
+        <p className="mt-2 text-xs text-slate-500">
+          Installed to the Home Screen, these arrive like any other app's.
+        </p>
+      )}
+      {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
+      {testResult && <p className="mt-2 text-xs text-slate-400">{testResult}</p>}
+    </div>
+  )
+}

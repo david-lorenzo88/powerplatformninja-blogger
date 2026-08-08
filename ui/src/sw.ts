@@ -101,6 +101,59 @@ self.addEventListener('fetch', (event) => {
   }
 })
 
+// -- Web Push ----------------------------------------------------------------
+//
+// The payload arrives encrypted inside the push message itself, so nothing here
+// fetches anything — which matters, because a push can wake this worker hours
+// after the Easy Auth session expired, when no authenticated request would work.
+
+interface PushPayload {
+  title: string
+  body: string
+  url: string
+  tag: string
+}
+
+self.addEventListener('push', (event) => {
+  let payload: PushPayload
+  try {
+    payload = event.data?.json() as PushPayload
+  } catch {
+    return
+  }
+  if (!payload?.title) return
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      // Same tag replaces rather than stacks: a run that is re-notified should
+      // update its notification, not add a second one to the shade.
+      tag: payload.tag || payload.url,
+      data: { url: payload.url || '/runs' },
+    }),
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = (event.notification.data as { url?: string } | null)?.url ?? '/runs'
+  event.waitUntil(
+    (async () => {
+      // Prefer focusing a window that is already open — launching a second copy
+      // of an installed app is disorienting, and this one is single-operator.
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      for (const client of clients) {
+        if (new URL(client.url).origin !== self.location.origin) continue
+        await client.focus()
+        if ('navigate' in client) await client.navigate(target)
+        return
+      }
+      await self.clients.openWindow(target)
+    })(),
+  )
+})
+
 async function networkFirstShell(request: Request): Promise<Response> {
   try {
     const response = await fetch(request)

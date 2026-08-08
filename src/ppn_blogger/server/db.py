@@ -71,6 +71,51 @@ class ConfigDocument(Base):
 Index("ix_config_name_version", ConfigDocument.name, ConfigDocument.version.desc())
 
 
+class PushSubscription(Base):
+    """One browser's Web Push grant.
+
+    Per-browser, not per-user: the app has no user model at all — Easy Auth sits
+    in front of it and nothing downstream reads the identity header — so the push
+    endpoint the browser hands us *is* the identity.
+
+    It has to be a row rather than a dict in memory for two reasons. CI replaces
+    the container on every merge to main, and an in-memory store would silently
+    unsubscribe every device on each deploy. And push exists precisely for the
+    case where no SSE client is connected, so the delivery list cannot be derived
+    from live subscribers.
+
+    Two Azure SQL constraints shape the columns, and both are the kind that only
+    bite in production:
+
+    - `endpoint` is String(500), not Text. Text becomes NVARCHAR(max), which
+      cannot carry an index at all, and this column needs a unique one to make
+      re-subscribing idempotent.
+    - That index is explicitly non-clustered. SQL Server makes a primary key
+      clustered by default, and the clustered key limit is 900 bytes —
+      NVARCHAR(500) is 1000 and would be rejected outright. Hence the ordinary
+      autoincrement id, like every other table here.
+
+    `Base.metadata.create_all` is the whole migration story (checkfirst=True), so
+    this table appears on the next boot and the existing seven are untouched. It
+    never *alters*, though — a column added later needs hand-run DDL against
+    Azure SQL, so this wants to be right first time.
+    """
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    endpoint: Mapped[str] = mapped_column(String(500))
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(100))
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+
+
+Index("ix_push_endpoint", PushSubscription.endpoint, unique=True)
+
+
 class Run(Base):
     __tablename__ = "runs"
 
@@ -295,6 +340,7 @@ __all__ = [
     "ConfigDocument",
     "DraftVersion",
     "Post",
+    "PushSubscription",
     "Run",
     "RunEvent",
     "SourceReview",

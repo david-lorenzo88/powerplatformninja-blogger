@@ -28,7 +28,7 @@ from sqlalchemy import desc, select
 
 from ..models import SourceDecision
 from ..settings import get_settings
-from . import catalog, config_store, drafts, reviews
+from . import catalog, config_store, drafts, push, reviews
 from .db import Run, session
 from .runs import TERMINAL, manager
 
@@ -56,6 +56,13 @@ async def health() -> dict[str, Any]:
         "wordpress": {"configured": settings.wordpress.is_configured, "url": settings.wordpress.url},
         "search": {"provider": settings.search.provider, "configured": settings.search.is_configured},
         "translation": {"enabled": settings.translation.enabled},
+        # The VAPID public key rides along here rather than on an endpoint of its
+        # own: it is not a secret, the UI already polls health, and the browser
+        # needs it before it can even ask permission.
+        "push": {
+            "configured": settings.push.is_configured,
+            "public_key": settings.push.public_key,
+        },
     }
 
 
@@ -645,3 +652,64 @@ async def regenerate_cover(post_id: int, body: CoverInstructions) -> dict[str, s
         f"Cover · {post.get('title') or post.get('slug')}"[:300],
     )
     return {"id": run_id, "run_id": run_id}
+
+
+# ---------------------------------------------------------------------------
+# Web Push
+# ---------------------------------------------------------------------------
+#
+# These sit behind Easy Auth like everything else under /api — deliberately.
+# A subscription is a standing grant to interrupt the operator's phone, so it
+# should only ever be created by someone who has signed in.
+
+
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscribe(BaseModel):
+    endpoint: str
+    keys: PushKeys
+
+
+class PushUnsubscribe(BaseModel):
+    endpoint: str
+
+
+@router.post("/push/subscribe", status_code=201)
+async def push_subscribe(
+    body: PushSubscribe,
+    user_agent: str | None = Header(default=None, alias="User-Agent"),
+) -> dict[str, Any]:
+    if not get_settings().push.is_configured:
+        raise HTTPException(503, "Push is not configured. Set the PPN_VAPID_* variables.")
+    # The endpoint column is String(500) so it can carry a unique index on Azure
+    # SQL; anything longer is not a real push endpoint.
+    if len(body.endpoint) > 500:
+        raise HTTPException(422, "Endpoint too long.")
+    sub_id = await push.subscribe(body.endpoint, body.keys.p256dh, body.keys.auth, user_agent or "")
+    return {"id": sub_id, "subscriptions": await push.count()}
+
+
+@router.post("/push/unsubscribe")
+async def push_unsubscribe(body: PushUnsubscribe) -> dict[str, Any]:
+    removed = await push.unsubscribe(body.endpoint)
+    return {"removed": removed, "subscriptions": await push.count()}
+
+
+@router.post("/push/test")
+async def push_test() -> dict[str, Any]:
+    """Send a notification to every registered browser.
+
+    Worth having as a first-class endpoint: Web Push has a long chain — VAPID
+    keys, the browser's permission grant, the push service, the service worker —
+    and when nothing arrives, this narrows it to "the server can send" versus
+    "this device can receive".
+    """
+    if not get_settings().push.is_configured:
+        raise HTTPException(503, "Push is not configured. Set the PPN_VAPID_* variables.")
+    delivered = await push.notify(
+        "PPN Blogger", "Notifications are working.", "/runs", tag="ppn-test"
+    )
+    return {"delivered": delivered, "subscriptions": await push.count()}

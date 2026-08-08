@@ -29,6 +29,9 @@ export interface Health {
   wordpress: { configured: boolean; url: string }
   search: { provider: string; configured: boolean }
   translation: { enabled: boolean }
+  // public_key is empty when push is unconfigured; the private key never
+  // leaves the server.
+  push: { configured: boolean; public_key: string }
 }
 
 export interface Run {

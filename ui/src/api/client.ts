@@ -253,4 +253,26 @@ export const regenerateCover = (id: number, instructions: string) =>
     body: JSON.stringify({ instructions }),
   })
 
+// -- Web Push ---------------------------------------------------------------
+
+export interface PushSubscriptionBody {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
+export const subscribePush = (body: PushSubscriptionBody) =>
+  request<{ id: number; subscriptions: number }>('/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const unsubscribePush = (body: { endpoint: string }) =>
+  request<{ removed: boolean; subscriptions: number }>('/push/unsubscribe', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const sendTestPush = () =>
+  request<{ delivered: number; subscriptions: number }>('/push/test', { method: 'POST' })
+
 export type { RunEvent }

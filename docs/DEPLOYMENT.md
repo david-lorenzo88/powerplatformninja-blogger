@@ -659,6 +659,53 @@ configured outside the template.)
 > `repo:${GH_REPO}:environment:production`. Add a second federated credential with
 > that subject, or the login step will fail.
 
+### Turning on push notifications
+
+The console can tell your phone that a run finished or a sweep needs a verdict,
+with the app closed. It is off until three variables are set.
+
+Generate a VAPID pair **once** and keep it. The public key is what every browser
+subscribes against, so changing it invalidates every grant already given and each
+device has to be re-enabled by hand.
+
+```bash
+pip install py-vapid
+vapid --gen                      # writes private_key.pem / public_key.pem
+export VAPID_PUBLIC=$(vapid --applicationServerKey | sed 's/^.*=//')
+export VAPID_PRIVATE=$(python3 -c "print(open('private_key.pem').read())")
+```
+
+Set them on the live app without touching Bicep — the same route the admin token
+took, and for the same reason: re-running the template would mint a second SQL
+server.
+
+```bash
+az containerapp secret set -g ppn-blogger-rg -n ppn-blogger \
+  --secrets vapid-private-key="$VAPID_PRIVATE"
+
+az containerapp update -g ppn-blogger-rg -n ppn-blogger \
+  --set-env-vars PPN_VAPID_PRIVATE_KEY=secretref:vapid-private-key \
+                 PPN_VAPID_PUBLIC_KEY="$VAPID_PUBLIC" \
+                 PPN_VAPID_SUBJECT="mailto:you@example.com"
+```
+
+That rolls a new revision, which is a restart — which is also when
+`create_all` adds the `push_subscriptions` table. No migration step.
+
+Then, in the app: **Config → Notifications → Turn on for this device**, and
+**Send a test**. The permission prompt must follow a tap, so it only appears from
+that button.
+
+> **On iPhone and iPad the app must be installed first.** Web Push has worked
+> since iOS 16.4, but only for a PWA added to the Home Screen — in Safari itself
+> the API is simply absent. The card detects this and says so rather than
+> offering a button that does nothing. Removing the app from the Home Screen
+> revokes the grant silently.
+
+`infra/main.bicep` takes `vapidPublicKey`, `vapidPrivateKey` and `vapidSubject`
+so a *fresh* provision is correct, following the same `empty() ? [] : [...]`
+pattern as `adminToken`. Never run it against the live resource group.
+
 ### Making the app installable behind Easy Auth
 
 The UI ships as a PWA. Easy Auth is configured to answer every unauthenticated
