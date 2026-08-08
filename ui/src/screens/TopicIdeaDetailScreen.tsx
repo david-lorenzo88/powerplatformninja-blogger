@@ -33,7 +33,7 @@ function IdeaDetail({ idea }: { idea: TopicIdea }) {
   const [writing, setWriting] = useState(false)
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
+    <div className="mx-auto max-w-3xl p-4 lg:p-6">
       <Link to="/topic-ideas" className="text-sm text-accent hover:underline">
         ← Topic Ideas
       </Link>
@@ -55,7 +55,7 @@ function IdeaDetail({ idea }: { idea: TopicIdea }) {
       {/* Drafted state — the link between an idea and its post. */}
       <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
         {idea.has_draft && idea.post_id != null ? (
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between gap-3">
             <p className="text-sm text-slate-300">A draft has been created from this idea.</p>
             <Link
               to={`/drafts/${idea.post_id}`}
@@ -65,7 +65,7 @@ function IdeaDetail({ idea }: { idea: TopicIdea }) {
             </Link>
           </div>
         ) : (
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between gap-3">
             <p className="text-sm text-slate-400">No draft yet.</p>
             <button
               onClick={() => setWriting(true)}

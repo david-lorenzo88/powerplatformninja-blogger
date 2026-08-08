@@ -12,6 +12,7 @@ import {
 import { CodeEditor } from '../components/CodeEditor'
 import { Modal } from '../components/Modal'
 import { formatTime } from '../lib/format'
+import { field, primaryBtn } from '../lib/ui'
 
 export function ConfigScreen() {
   const [selected, setSelected] = useState<string | null>(null)
@@ -23,20 +24,22 @@ export function ConfigScreen() {
   }, [docs.data, selected])
 
   return (
-    <div className="flex h-full">
-      <aside className="w-56 shrink-0 border-r border-slate-800 p-3">
-        <h2 className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+    <div className="flex h-full flex-col lg:flex-row">
+      {/* A selector rail on desktop; the same five documents as a scrolling chip
+          strip on a phone, where 224px of permanent sidebar is not affordable. */}
+      <aside className="shrink-0 border-b border-slate-800 p-2 lg:w-56 lg:border-b-0 lg:border-r lg:p-3">
+        <h2 className="hidden px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 lg:block">
           Documents
         </h2>
-        <ul className="space-y-0.5">
+        <ul className="flex gap-1 overflow-x-auto lg:flex-col lg:space-y-0.5 lg:overflow-visible">
           {docs.data?.map((d) => (
-            <li key={d.name}>
+            <li key={d.name} className="shrink-0 lg:shrink">
               <button
                 onClick={() => setSelected(d.name)}
-                className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm ${
+                className={`flex min-h-11 w-full items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm lg:min-h-0 lg:justify-between lg:px-2 lg:py-1.5 ${
                   selected === d.name
                     ? 'bg-accent/15 text-accent'
-                    : 'text-slate-300 hover:bg-slate-800/60'
+                    : 'text-slate-300 active:bg-slate-800/60 lg:hover:bg-slate-800/60'
                 }`}
               >
                 <span className="font-mono text-xs">{d.name}</span>
@@ -98,26 +101,25 @@ function ConfigEditor({ name }: { name: string }) {
       : null
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-3 border-b border-slate-800 px-5 py-3">
+    // min-h-0 matters now that the parent stacks vertically below lg: without it
+    // the editor takes its content height and pushes the history strip off the
+    // bottom of the screen.
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-800 px-4 py-3 lg:flex-nowrap lg:px-5">
         <span className="font-mono text-sm text-slate-200">{name}</span>
         {doc.data && (
           <span className="text-xs text-slate-500">
             v{doc.data.version} · {doc.data.format} · {formatTime(doc.data.updated_at)}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex w-full items-center gap-2 lg:ml-auto lg:w-auto">
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="change note (optional)"
-            className="w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none"
+            className={`${field} flex-1 lg:w-56 lg:flex-none lg:text-xs`}
           />
-          <button
-            onClick={() => save.mutate()}
-            disabled={!dirty || save.isPending}
-            className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-slate-950 hover:bg-accent-strong disabled:opacity-40"
-          >
+          <button onClick={() => save.mutate()} disabled={!dirty || save.isPending} className={primaryBtn}>
             {save.isPending ? 'Saving…' : dirty ? 'Save' : saved ? 'Saved ✓' : 'Saved'}
           </button>
         </div>
@@ -173,7 +175,7 @@ function HistoryBar({ name }: { name: string }) {
   })
 
   return (
-    <div className="shrink-0 border-t border-slate-800 px-5 py-2">
+    <div className="shrink-0 border-t border-slate-800 px-4 py-2 lg:px-5">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
         History
       </div>
@@ -187,7 +189,10 @@ function HistoryBar({ name }: { name: string }) {
             <span className="max-w-[10rem] truncate text-slate-500" title={h.note}>
               {h.note || '—'}
             </span>
-            <button onClick={() => setViewing(h.version)} className="text-accent hover:underline">
+            <button
+              onClick={() => setViewing(h.version)}
+              className="min-h-11 px-1 text-accent hover:underline lg:min-h-0"
+            >
               view
             </button>
           </div>

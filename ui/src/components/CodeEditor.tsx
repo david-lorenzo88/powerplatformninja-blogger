@@ -1,7 +1,8 @@
-import CodeMirror from '@uiw/react-codemirror'
+import CodeMirror, { EditorView } from '@uiw/react-codemirror'
 import { yaml } from '@codemirror/lang-yaml'
 import { markdown } from '@codemirror/lang-markdown'
 import type { Extension } from '@codemirror/state'
+import { useIsDesktop } from '../hooks/useMediaQuery'
 
 // One place to wire CodeMirror so the Config (YAML) and Drafts (Markdown) editors
 // share a theme and behaviour. `format` picks the language for highlighting.
@@ -18,7 +19,12 @@ export function CodeEditor({
   readOnly?: boolean
   height?: string
 }) {
+  const isDesktop = useIsDesktop()
   const extensions: Extension[] = format === 'markdown' ? [markdown()] : [yaml()]
+  // Sideways scrolling to finish a line is miserable with a thumb, and a wrapped
+  // long string is still perfectly readable YAML. Desktop keeps hard lines,
+  // where the horizontal room exists and column alignment is worth having.
+  if (!isDesktop) extensions.push(EditorView.lineWrapping)
   return (
     <CodeMirror
       value={value}
@@ -27,7 +33,13 @@ export function CodeEditor({
       height={height}
       readOnly={readOnly}
       extensions={extensions}
-      basicSetup={{ lineNumbers: true, foldGutter: true, highlightActiveLine: !readOnly }}
+      // The line-number and fold gutters cost about 48px, which is an eighth of
+      // a 390px screen given to chrome rather than to the YAML being read.
+      basicSetup={{
+        lineNumbers: isDesktop,
+        foldGutter: isDesktop,
+        highlightActiveLine: !readOnly,
+      }}
       className="h-full text-sm"
     />
   )

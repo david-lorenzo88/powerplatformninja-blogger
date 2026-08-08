@@ -19,7 +19,7 @@ export function SourceReviewsScreen() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-slate-800 px-6 py-4">
+      <div className="shrink-0 border-b border-slate-800 px-4 py-4 lg:px-6">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold text-slate-100">Source Reviews</h1>
           <span className="text-sm text-slate-500">
@@ -33,7 +33,7 @@ export function SourceReviewsScreen() {
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-4 lg:px-6">
         {reviews.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
         {!reviews.isLoading && rows.length === 0 && (
           <p className="text-sm text-slate-500">

@@ -104,7 +104,7 @@ export function SourceReviewScreen() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-slate-800 px-6 py-4">
+      <div className="shrink-0 border-b border-slate-800 px-4 py-4 lg:px-6">
         <div className="flex flex-wrap items-baseline gap-3">
           <h1 className="text-lg font-semibold text-slate-100">Source review #{data.id}</h1>
           <StatusChip status={data.status} />
@@ -124,7 +124,7 @@ export function SourceReviewScreen() {
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-4 lg:px-6">
         {settled ? (
           <DecidedSummary review={data} />
         ) : (
@@ -160,11 +160,11 @@ export function SourceReviewScreen() {
       </div>
 
       {!settled && (
-        <div className="shrink-0 border-t border-slate-800 px-6 py-3">
+        <div className="shrink-0 border-t border-slate-800 px-4 py-3 pb-safe lg:px-6">
           {decide.error && (
             <p className="mb-2 text-xs text-rose-400">{String(decide.error)}</p>
           )}
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:gap-3">
             <button
               className={primaryBtn}
               disabled={approvedCount === 0 || decide.isPending}
@@ -183,7 +183,7 @@ export function SourceReviewScreen() {
               Save sources only
             </button>
             <button
-              className={`${ghostBtn} ml-auto`}
+              className={`${ghostBtn} lg:ml-auto`}
               disabled={drop.isPending}
               onClick={() => drop.mutate()}
             >
@@ -281,7 +281,7 @@ function CandidateRow({
       <div className="flex flex-wrap items-center gap-3">
         <input
           type="checkbox"
-          className="h-4 w-4 accent-cyan-400"
+          className="h-6 w-6 shrink-0 accent-cyan-400 lg:h-4 lg:w-4"
           checked={choice.approved}
           onChange={(e) => onChange({ ...choice, approved: e.target.checked })}
           aria-label={`Approve ${candidate.domain}`}
@@ -298,14 +298,14 @@ function CandidateRow({
           </span>
         )}
         <button
-          className="text-xs text-slate-400 hover:text-accent"
+          className="min-h-11 text-xs text-slate-400 hover:text-accent active:text-accent lg:min-h-0"
           onClick={onToggleExpand}
           aria-expanded={expanded}
         >
           {candidate.item_count} item{candidate.item_count === 1 ? '' : 's'} {expanded ? '▴' : '▾'}
         </button>
         <span className="text-[11px] text-slate-600">{candidate.scouts.join(', ')}</span>
-        <label className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+        <label className="flex w-full items-center gap-2 text-xs text-slate-500 lg:ml-auto lg:w-auto">
           trust
           <select
             className={field}
