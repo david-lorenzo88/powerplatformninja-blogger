@@ -756,3 +756,57 @@ async def test_record_cover_result_marks_versions(api):
     )
     still = (await api.get(f"/api/posts/{post['id']}")).json()
     assert all(v["has_cover"] for v in still["versions"]), "a failed cover wiped the good one"
+
+
+# -- Static serving ----------------------------------------------------------
+#
+# These only make sense once `npm run build` has produced ui/dist; CI runs ruff
+# and pytest without building the SPA, so they skip there rather than fail.
+
+_ui_missing = pytest.mark.skipif(
+    not (__import__("ppn_blogger.server.app", fromlist=["_ui_present"])._ui_present()),
+    reason="ui/dist not built",
+)
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_hashed_assets_are_pinned_and_the_shell_is_not(api):
+    """Content-hashed bundles may be cached for a year; the shell may not.
+
+    Without this split a service worker's precache buys nothing (everything
+    revalidates) or an installed app is stranded on an old build forever
+    (nothing revalidates).
+    """
+    from ppn_blogger.server.app import UI_DIST
+
+    asset = next((UI_DIST / "assets").glob("*.js")).name
+    pinned = await api.get(f"/assets/{asset}")
+    assert pinned.status_code == 200
+    assert "immutable" in pinned.headers["cache-control"]
+
+    shell = await api.get("/runs")
+    assert shell.status_code == 200
+    assert shell.headers["cache-control"] == "no-cache"
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_missing_file_paths_404_rather_than_serving_the_shell(api):
+    """A path that names a file but has none must not return index.html.
+
+    The manifest and icons are excluded from Easy Auth by exact path. If one of
+    those paths fell through to the SPA shell, the exclusion would hand the app
+    to anyone who asked, unauthenticated.
+    """
+    assert (await api.get("/icons/does-not-exist.png")).status_code == 404
+    assert (await api.get("/manifest.webmanifest")).status_code in (200, 404)
+    # Extensionless paths are routes and still get the app.
+    assert (await api.get("/drafts/17")).status_code == 200
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_api_namespace_never_falls_through_to_the_shell(api):
+    """Unchanged behaviour, asserted because the 404 branch above sits beside it."""
+    assert (await api.get("/api/not-a-route")).status_code == 404

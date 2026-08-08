@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
@@ -116,6 +116,23 @@ export function AppShell() {
   // The shell mounted, so whatever chunk failure triggered a reload is behind
   // us; release the latch so the next deploy gets its own single retry.
   useEffect(clearChunkReloadFlag, [])
+
+  // TanStack Query already suspends refetchInterval while the document is
+  // hidden, which is what we want on a phone. The cost is on the way back: the
+  // badge and the health dots would then be up to 15 and 30 seconds stale, and
+  // a pending source review sitting unnoticed is the one thing this nav exists
+  // to prevent. Refresh exactly those two on return rather than turning
+  // refetchOnWindowFocus back on globally.
+  const qc = useQueryClient()
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      void qc.invalidateQueries({ queryKey: ['health'] })
+      void qc.invalidateQueries({ queryKey: ['source-reviews', 'pending'] })
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [qc])
 
   return (
     <div className="flex h-full flex-col lg:flex-row">

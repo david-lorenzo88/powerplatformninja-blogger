@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { runEventsUrl } from '../api/client'
+import { getHealth, runEventsUrl } from '../api/client'
 import type { RunEvent, RunStatus } from '../api/types'
 
 export interface RunStream {
@@ -35,6 +35,9 @@ export function useRunStream(runId: string | undefined): RunStream {
 
     let es: EventSource | null = null
     let reconnectTimer: number | undefined
+    // Consecutive failures with no intervening onopen. Used both to back off
+    // and to decide when a "server is down" is more likely a "session expired".
+    let failures = 0
 
     // A finished run replays thousands of events in a burst, and a live write
     // run can be chatty. Buffer incoming events and flush on a timer so we
@@ -56,7 +59,10 @@ export function useRunStream(runId: string | undefined): RunStream {
       if (doneRef.current) return
       es = new EventSource(runEventsUrl(runId, lastSeqRef.current))
 
-      es.onopen = () => setStreamStatus('open')
+      es.onopen = () => {
+        failures = 0
+        setStreamStatus('open')
+      }
 
       es.onmessage = (e) => {
         let payload: RunEvent & { status?: RunStatus }
@@ -85,16 +91,39 @@ export function useRunStream(runId: string | undefined): RunStream {
           setStreamStatus('closed')
           return
         }
-        // Resume from the last seq we saw after a short backoff.
+        failures += 1
+        // EventSource cannot be given a redirect mode, so against Easy Auth an
+        // expired session looks exactly like a dead server — and the old fixed
+        // 1.5s retry then hammered the login redirect forever, silently. After a
+        // few failures ask /api/health, which goes through request() and will
+        // navigate to the login page if that is what is actually wrong.
+        if (failures === 3) void getHealth().catch(() => {})
+        // Resume from the last seq we saw, backing off to 30s.
         setStreamStatus('connecting')
-        reconnectTimer = window.setTimeout(connect, 1500)
+        reconnectTimer = window.setTimeout(connect, Math.min(1500 * 2 ** (failures - 1), 30_000))
       }
     }
+
+    // Mobile browsers tear down an EventSource when the tab or installed app
+    // goes to the background, and do not reliably fire onerror when they do — so
+    // coming back could sit in `connecting` for a whole backoff, or forever.
+    // Retry at once on becoming visible instead; lastSeqRef makes it lossless.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || doneRef.current) return
+      if (es && es.readyState === EventSource.OPEN) return
+      if (reconnectTimer) window.clearTimeout(reconnectTimer)
+      es?.close()
+      failures = 0
+      setStreamStatus('connecting')
+      connect()
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     connect()
 
     return () => {
       doneRef.current = true
+      document.removeEventListener('visibilitychange', onVisible)
       es?.close()
       if (reconnectTimer) window.clearTimeout(reconnectTimer)
       if (flushTimer) window.clearTimeout(flushTimer)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..settings import ROOT
@@ -23,6 +23,33 @@ from .runs import manager
 logger = logging.getLogger("ppn.server")
 
 UI_DIST = ROOT / "ui" / "dist"
+
+# Debian slim carries no /etc/mime.types, and whether the interpreter's built-in
+# map knows .webmanifest varies by version. A manifest served as text/plain is
+# silently ignored and the app is simply not installable, with no error anywhere
+# — so state it rather than hope.
+MEDIA_TYPES = {".webmanifest": "application/manifest+json"}
+
+# A year, and immutable: every name under /assets/ carries a content hash, so the
+# bytes behind one can never change.
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+class HashedStatic(StaticFiles):
+    """StaticFiles that pins its responses.
+
+    Deliberately not an HTTP middleware. The obvious way to stamp Cache-Control
+    is a `@app.middleware("http")`, but that wraps every route in a
+    BaseHTTPMiddleware — including the SSE stream at /api/runs/{id}/events, which
+    is a long-lived StreamingResponse and the one thing in this app that must not
+    acquire a wrapper between it and the client. Narrow it to the handlers that
+    actually serve files instead.
+    """
+
+    def file_response(self, *args: object, **kwargs: object) -> Response:
+        response = super().file_response(*args, **kwargs)  # type: ignore[arg-type]
+        response.headers.setdefault("Cache-Control", IMMUTABLE)
+        return response
 
 
 @asynccontextmanager
@@ -72,7 +99,7 @@ def create_app() -> FastAPI:
 
     # Serve the built SPA when it exists, so production is a single process.
     if UI_DIST.exists():
-        app.mount("/assets", StaticFiles(directory=UI_DIST / "assets"), name="assets")
+        app.mount("/assets", HashedStatic(directory=UI_DIST / "assets"), name="assets")
 
         @app.get("/{full_path:path}")
         async def spa(full_path: str) -> FileResponse:
@@ -84,8 +111,24 @@ def create_app() -> FastAPI:
                 raise HTTPException(404, "Not found")
             candidate = UI_DIST / full_path
             if full_path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(UI_DIST / "index.html")
+                # These names never change — the shell, the worker script, the
+                # manifest, the icons — so without an explicit no-cache a deploy
+                # stays invisible until some browser heuristic happens to expire.
+                # That is the classic stale-PWA-shell failure, and it strands an
+                # installed app on an old build with no way for the user to tell.
+                return FileResponse(
+                    candidate,
+                    media_type=MEDIA_TYPES.get(candidate.suffix),
+                    headers={"Cache-Control": "no-cache"},
+                )
+            # A path that names a file but has none is a 404, not the app. Routes
+            # are extensionless so this costs nothing, and it matters because the
+            # icons and manifest are excluded from Easy Auth by exact path: were
+            # one to fall through, that exclusion would hand the app shell to
+            # anyone who asked, unauthenticated.
+            if Path(full_path).suffix:
+                raise HTTPException(404, "Not found")
+            return FileResponse(UI_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 
