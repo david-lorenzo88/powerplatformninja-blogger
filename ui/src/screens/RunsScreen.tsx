@@ -6,12 +6,15 @@ import type { Run } from '../api/types'
 import { isTerminal } from '../api/types'
 import { StatusBadge } from '../components/StatusBadge'
 import { StartRunDialog } from '../components/StartRunDialog'
+import { useIsDesktop } from '../hooks/useMediaQuery'
 import { duration, relativeTime } from '../lib/format'
+import { ghostBtn, primaryBtn, rowCard } from '../lib/ui'
 
 export function RunsScreen() {
   const [showStart, setShowStart] = useState(false)
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const isDesktop = useIsDesktop()
 
   const { data: runs, isLoading } = useQuery({
     queryKey: ['runs'],
@@ -39,8 +42,8 @@ export function RunsScreen() {
   const queuedCount = (runs ?? []).filter((r) => r.status === 'queued').length
 
   return (
-    <div className="p-8">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="p-4 lg:p-8">
+      <div className="mb-6 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-lg font-semibold text-slate-100">Runs</h1>
           <div className="mt-1 flex items-center gap-3 text-xs text-slate-400">
@@ -55,10 +58,7 @@ export function RunsScreen() {
             )}
           </div>
         </div>
-        <button
-          onClick={() => setShowStart(true)}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-accent-strong"
-        >
+        <button onClick={() => setShowStart(true)} className={primaryBtn}>
           + Start run
         </button>
       </div>
@@ -66,31 +66,46 @@ export function RunsScreen() {
       {isLoading ? (
         <p className="text-sm text-slate-500">loading runs…</p>
       ) : runs && runs.length > 0 ? (
-        <div className="overflow-hidden rounded-xl border border-slate-800">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-900/60 text-left text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2.5 font-medium">Status</th>
-                <th className="px-4 py-2.5 font-medium">Kind</th>
-                <th className="px-4 py-2.5 font-medium">Label</th>
-                <th className="px-4 py-2.5 font-medium">When</th>
-                <th className="px-4 py-2.5 font-medium"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {runs.map((run) => (
-                <RunRow
-                  key={run.id}
-                  run={run}
-                  position={queuePosition.get(run.id)}
-                  onOpen={() => navigate(`/runs/${run.id}`)}
-                  onCancel={() => cancel.mutate(run.id)}
-                  cancelling={cancel.isPending && cancel.variables === run.id}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        isDesktop ? (
+          <div className="overflow-hidden rounded-xl border border-slate-800">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-900/60 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2.5 font-medium">Status</th>
+                  <th className="px-4 py-2.5 font-medium">Kind</th>
+                  <th className="px-4 py-2.5 font-medium">Label</th>
+                  <th className="px-4 py-2.5 font-medium">When</th>
+                  <th className="px-4 py-2.5 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {runs.map((run) => (
+                  <RunRow
+                    key={run.id}
+                    run={run}
+                    position={queuePosition.get(run.id)}
+                    onOpen={() => navigate(`/runs/${run.id}`)}
+                    onCancel={() => cancel.mutate(run.id)}
+                    cancelling={cancel.isPending && cancel.variables === run.id}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {runs.map((run) => (
+              <RunCard
+                key={run.id}
+                run={run}
+                position={queuePosition.get(run.id)}
+                onOpen={() => navigate(`/runs/${run.id}`)}
+                onCancel={() => cancel.mutate(run.id)}
+                cancelling={cancel.isPending && cancel.variables === run.id}
+              />
+            ))}
+          </ul>
+        )
       ) : (
         <div className="rounded-xl border border-dashed border-slate-800 p-10 text-center">
           <p className="text-sm text-slate-400">No runs yet.</p>
@@ -102,6 +117,48 @@ export function RunsScreen() {
 
       {showStart && <StartRunDialog onClose={() => setShowStart(false)} />}
     </div>
+  )
+}
+
+// The same five columns stacked, with Cancel as a sibling of the card rather
+// than a child of it: a button nested inside a button is invalid markup, and the
+// stopPropagation the table row relies on is unreliable under touch.
+function RunCard({
+  run,
+  position,
+  onOpen,
+  onCancel,
+  cancelling,
+}: {
+  run: Run
+  position?: number
+  onOpen: () => void
+  onCancel: () => void
+  cancelling: boolean
+}) {
+  const cancellable = run.status === 'queued' || run.status === 'running'
+  return (
+    <li>
+      <button onClick={onOpen} className={rowCard}>
+        <div className="flex items-center gap-2">
+          <StatusBadge status={run.status} />
+          <span className="ml-auto font-mono text-[11px] text-slate-500">{run.kind}</span>
+        </div>
+        <div className="mt-2 truncate font-medium text-slate-200">{run.label || '—'}</div>
+        <div className="mt-1 text-xs text-slate-400">
+          <WhenCell run={run} position={position} />
+        </div>
+      </button>
+      {cancellable && (
+        <button
+          onClick={onCancel}
+          disabled={cancelling}
+          className={`${ghostBtn} mt-2 w-full hover:border-rose-500/60 hover:text-rose-300`}
+        >
+          {cancelling ? 'Cancelling…' : 'Cancel'}
+        </button>
+      )}
+    </li>
   )
 }
 
