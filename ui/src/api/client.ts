@@ -42,11 +42,45 @@ export class ApiError extends Error {
   }
 }
 
+// Entra Easy Auth answers a signed-out request with a 302 to Microsoft, not a
+// 401. Under the default redirect mode `fetch` follows that cross-origin, CORS
+// blocks the result, and the whole thing arrives as a bare "Failed to fetch" —
+// indistinguishable from being offline, which is how a expired session used to
+// present: six polling queries all failing for no stated reason.
+//
+// `redirect: 'manual'` turns it into an opaqueredirect we can recognise. Safe
+// here because no endpoint in this file legitimately redirects: every path is a
+// concrete FastAPI route declared without a trailing slash, so the framework's
+// own redirect_slashes never fires. Re-check that if routes are added.
+let redirecting = false
+
+function toLogin(): never {
+  // Six concurrent polls would otherwise each call location.replace.
+  if (!redirecting) {
+    redirecting = true
+    const back = `${location.pathname}${location.search}${location.hash}`
+    // Must be a relative path: Easy Auth rejects absolute external URLs unless
+    // they are listed in allowedExternalRedirectUrls.
+    location.replace(`/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(back)}`)
+  }
+  throw new ApiError(401, 'Signed out — redirecting to sign in.')
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+    credentials: 'same-origin',
+    redirect: 'manual',
     ...init,
   })
+
+  if (res.type === 'opaqueredirect' || res.status === 0) toLogin()
+  // Belt and braces: some Easy Auth configurations serve the login page inline
+  // at 200 rather than redirecting. HTML from a JSON endpoint means the same.
+  if (res.ok && res.status !== 204 && (res.headers.get('content-type') ?? '').includes('text/html')) {
+    toLogin()
+  }
+
   if (!res.ok) {
     throw new ApiError(res.status, await errorMessage(res))
   }
@@ -218,5 +252,27 @@ export const regenerateCover = (id: number, instructions: string) =>
     method: 'POST',
     body: JSON.stringify({ instructions }),
   })
+
+// -- Web Push ---------------------------------------------------------------
+
+export interface PushSubscriptionBody {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
+export const subscribePush = (body: PushSubscriptionBody) =>
+  request<{ id: number; subscriptions: number }>('/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const unsubscribePush = (body: { endpoint: string }) =>
+  request<{ removed: boolean; subscriptions: number }>('/push/unsubscribe', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const sendTestPush = () =>
+  request<{ delivered: number; subscriptions: number }>('/push/test', { method: 'POST' })
 
 export type { RunEvent }

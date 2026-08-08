@@ -756,3 +756,215 @@ async def test_record_cover_result_marks_versions(api):
     )
     still = (await api.get(f"/api/posts/{post['id']}")).json()
     assert all(v["has_cover"] for v in still["versions"]), "a failed cover wiped the good one"
+
+
+# -- Static serving ----------------------------------------------------------
+#
+# These only make sense once `npm run build` has produced ui/dist; CI runs ruff
+# and pytest without building the SPA, so they skip there rather than fail.
+
+_ui_missing = pytest.mark.skipif(
+    not (__import__("ppn_blogger.server.app", fromlist=["_ui_present"])._ui_present()),
+    reason="ui/dist not built",
+)
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_hashed_assets_are_pinned_and_the_shell_is_not(api):
+    """Content-hashed bundles may be cached for a year; the shell may not.
+
+    Without this split a service worker's precache buys nothing (everything
+    revalidates) or an installed app is stranded on an old build forever
+    (nothing revalidates).
+    """
+    from ppn_blogger.server.app import UI_DIST
+
+    asset = next((UI_DIST / "assets").glob("*.js")).name
+    pinned = await api.get(f"/assets/{asset}")
+    assert pinned.status_code == 200
+    assert "immutable" in pinned.headers["cache-control"]
+
+    shell = await api.get("/runs")
+    assert shell.status_code == 200
+    assert shell.headers["cache-control"] == "no-cache"
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_missing_file_paths_404_rather_than_serving_the_shell(api):
+    """A path that names a file but has none must not return index.html.
+
+    The manifest and icons are excluded from Easy Auth by exact path. If one of
+    those paths fell through to the SPA shell, the exclusion would hand the app
+    to anyone who asked, unauthenticated.
+    """
+    assert (await api.get("/icons/does-not-exist.png")).status_code == 404
+    assert (await api.get("/manifest.webmanifest")).status_code in (200, 404)
+    # Extensionless paths are routes and still get the app.
+    assert (await api.get("/drafts/17")).status_code == 200
+
+
+@_ui_missing
+@pytest.mark.asyncio
+async def test_api_namespace_never_falls_through_to_the_shell(api):
+    """Unchanged behaviour, asserted because the 404 branch above sits beside it."""
+    assert (await api.get("/api/not-a-route")).status_code == 404
+
+
+# -- Web Push ----------------------------------------------------------------
+
+
+@pytest.fixture
+def push_configured(monkeypatch):
+    """Fake VAPID keys plus a recorder in place of the network.
+
+    `_send_one` is the whole boundary to the outside world, so patching it is
+    what makes these tests offline. It also lets a test assert on the payload,
+    which is the part that actually matters — a notification that fires with the
+    wrong words is as bad as one that does not fire.
+    """
+    from ppn_blogger import settings as settings_mod
+    from ppn_blogger.server import push
+
+    s = settings_mod.get_settings()
+    monkeypatch.setattr(s.push, "public_key", "test-public")
+    monkeypatch.setattr(s.push, "private_key", "test-private")
+    monkeypatch.setattr(s.push, "subject", "mailto:test@example.com")
+
+    sent: list[dict] = []
+
+    def recorder(subscription, payload):
+        sent.append({"endpoint": subscription["endpoint"], **json.loads(payload)})
+        return 200
+
+    monkeypatch.setattr(push, "_send_one", recorder)
+    return sent
+
+
+async def _subscribe(api, endpoint="https://push.example.com/abc"):
+    return await api.post(
+        "/api/push/subscribe",
+        json={"endpoint": endpoint, "keys": {"p256dh": "k", "auth": "a"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_push_is_disabled_until_vapid_keys_are_set(api):
+    """No keys means 503, not a confusing success that never delivers."""
+    assert (await _subscribe(api)).status_code == 503
+    assert (await api.post("/api/push/test")).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_subscribing_twice_keeps_one_row(api, push_configured):
+    """Browsers re-issue the same endpoint on every load.
+
+    Without the unique index and the select-then-write upsert this would grow a
+    row per page view, and one finished run would buzz the phone repeatedly.
+    """
+    first = await _subscribe(api)
+    assert first.status_code == 201
+    again = await _subscribe(api)
+    assert again.status_code == 201
+    assert again.json()["subscriptions"] == 1
+
+    await _subscribe(api, "https://push.example.com/second")
+    assert (await api.post("/api/push/test")).json()["subscriptions"] == 2
+
+    removed = await api.post(
+        "/api/push/unsubscribe", json={"endpoint": "https://push.example.com/second"}
+    )
+    assert removed.json() == {"removed": True, "subscriptions": 1}
+
+
+@pytest.mark.asyncio
+async def test_health_carries_the_public_key_but_never_the_private_one(api, push_configured):
+    body = (await api.get("/api/health")).json()
+    assert body["push"] == {"configured": True, "public_key": "test-public"}
+    assert "test-private" not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_notifies_exactly_once(api, push_configured, controllable_dispatch):
+    """One notification per run, and not before it is actually finished."""
+    await _subscribe(api)
+    started = await api.post("/api/runs/suggest", json={"instruction": "x", "label": "Weekly sweep"})
+    run_id = started.json()["id"]
+
+    # Held open by the fixture: nothing should have been sent yet.
+    await asyncio.sleep(0.1)
+    assert push_configured == []
+
+    controllable_dispatch.release.set()
+    await _wait_for(api, run_id)
+    # The notification is spawned detached, so give the task a moment to land.
+    for _ in range(50):
+        if push_configured:
+            break
+        await asyncio.sleep(0.05)
+
+    assert len(push_configured) == 1, "a run must notify exactly once"
+    assert push_configured[0]["url"] == "/topic-ideas"
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_awaiting_approval_says_so(api, push_configured):
+    """The exploration case gets its own copy, and still only one notification.
+
+    A run that stops for a verdict finishes `succeeded`, so a naive hook would
+    announce "topics ready" for a run that produced none and is blocked on the
+    operator.
+    """
+    from ppn_blogger.server import push as push_mod
+
+    title, body, url = push_mod._describe(
+        "explore",
+        "succeeded",
+        "Wide sweep",
+        {"awaiting_source_approval": True, "review_id": 7, "candidate_count": 9, "new_count": 3},
+    )
+    assert "verdict" in title.lower()
+    assert "9 sites" in body and "3 new" in body
+    assert url == "/source-reviews/7"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_your_own_run_does_not_notify(api, push_configured):
+    """You were looking at it a second ago; a push would be noise."""
+    from ppn_blogger.server import push as push_mod
+
+    await _subscribe(api)
+    await push_mod.notify_run_finished("write", "cancelled", "Some draft", None)
+    assert push_configured == []
+
+
+@pytest.mark.asyncio
+async def test_an_expired_subscription_is_pruned(api, push_configured, monkeypatch):
+    """410 Gone means that endpoint will never deliver again.
+
+    Without pruning, a phone that was reset would be retried on every run for
+    the life of the deployment.
+    """
+    from ppn_blogger.server import push as push_mod
+
+    await _subscribe(api)
+    monkeypatch.setattr(push_mod, "_send_one", lambda subscription, payload: 410)
+    assert await push_mod.notify("t", "b", "/runs") == 0
+    assert await push_mod.count() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failing_push_service_never_sinks_a_run(api, push_configured, monkeypatch):
+    """Same doctrine as the cover and the WordPress push: the run matters more."""
+    from ppn_blogger.server import push as push_mod
+
+    await _subscribe(api)
+
+    def explode(subscription, payload):
+        raise RuntimeError("push service on fire")
+
+    monkeypatch.setattr(push_mod, "_send_one", explode)
+    # Must not raise.
+    await push_mod.notify_run_finished("suggest", "succeeded", "x", {"suggestions": []})
+    assert await push_mod.count() == 1, "a transient failure must not drop the subscription"

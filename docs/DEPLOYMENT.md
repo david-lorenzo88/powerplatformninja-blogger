@@ -659,6 +659,137 @@ configured outside the template.)
 > `repo:${GH_REPO}:environment:production`. Add a second federated credential with
 > that subject, or the login step will fail.
 
+### Turning on push notifications
+
+The console can tell your phone that a run finished or a sweep needs a verdict,
+with the app closed. It is off until three variables are set.
+
+Generate a VAPID pair **once** and keep it. The public key is what every browser
+subscribes against, so changing it invalidates every grant already given and each
+device has to be re-enabled by hand.
+
+```bash
+pip install py-vapid
+vapid --gen                      # writes private_key.pem / public_key.pem
+export VAPID_PUBLIC=$(vapid --applicationServerKey | sed 's/^.*=//')
+export VAPID_PRIVATE=$(python3 -c "print(open('private_key.pem').read())")
+```
+
+Set them on the live app without touching Bicep — the same route the admin token
+took, and for the same reason: re-running the template would mint a second SQL
+server.
+
+```bash
+az containerapp secret set -g ppn-blogger-rg -n ppn-blogger \
+  --secrets vapid-private-key="$VAPID_PRIVATE"
+
+az containerapp update -g ppn-blogger-rg -n ppn-blogger \
+  --set-env-vars PPN_VAPID_PRIVATE_KEY=secretref:vapid-private-key \
+                 PPN_VAPID_PUBLIC_KEY="$VAPID_PUBLIC" \
+                 PPN_VAPID_SUBJECT="mailto:you@example.com"
+```
+
+That rolls a new revision, which is a restart — which is also when
+`create_all` adds the `push_subscriptions` table. No migration step.
+
+Then, in the app: **Config → Notifications → Turn on for this device**, and
+**Send a test**. The permission prompt must follow a tap, so it only appears from
+that button.
+
+> **On iPhone and iPad the app must be installed first.** Web Push has worked
+> since iOS 16.4, but only for a PWA added to the Home Screen — in Safari itself
+> the API is simply absent. The card detects this and says so rather than
+> offering a button that does nothing. Removing the app from the Home Screen
+> revokes the grant silently.
+
+`infra/main.bicep` takes `vapidPublicKey`, `vapidPrivateKey` and `vapidSubject`
+so a *fresh* provision is correct, following the same `empty() ? [] : [...]`
+pattern as `adminToken`. Never run it against the live resource group.
+
+### Making the app installable behind Easy Auth
+
+The UI ships as a PWA. Easy Auth is configured to answer every unauthenticated
+request with a 302 to Microsoft, and that breaks installation in a way that
+surfaces no error at all: the browser fetches `manifest.webmanifest`, follows the
+redirect cross-origin, fails to parse HTML as JSON, and simply never offers to
+install. Two fixes, and you want both.
+
+**1. The manifest link already carries `crossorigin="use-credentials"`** (in
+`ui/index.html`), which makes the browser send the `AppServiceAuthSession` cookie
+with the manifest request. That is enough for the manifest itself.
+
+**2. Exclude the manifest and the icons from Easy Auth.** Icon fetches do not
+reliably inherit the manifest's credentials mode across engines, so without this
+the app can install with a generic globe for a logo. Nothing here is secret — an
+app name, two hex colours and a lightning bolt.
+
+> **The PATCH replaces the array, it does not merge.** Read the current value
+> first. Dropping `/api/config/reload` breaks CI's post-deploy config reload —
+> and it fails *non-fatally*, so the deploy still goes green while the new
+> editorial config silently never lands.
+
+```bash
+SUB=$(az account show --query id -o tsv)
+AUTH="https://management.azure.com/subscriptions/$SUB/resourceGroups/ppn-blogger-rg/providers/Microsoft.App/containerApps/ppn-blogger/authConfigs/current?api-version=2024-03-01"
+
+# Confirm what is there now — it should be exactly ["/api/config/reload"].
+az rest --method get --url "$AUTH" --query properties.globalValidation
+
+az rest --method patch --url "$AUTH" --body '{
+  "properties": {
+    "globalValidation": {
+      "excludedPaths": [
+        "/api/config/reload",
+        "/manifest.webmanifest",
+        "/favicon.svg",
+        "/apple-touch-icon.png",
+        "/icons/icon-192.png",
+        "/icons/icon-512.png",
+        "/icons/maskable-512.png"
+      ]
+    }
+  }
+}'
+```
+
+`excludedPaths` matches **exact paths — assume no globbing**, which is why the
+icon set is deliberately small and lives at fixed, unhashed paths under
+`/icons/`. Verify from a browser with no session:
+
+```bash
+FQDN=ppn-blogger.yellowdune-067a04a7.eastus.azurecontainerapps.io
+for p in / /runs /api/health /manifest.webmanifest /favicon.svg /apple-touch-icon.png \
+         /icons/icon-192.png /icons/icon-512.png /icons/maskable-512.png; do
+  printf '%-28s %s\n' "$p" "$(curl -s -o /dev/null -w '%{http_code}' "https://$FQDN$p")"
+done
+```
+
+Expect **302** for `/`, `/runs` and `/api/health`; **200** for the manifest and
+every icon. Anything else and installation will fail silently.
+
+Deliberately **not** excluded:
+
+- **`/` and `/runs`** — that would serve the app shell anonymously. Chrome does
+  not require an anonymous `start_url`; it requires the worker to serve it
+  offline, which the precache does.
+- **`/sw.js`** — fetched during registration from an already-authenticated page.
+  A background update check against an expired session gets HTML, the update
+  fails, and the existing worker stays registered, which is correct.
+- **`/assets/*`** — hashed, so un-enumerable, and never needed anonymously.
+
+A path in that list that does not exist on disk would previously have fallen
+through to `index.html` with a 200 — handing the app shell to anyone who asked.
+`server/app.py` now 404s any missing path that carries a file extension, so the
+exclusion cannot leak the shell even if a filename is mistyped here.
+
+> **Sessions still expire.** The Easy Auth cookie has a finite lifetime, so an
+> installed app will periodically bounce to a Microsoft login. That is inherent
+> to Easy Auth, not something the PWA work removes. `client.ts` detects it and
+> redirects deliberately rather than failing as "Failed to fetch"; if the
+> interruption becomes annoying, enable the Easy Auth token store and raise
+> `login.cookieExpiration.timeToExpiration` — a config change on the live app,
+> no redeploy.
+
 ---
 
 ## Known limitations

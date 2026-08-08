@@ -141,6 +141,17 @@ computed as `40 + 10 × (max_source_rounds + max_revision_rounds)`.
 | `PPN_MAX_CONCURRENT_RUNS` | `2` | Worker count. This is the resource cap — raise it only if your Foundry quota can take it. |
 | `PPN_DATABASE_URL` | `sqlite+aiosqlite:///.ppn_state/ppn.db` | Any SQLAlchemy async URL. `postgresql+asyncpg://…` works with no other change. |
 | `PPN_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated. The Vite dev server defaults. |
+| `PPN_ADMIN_TOKEN` | *(unset)* | Bearer token guarding `POST /api/config/reload`. Unset disables the endpoint entirely. |
+| `PPN_VAPID_PUBLIC_KEY` | *(unset)* | Web Push. Handed to the browser through `/api/health` — not a secret. |
+| `PPN_VAPID_PRIVATE_KEY` | *(unset)* | Web Push. **Secret.** Any of the three unset disables notifications. |
+| `PPN_VAPID_SUBJECT` | *(unset)* | Web Push contact, e.g. `mailto:you@example.com`. |
+
+> VAPID identifies *this application* to whichever push service the browser
+> happens to use (Google's, Apple's, Mozilla's) — it is not a third-party
+> account, which is why the variables carry the `PPN_` prefix rather than a
+> vendor one. Generate a pair once and keep it: changing the public key
+> invalidates every subscription already granted, and each device has to be
+> re-enabled by hand. See `docs/DEPLOYMENT.md` for setting them on the live app.
 
 ---
 

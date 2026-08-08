@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getTopicIdea, startWrite } from '../api/client'
 import type { TopicIdea } from '../api/types'
 import { Modal } from '../components/Modal'
-import { ScorePill } from './TopicIdeasScreen'
+import { ScorePill } from '../components/Pills'
 
 export function TopicIdeaDetailScreen() {
   const { id } = useParams<{ id: string }>()

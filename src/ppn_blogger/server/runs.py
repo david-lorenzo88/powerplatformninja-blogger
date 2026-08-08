@@ -20,6 +20,7 @@ one class, not a rewrite.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import os
@@ -158,6 +159,8 @@ class RunManager:
         # Every run_events row goes through this queue and one writer task.
         self._writes: asyncio.Queue | None = None
         self._writer: asyncio.Task | None = None
+        # In-flight push notifications, held so shutdown can drain them.
+        self._notifications: set[asyncio.Task] = set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -192,6 +195,19 @@ class RunManager:
         outstanding = [*self._workers, *self._tasks.values()]
         if outstanding:
             await asyncio.gather(*outstanding, return_exceptions=True)
+
+        # Give notifications a moment to land rather than cancelling them: this
+        # runs on the way to a deploy, and "your draft is ready" arriving is the
+        # whole point. Bounded, because a wedged push service must not hold the
+        # container open.
+        if self._notifications:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(
+                    asyncio.gather(*self._notifications, return_exceptions=True), timeout=10
+                )
+            for task in list(self._notifications):
+                task.cancel()
+            self._notifications.clear()
 
         # Drain queued writes before the engine goes away, then stop the writer.
         if self._writes is not None and self._writer is not None:
@@ -639,7 +655,33 @@ class RunManager:
             run.result = result
             run.error = error
             run.finished_at = utcnow()
+            label = run.label or ""
+            kind = run.kind
             await s.commit()
+
+        # The single place a run goes terminal, which is why the notification
+        # hangs here rather than at the four call sites: succeeded, failed,
+        # cancelled and interrupted all pass through, and only here is the whole
+        # row loaded — `_execute` drops the label before it gets this far.
+        #
+        # Detached and after the commit, deliberately. The serverless SQL tier
+        # auto-pauses after an hour idle and takes 20-30s to wake, and a push
+        # service is network I/O to a third party; neither may hold up the row
+        # that says a forty-minute run succeeded.
+        self._spawn_notify(kind, status, label, result)
+
+    def _spawn_notify(
+        self, kind: str, status: str, label: str, result: dict[str, Any] | None
+    ) -> None:
+        from . import push
+
+        task = asyncio.create_task(
+            push.notify_run_finished(kind, status, label, result), name=f"ppn-notify-{kind}"
+        )
+        # Held so stop() can drain it and so the loop keeps a strong reference —
+        # an untracked task can be garbage-collected mid-flight.
+        self._notifications.add(task)
+        task.add_done_callback(self._notifications.discard)
 
 
 _manager: RunManager | None = None

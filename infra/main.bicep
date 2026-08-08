@@ -26,6 +26,13 @@ param coverApiKey string = ''
 @secure()
 param adminToken string = ''
 
+@description('VAPID keys for Web Push notifications. Blank = notifications disabled. Generate a pair with `vapid --gen`, or any WebCrypto P-256 tool.')
+param vapidPublicKey string = ''
+@secure()
+param vapidPrivateKey string = ''
+@description('VAPID contact, e.g. mailto:you@example.com. Push services require a way to reach the sender.')
+param vapidSubject string = ''
+
 param sqlAdmin string = 'ppnadmin'
 @secure()
 param sqlPassword string
@@ -169,6 +176,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         { name: 'cover-api-key', value: coverApiKey }
       ], empty(adminToken) ? [] : [
         { name: 'admin-token', value: adminToken }
+      ], empty(vapidPrivateKey) ? [] : [
+        { name: 'vapid-private-key', value: vapidPrivateKey }
       ])
     }
     template: {
@@ -213,6 +222,12 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'COVER_API_KEY', secretRef: 'cover-api-key' }
           ], empty(adminToken) ? [] : [
             { name: 'PPN_ADMIN_TOKEN', secretRef: 'admin-token' }
+          ], empty(vapidPrivateKey) ? [] : [
+            // Only the private key is a secret; the public one is handed to
+            // every browser through /api/health.
+            { name: 'PPN_VAPID_PRIVATE_KEY', secretRef: 'vapid-private-key' }
+            { name: 'PPN_VAPID_PUBLIC_KEY', value: vapidPublicKey }
+            { name: 'PPN_VAPID_SUBJECT', value: vapidSubject }
           ])
           probes: [
             { type: 'Liveness',  httpGet: { path: '/api/health', port: 8000 }, initialDelaySeconds: 20, periodSeconds: 30 }

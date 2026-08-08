@@ -4,7 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { listSourceReviews } from '../api/client'
-import { StatusChip } from './SourceReviewScreen'
+import { StatusChip } from '../components/Pills'
 
 export function SourceReviewsScreen() {
   const navigate = useNavigate()
