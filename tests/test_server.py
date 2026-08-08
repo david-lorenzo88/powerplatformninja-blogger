@@ -968,3 +968,39 @@ async def test_a_failing_push_service_never_sinks_a_run(api, push_configured, mo
     # Must not raise.
     await push_mod.notify_run_finished("suggest", "succeeded", "x", {"suggestions": []})
     assert await push_mod.count() == 1, "a transient failure must not drop the subscription"
+
+
+@pytest.mark.asyncio
+async def test_a_pem_vapid_key_is_usable_by_pywebpush():
+    """The key format actually reaches the signing code.
+
+    Every other push test patches `_send_one`, which is the whole boundary to
+    the outside world — and also the only place the key format matters. So the
+    suite was fully green while every real send raised before a byte left the
+    process: pywebpush hands a bare string to `Vapid.from_string`, which
+    base64-decodes it as DER, and PEM (what every generator produces) dies with
+    an ASN.1 parsing error. The only visible symptom was a test notification
+    reporting that no device accepted the push.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from ppn_blogger.server.push import _vapid_key
+
+    pem = (
+        ec.generate_private_key(ec.SECP256R1())
+        .private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        .decode()
+    )
+
+    prepared = _vapid_key(pem)
+    # pywebpush accepts a Vapid instance; it cannot accept PEM text.
+    assert not isinstance(prepared, str), "PEM must be parsed, not passed through"
+    assert prepared.sign({"aud": "https://example.com", "sub": "mailto:a@b.c"})["Authorization"]
+
+    # A key already in the base64url DER form pywebpush understands is left alone.
+    assert _vapid_key("abc123") == "abc123"

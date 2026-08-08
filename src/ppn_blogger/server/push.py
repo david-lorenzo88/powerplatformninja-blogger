@@ -17,6 +17,7 @@ The style mirrors ``config_store.py``: module-level ``async`` functions over
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from typing import Any
@@ -75,8 +76,33 @@ async def count() -> int:
         return len(rows)
 
 
+@functools.lru_cache(maxsize=1)
+def _vapid_key(private_key: str) -> Any:
+    """Turn whatever form the key was configured in into something pywebpush takes.
+
+    pywebpush accepts a file path, a base64url-encoded *DER* string, or a Vapid
+    object — but **not** the contents of a PEM file, which is the form every tool
+    that generates one hands you. Given a string it calls `Vapid.from_string`,
+    which base64-decodes it as DER and dies with "Could not deserialize key data:
+    ASN.1 parsing error".
+
+    That is exactly how this shipped broken: the key was set as PEM, every send
+    raised before a byte left the process, and the only visible symptom was a
+    test reporting that no device accepted the push.
+
+    Cached because parsing is pure and happens per notification per device.
+    """
+    from py_vapid import Vapid02
+
+    text = private_key.strip()
+    if "BEGIN" in text:
+        return Vapid02.from_pem(text.encode())
+    # Already base64url DER, or a path — pywebpush handles both itself.
+    return text
+
+
 def _send_one(subscription: dict[str, Any], payload: str) -> int:
-    """Blocking send. Returns the push service's status code, 0 on an unknown error.
+    """Blocking send. Returns the push service's status code, 0 on any other error.
 
     pywebpush is synchronous (it is built on requests), so every call to this
     goes through asyncio.to_thread. Imported lazily so the dependency is only
@@ -89,13 +115,22 @@ def _send_one(subscription: dict[str, Any], payload: str) -> int:
         webpush(
             subscription_info=subscription,
             data=payload,
-            vapid_private_key=push.private_key,
+            vapid_private_key=_vapid_key(push.private_key),
             vapid_claims={"sub": push.subject},
             timeout=10,
         )
         return 200
     except WebPushException as exc:  # noqa: BLE001
-        return getattr(exc.response, "status_code", 0) or 0
+        code = getattr(exc.response, "status_code", 0) or 0
+        logger.warning("push rejected (HTTP %s): %s", code or "?", str(exc)[:200])
+        return code
+    except Exception as exc:  # noqa: BLE001
+        # Anything that fails before the request goes out — a malformed key, a
+        # bad subscription. Previously this propagated into gather() and was
+        # counted as a plain failure with nothing logged anywhere, which is what
+        # made a broken key take so long to find. Say what happened.
+        logger.warning("push failed before sending: %s: %s", type(exc).__name__, str(exc)[:200])
+        return 0
 
 
 async def notify(title: str, body: str, url: str, tag: str = "") -> int:
