@@ -17,6 +17,17 @@ export function registerSW(onUpdate: () => void): void {
     void navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
       .then((registration) => {
+        // An installed app has no address bar and no reload button, so if it
+        // never asks whether there is a newer build, there is no way for the
+        // operator to get one — they are simply stuck on whatever shipped the
+        // day they installed it. The browser only checks sw.js on a navigation
+        // and roughly once a day, and a PWA resumed from the background does
+        // neither. So ask explicitly: now, and every time the app comes back to
+        // the foreground. Cheap — sw.js is served no-cache and is ~4KB.
+        void registration.update()
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') void registration.update()
+        })
         // Already superseded by the time we arrived.
         if (registration.waiting && navigator.serviceWorker.controller) {
           waiting = registration.waiting

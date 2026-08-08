@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { getHealth, sendTestPush } from '../api/client'
-import { disablePush, enablePush, isStandalone, pushState } from '../lib/push'
+import { disablePush, enablePush, isStandalone, pushState, syncSubscription } from '../lib/push'
 import type { PushState } from '../lib/push'
 import { card, ghostBtn, primaryBtn } from '../lib/ui'
 
@@ -14,9 +14,25 @@ export function NotificationsCard() {
   const [state, setState] = useState<PushState | null>(null)
   const [error, setError] = useState('')
   const [testResult, setTestResult] = useState('')
+  // What the *server* thinks, which is the half that actually decides whether a
+  // notification can be delivered. Kept separate from `state`, which is only
+  // what this browser believes.
+  const [registered, setRegistered] = useState<number | null>(null)
 
   useEffect(() => {
-    void pushState().then(setState)
+    void (async () => {
+      const s = await pushState()
+      setState(s)
+      if (s !== 'on') return
+      // This browser holds a subscription; make sure the server has it too.
+      // Silent on failure: it is a background repair, and the visible
+      // consequence (0 devices registered) is already reported below.
+      try {
+        setRegistered(await syncSubscription())
+      } catch {
+        setRegistered(0)
+      }
+    })()
   }, [])
 
   const toggle = useMutation({
@@ -26,18 +42,25 @@ export function NotificationsCard() {
       const key = health.data?.push.public_key ?? ''
       return state === 'on' ? disablePush() : enablePush(key)
     },
-    onSuccess: setState,
+    onSuccess: async (next) => {
+      setState(next)
+      setRegistered(next === 'on' ? await syncSubscription().catch(() => 0) : null)
+    },
     onError: (e) => setError(e instanceof Error ? e.message : String(e)),
   })
 
   const test = useMutation({
     mutationFn: sendTestPush,
-    onSuccess: (r) =>
+    onSuccess: (r) => {
+      setRegistered(r.subscriptions)
       setTestResult(
         r.delivered
           ? `Sent to ${r.delivered} device${r.delivered === 1 ? '' : 's'}.`
-          : 'No devices are registered.',
-      ),
+          : r.subscriptions === 0
+            ? 'The server has no devices registered. Turn it off and on again to re-register this one.'
+            : `${r.subscriptions} device(s) registered but none accepted the push — they may have expired.`,
+      )
+    },
     onError: (e) => setTestResult(e instanceof Error ? e.message : String(e)),
   })
 
@@ -89,6 +112,15 @@ export function NotificationsCard() {
         </div>
       )}
 
+      {state === 'on' && (
+        <p className="mt-2 text-xs text-slate-500">
+          {registered == null
+            ? 'Checking with the server…'
+            : registered > 0
+              ? `Registered on the server · ${registered} device${registered === 1 ? '' : 's'}.`
+              : 'This browser is subscribed, but the server has no record of it.'}
+        </p>
+      )}
       {state === 'on' && !isStandalone() && (
         <p className="mt-2 text-xs text-slate-500">
           Installed to the Home Screen, these arrive like any other app's.

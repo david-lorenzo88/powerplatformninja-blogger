@@ -43,6 +43,34 @@ export async function pushState(): Promise<PushState> {
   return existing ? 'on' : 'off'
 }
 
+/**
+ * Re-register the browser's existing subscription with the server.
+ *
+ * The browser and the server hold this state separately and they can diverge:
+ * `pushManager.subscribe()` succeeds locally whether or not the POST that
+ * follows it does, so a failed or interrupted registration leaves the browser
+ * convinced it is subscribed while the server has no row — and nothing in the
+ * old flow could ever recover from that. The symptom is a card reading "on"
+ * next to a test that reports no devices registered, forever.
+ *
+ * Safe to call on every mount: the endpoint upserts on the endpoint's unique
+ * index, so this is idempotent. Returns how many devices the server has after
+ * reconciling, or null when there is nothing local to sync.
+ */
+export async function syncSubscription(): Promise<number | null> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null
+  const registration = await navigator.serviceWorker.getRegistration()
+  const existing = await registration?.pushManager.getSubscription()
+  if (!existing) return null
+  const json = existing.toJSON() as { endpoint?: string; keys?: Record<string, string> }
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return null
+  const result = await subscribePush({
+    endpoint: json.endpoint,
+    keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+  })
+  return result.subscriptions
+}
+
 // VAPID keys travel as base64url; PushManager wants raw bytes. Backed by an
 // explicit ArrayBuffer because Uint8Array<ArrayBufferLike> — which could be a
 // SharedArrayBuffer — is not assignable to BufferSource.
