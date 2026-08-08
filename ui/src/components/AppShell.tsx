@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
-import { clearChunkReloadFlag } from '../lib/chunkReload'
+import { useOnline } from '../hooks/useOnline'
+import { applyUpdate, registerSW } from '../lib/registerSW'
 import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 
 const NAV = [
@@ -112,10 +113,10 @@ export function AppShell() {
   })
   const pendingCount = pending?.length ?? 0
   const [healthOpen, setHealthOpen] = useState(false)
+  const [updateReady, setUpdateReady] = useState(false)
+  const online = useOnline()
 
-  // The shell mounted, so whatever chunk failure triggered a reload is behind
-  // us; release the latch so the next deploy gets its own single retry.
-  useEffect(clearChunkReloadFlag, [])
+  useEffect(() => registerSW(() => setUpdateReady(true)), [])
 
   // TanStack Query already suspends refetchInterval while the document is
   // hidden, which is what we want on a phone. The cost is on the way back: the
@@ -157,7 +158,7 @@ export function AppShell() {
           ))}
         </nav>
         <div className="mt-auto px-2 text-xs text-slate-600">
-          {isError ? (
+          {isError && online ? (
             <span className="text-rose-400">server unreachable</span>
           ) : (
             <span>{health?.language ? `lang: ${health.language}` : ''}</span>
@@ -180,10 +181,27 @@ export function AppShell() {
           </div>
         </header>
 
+        {!online && (
+          <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+            You're offline — showing what was last loaded. Runs resume when you reconnect.
+          </div>
+        )}
+
+        {updateReady && (
+          <div className="flex shrink-0 items-center gap-3 border-b border-accent/30 bg-accent/10 px-4 py-2 text-xs text-accent">
+            <span>A new version is ready.</span>
+            <button onClick={applyUpdate} className="ml-auto min-h-11 font-semibold underline lg:min-h-0">
+              Reload
+            </button>
+          </div>
+        )}
+
         {healthOpen && health && (
           <div className="shrink-0 border-b border-slate-800 bg-slate-950/60 px-4 py-2 lg:hidden">
             <ConfigDots health={health} />
-            {isError && <span className="text-xs text-rose-400">server unreachable</span>}
+            {isError && online && (
+              <span className="text-xs text-rose-400">server unreachable</span>
+            )}
           </div>
         )}
 

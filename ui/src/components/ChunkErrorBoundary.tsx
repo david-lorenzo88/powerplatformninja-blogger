@@ -21,6 +21,8 @@ export class ChunkErrorBoundary extends Component<{ children: ReactNode }, { fai
   }
 
   componentDidCatch(error: Error): void {
+    // If the cooldown refused the reload we stay put and show the message
+    // below; otherwise the page is already on its way out.
     if (CHUNK_ERROR.test(error.message)) reloadOnce()
   }
 
@@ -31,6 +33,10 @@ export class ChunkErrorBoundary extends Component<{ children: ReactNode }, { fai
       return (
         <div className="p-6 text-sm text-slate-400">
           <p>This screen could not be loaded.</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Its code could not be fetched — usually a deploy that landed while this tab was
+            open, or no connection.
+          </p>
           <button onClick={forceReload} className="mt-3 min-h-11 text-accent hover:underline">
             Reload
           </button>

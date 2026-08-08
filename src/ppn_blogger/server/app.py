@@ -101,7 +101,11 @@ def create_app() -> FastAPI:
     if UI_DIST.exists():
         app.mount("/assets", HashedStatic(directory=UI_DIST / "assets"), name="assets")
 
-        @app.get("/{full_path:path}")
+        # HEAD as well as GET: the /assets mount answers HEAD (StaticFiles does),
+        # so without this the shell and the manifest were the only things on the
+        # origin that 405'd — which reads as a fault to anything that probes
+        # before fetching, and made every `curl -I` against them misleading.
+        @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
         async def spa(full_path: str) -> FileResponse:
             # The API namespace must never fall through to the SPA shell. An
             # unmatched /api/* path is a 404, not a 200 with index.html — else a

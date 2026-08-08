@@ -7,7 +7,14 @@
          Deliberately no maximum-scale/user-scalable: pinch-zoom stays available,
          and zoom-on-focus is handled by the 16px inputs in lib/ui.ts instead. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- crossorigin="use-credentials" is load-bearing, not boilerplate. A
+         manifest link with no crossorigin attribute is fetched with credentials
+         omitted even same-origin, so behind Entra Easy Auth it is answered with
+         a 302 to Microsoft, the parse fails on HTML, and the app is simply not
+         installable — with no error surfaced anywhere. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#0a0b0f" />
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="Watch and steer the blogging crew: runs, topic ideas, source reviews and drafts." />
