@@ -2,13 +2,10 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRun, listRuns, startSuggest, startWrite } from '../api/client'
 import type { Topic } from '../api/types'
+import { field, label, primaryBtn } from '../lib/ui'
 import { Modal } from './Modal'
 
 type Mode = 'suggest' | 'write'
-
-const field = 'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none'
-const label = 'mb-1 block text-xs font-medium text-slate-400'
-const primaryBtn = 'rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-accent-strong disabled:opacity-50'
 
 export function StartRunDialog({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<Mode>('suggest')

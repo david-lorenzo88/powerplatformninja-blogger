@@ -11,13 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { cancelSourceReview, decideSourceReview, getSourceReview } from '../api/client'
 import type { SourceCandidate, SourceReview, TrustTier } from '../api/types'
-
-const btn =
-  'rounded-lg px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50'
-const primaryBtn = `${btn} bg-accent text-slate-950 hover:bg-accent-strong`
-const ghostBtn = `${btn} border border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100`
-const field =
-  'rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 focus:border-accent focus:outline-none'
+import { fieldSm as field, ghostBtn, primaryBtn } from '../lib/ui'
 
 interface Choice {
   approved: boolean

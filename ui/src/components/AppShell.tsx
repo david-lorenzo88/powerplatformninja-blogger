@@ -1,22 +1,30 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
 
 const NAV = [
-  { to: '/runs', label: 'Runs', icon: '▷' },
-  { to: '/topic-ideas', label: 'Topic Ideas', icon: '◆' },
-  { to: '/source-reviews', label: 'Sources', icon: '⌖' },
-  { to: '/drafts', label: 'Drafts', icon: '✎' },
-  { to: '/config', label: 'Config', icon: '⚙' },
+  { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷' },
+  { to: '/topic-ideas', label: 'Topic Ideas', short: 'Ideas', icon: '◆' },
+  { to: '/source-reviews', label: 'Sources', short: 'Sources', icon: '⌖' },
+  { to: '/drafts', label: 'Drafts', short: 'Drafts', icon: '✎' },
+  { to: '/config', label: 'Config', short: 'Config', icon: '⚙' },
 ]
 
 function navClass({ isActive }: { isActive: boolean }): string {
   const base =
-    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors'
+    'flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors'
   return isActive
     ? `${base} bg-accent/15 text-accent`
     : `${base} text-slate-400 hover:bg-slate-800/60 hover:text-slate-200`
+}
+
+// The tap target is the whole 56px column, not the glyph — a thumb aims at a
+// region, and a fifth of the screen width is the region it gets.
+function tabClass({ isActive }: { isActive: boolean }): string {
+  const base = 'flex min-h-14 flex-col items-center justify-center gap-0.5 px-1 transition-colors'
+  return isActive ? `${base} text-accent` : `${base} text-slate-500 active:text-slate-300`
 }
 
 function ConfigDot({ ok, label }: { ok: boolean; label: string }) {
@@ -28,10 +36,7 @@ function ConfigDot({ ok, label }: { ok: boolean; label: string }) {
   )
 }
 
-function HealthBar({ health }: { health?: Health }) {
-  if (!health) {
-    return <span className="text-xs text-slate-500">connecting to server…</span>
-  }
+function ConfigDots({ health }: { health: Health }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
       <span className="text-xs text-slate-500">
@@ -42,6 +47,51 @@ function HealthBar({ health }: { health?: Health }) {
       <ConfigDot ok={health.search.configured} label={`Search (${health.search.provider})`} />
       <ConfigDot ok={health.translation.enabled} label="Translation" />
     </div>
+  )
+}
+
+// Four labelled dots plus a counter do not fit beside a title at 390px, so on a
+// phone the header carries one summary dot that expands the full row beneath it.
+// Nothing is hidden, it just costs a tap.
+function HealthBar({
+  health,
+  error,
+  open,
+  onToggle,
+}: {
+  health?: Health
+  error: boolean
+  open: boolean
+  onToggle: () => void
+}) {
+  if (!health) {
+    return <span className="text-xs text-slate-500">connecting to server…</span>
+  }
+  const allOk =
+    health.wordpress.configured &&
+    health.cover.configured &&
+    health.search.configured &&
+    health.translation.enabled
+  return (
+    <>
+      <div className="hidden lg:block">
+        <ConfigDots health={health} />
+      </div>
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label="Service status"
+        className="flex min-h-11 items-center gap-2 px-2 text-xs text-slate-400 lg:hidden"
+      >
+        <span
+          className={`h-2 w-2 rounded-full ${
+            error ? 'bg-rose-400' : allOk ? 'bg-emerald-400' : 'bg-amber-400'
+          }`}
+        />
+        <span className="font-mono text-slate-300">{health.concurrency}</span>
+        <span className="text-slate-600">{open ? '▴' : '▾'}</span>
+      </button>
+    </>
   )
 }
 
@@ -58,10 +108,14 @@ export function AppShell() {
     queryFn: () => listSourceReviews('pending'),
     refetchInterval: 15_000,
   })
+  const pendingCount = pending?.length ?? 0
+  const [healthOpen, setHealthOpen] = useState(false)
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60 p-4">
+    <div className="flex h-full flex-col lg:flex-row">
+      {/* The desktop sidebar. Below lg it is not rendered at all rather than
+          collapsed — the bottom tab bar carries the same five destinations. */}
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60 p-4 lg:flex">
         <div className="mb-6 px-2">
           <div className="text-sm font-semibold tracking-tight text-slate-100">PPN Blogger</div>
           <div className="text-xs text-slate-500">crew console</div>
@@ -71,9 +125,9 @@ export function AppShell() {
             <NavLink key={item.to} to={item.to} className={navClass}>
               <span className="text-accent/70">{item.icon}</span>
               {item.label}
-              {item.to === '/source-reviews' && pending && pending.length > 0 && (
+              {item.to === '/source-reviews' && pendingCount > 0 && (
                 <span className="ml-auto rounded-full bg-amber-500/20 px-2 text-xs font-semibold text-amber-300">
-                  {pending.length}
+                  {pendingCount}
                 </span>
               )}
             </NavLink>
@@ -88,13 +142,54 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center border-b border-slate-800 bg-slate-950/40 px-6">
-          <HealthBar health={health} />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-950/40 px-4 lg:px-6">
+          <span className="text-sm font-semibold tracking-tight text-slate-100 lg:hidden">
+            PPN Blogger
+          </span>
+          <div className="ml-auto lg:ml-0">
+            <HealthBar
+              health={health}
+              error={isError}
+              open={healthOpen}
+              onToggle={() => setHealthOpen((o) => !o)}
+            />
+          </div>
         </header>
-        <main className="min-h-0 flex-1 overflow-auto">
+
+        {healthOpen && health && (
+          <div className="shrink-0 border-b border-slate-800 bg-slate-950/60 px-4 py-2 lg:hidden">
+            <ConfigDots health={health} />
+            {isError && <span className="text-xs text-rose-400">server unreachable</span>}
+          </div>
+        )}
+
+        <main className="min-h-0 flex-1 overflow-auto overscroll-contain">
           <Outlet />
         </main>
+
+        {/* An ordinary flex child rather than `position: fixed` — so <main> can
+            never be obscured by it and no padding has to track this bar's
+            height. pb-safe clears the home indicator. */}
+        <nav className="shrink-0 border-t border-slate-800 bg-slate-950/95 pb-safe backdrop-blur lg:hidden">
+          <ul className="flex">
+            {NAV.map((item) => (
+              <li key={item.to} className="flex-1">
+                <NavLink to={item.to} className={tabClass} aria-label={item.label}>
+                  <span className="relative text-lg leading-none" aria-hidden="true">
+                    {item.icon}
+                    {item.to === '/source-reviews' && pendingCount > 0 && (
+                      <span className="absolute -right-2.5 -top-1 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[10px] font-bold leading-4 text-slate-950">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] font-medium">{item.short}</span>
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
       </div>
     </div>
   )

@@ -2,8 +2,18 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to
+         anything but zero, so the bottom tab bar can clear the home indicator.
+         Deliberately no maximum-scale/user-scalable: pinch-zoom stays available,
+         and zoom-on-focus is handled by the 16px inputs in lib/ui.ts instead. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0b0f" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Watch and steer the blogging crew: runs, topic ideas, source reviews and drafts." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PPN Blogger" />
     <title>PPN Blogger — crew console</title>
   </head>
   <body>

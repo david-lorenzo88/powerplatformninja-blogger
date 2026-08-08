@@ -3,9 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { listTopicIdeas } from '../api/client'
 import type { TopicIdeaSummary } from '../api/types'
-
-const field =
-  'rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none'
+import { field } from '../lib/ui'
 
 type Drafted = 'all' | 'drafted' | 'undrafted'
 
@@ -48,14 +46,18 @@ export function TopicIdeasScreen() {
             {ideas.data && filtered.length !== ideas.data.length ? ` of ${ideas.data.length}` : ''}
           </span>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 grid grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-center">
           <input
-            className={`${field} w-56`}
+            className={`${field} col-span-2 lg:col-span-1 lg:w-56`}
             placeholder="Search title, slug, keyword…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <select className={field} value={watchArea} onChange={(e) => setWatchArea(e.target.value)}>
+          <select
+            className={`${field} lg:w-auto`}
+            value={watchArea}
+            onChange={(e) => setWatchArea(e.target.value)}
+          >
             <option value="">All areas</option>
             {watchAreas.map((a) => (
               <option key={a} value={a}>
@@ -63,7 +65,11 @@ export function TopicIdeasScreen() {
               </option>
             ))}
           </select>
-          <select className={field} value={postFormat} onChange={(e) => setPostFormat(e.target.value)}>
+          <select
+            className={`${field} lg:w-auto`}
+            value={postFormat}
+            onChange={(e) => setPostFormat(e.target.value)}
+          >
             <option value="">All formats</option>
             {postFormats.map((f) => (
               <option key={f} value={f}>
@@ -72,7 +78,7 @@ export function TopicIdeasScreen() {
             ))}
           </select>
           <select
-            className={field}
+            className={`${field} lg:w-auto`}
             value={drafted}
             onChange={(e) => setDrafted(e.target.value as Drafted)}
           >
@@ -80,7 +86,7 @@ export function TopicIdeasScreen() {
             <option value="drafted">Drafted</option>
             <option value="undrafted">Not drafted</option>
           </select>
-          <label className="flex items-center gap-2 text-xs text-slate-400">
+          <label className="col-span-2 flex min-h-11 items-center gap-2 text-xs text-slate-400 lg:col-span-1 lg:min-h-0">
             min score
             <input
               type="range"

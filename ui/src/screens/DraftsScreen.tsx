@@ -4,10 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import { listPosts } from '../api/client'
 import type { PostSummary } from '../api/types'
 import { formatTime } from '../lib/format'
+import { field } from '../lib/ui'
 import { ScorePill } from './TopicIdeasScreen'
-
-const field =
-  'rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none'
 
 type Tri = 'all' | 'yes' | 'no'
 
@@ -48,9 +46,9 @@ export function DraftsScreen() {
             {posts.data && filtered.length !== posts.data.length ? ` of ${posts.data.length}` : ''}
           </span>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 grid grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-center">
           <input
-            className={`${field} w-56`}
+            className={`${field} col-span-2 lg:col-span-1 lg:w-56`}
             placeholder="Search title or slug…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -148,7 +146,11 @@ function TriSelect({
   onChange: (v: Tri) => void
 }) {
   return (
-    <select className={field} value={value} onChange={(e) => onChange(e.target.value as Tri)}>
+    <select
+      className={`${field} lg:w-auto`}
+      value={value}
+      onChange={(e) => onChange(e.target.value as Tri)}
+    >
       <option value="all">{label}: any</option>
       <option value="yes">{label}: yes</option>
       <option value="no">{label}: no</option>
