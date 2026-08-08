@@ -217,3 +217,12 @@ documents every variable.
   (and therefore `ui/dist`, the SQLite DB at `.ppn_state/ppn.db`, and `drafts/`) is the
   main tree, not a worktree. Point `PYTHONPATH` at a worktree's `src` to make `ROOT` that
   worktree if you need it to serve a worktree's built `ui/dist`.
+- **The same applies to `pytest`, and there it is dangerous** — from inside a worktree,
+  `python3 -m pytest` imports `ppn_blogger` from the *main* tree and happily reports
+  everything green while testing none of your changes. There is no warning; the only
+  symptom is that a test for code you just wrote passes before you write it. Always run
+  `PYTHONPATH=$PWD/src python3 -m pytest -q` from a worktree, and check with
+  `PYTHONPATH=$PWD/src python3 -c "import ppn_blogger; print(ppn_blogger.__file__)"` if
+  a result looks too good.
+- Vite's dev server binds **IPv6 only**: `http://127.0.0.1:5280` returns nothing,
+  `http://localhost:5280` works.

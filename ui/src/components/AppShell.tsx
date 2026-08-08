@@ -1,8 +1,11 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { Suspense, useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
+import { useOnline } from '../hooks/useOnline'
+import { applyUpdate, registerSW } from '../lib/registerSW'
+import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 
 const NAV = [
   { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷' },
@@ -110,6 +113,27 @@ export function AppShell() {
   })
   const pendingCount = pending?.length ?? 0
   const [healthOpen, setHealthOpen] = useState(false)
+  const [updateReady, setUpdateReady] = useState(false)
+  const online = useOnline()
+
+  useEffect(() => registerSW(() => setUpdateReady(true)), [])
+
+  // TanStack Query already suspends refetchInterval while the document is
+  // hidden, which is what we want on a phone. The cost is on the way back: the
+  // badge and the health dots would then be up to 15 and 30 seconds stale, and
+  // a pending source review sitting unnoticed is the one thing this nav exists
+  // to prevent. Refresh exactly those two on return rather than turning
+  // refetchOnWindowFocus back on globally.
+  const qc = useQueryClient()
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      void qc.invalidateQueries({ queryKey: ['health'] })
+      void qc.invalidateQueries({ queryKey: ['source-reviews', 'pending'] })
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [qc])
 
   return (
     <div className="flex h-full flex-col lg:flex-row">
@@ -134,7 +158,7 @@ export function AppShell() {
           ))}
         </nav>
         <div className="mt-auto px-2 text-xs text-slate-600">
-          {isError ? (
+          {isError && online ? (
             <span className="text-rose-400">server unreachable</span>
           ) : (
             <span>{health?.language ? `lang: ${health.language}` : ''}</span>
@@ -157,15 +181,39 @@ export function AppShell() {
           </div>
         </header>
 
-        {healthOpen && health && (
-          <div className="shrink-0 border-b border-slate-800 bg-slate-950/60 px-4 py-2 lg:hidden">
-            <ConfigDots health={health} />
-            {isError && <span className="text-xs text-rose-400">server unreachable</span>}
+        {!online && (
+          <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+            You're offline — showing what was last loaded. Runs resume when you reconnect.
           </div>
         )}
 
+        {updateReady && (
+          <div className="flex shrink-0 items-center gap-3 border-b border-accent/30 bg-accent/10 px-4 py-2 text-xs text-accent">
+            <span>A new version is ready.</span>
+            <button onClick={applyUpdate} className="ml-auto min-h-11 font-semibold underline lg:min-h-0">
+              Reload
+            </button>
+          </div>
+        )}
+
+        {healthOpen && health && (
+          <div className="shrink-0 border-b border-slate-800 bg-slate-950/60 px-4 py-2 lg:hidden">
+            <ConfigDots health={health} />
+            {isError && online && (
+              <span className="text-xs text-rose-400">server unreachable</span>
+            )}
+          </div>
+        )}
+
+        {/* One Suspense for every route, placed here so the header and tab bar
+            stay painted across a chunk load — on a phone a boundary inside the
+            route would flash the whole shell away. */}
         <main className="min-h-0 flex-1 overflow-auto overscroll-contain">
-          <Outlet />
+          <ChunkErrorBoundary>
+            <Suspense fallback={<p className="p-6 text-sm text-slate-500">loading…</p>}>
+              <Outlet />
+            </Suspense>
+          </ChunkErrorBoundary>
         </main>
 
         {/* An ordinary flex child rather than `position: fixed` — so <main> can

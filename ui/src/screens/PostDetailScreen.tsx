@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -10,13 +10,19 @@ import {
   regeneratePost,
 } from '../api/client'
 import type { DraftVersion, Post } from '../api/types'
-import { CodeEditor } from '../components/CodeEditor'
+
+// CodeMirror is 626KB and this screen opens on the `read` tab, which renders
+// Markdown. Someone catching up on a draft from their phone should not pay for
+// an editor they have not asked for — and on mobile it opens read-only anyway.
+const CodeEditor = lazy(() =>
+  import('../components/CodeEditor').then((m) => ({ default: m.CodeEditor })),
+)
 import { Markdown } from '../components/Markdown'
 import { Modal } from '../components/Modal'
 import { PublishDialog } from '../components/PublishDialog'
 import { formatTime } from '../lib/format'
 import { ghostBtn, primaryBtn } from '../lib/ui'
-import { ScorePill } from './TopicIdeasScreen'
+import { ScorePill } from '../components/Pills'
 
 type Tab = 'read' | 'edit' | 'review' | 'cover'
 
@@ -306,14 +312,16 @@ function VersionView({
             <Markdown>{draft.data?.markdown ?? ''}</Markdown>
           </div>
         ) : tab === 'edit' ? (
-          <CodeEditor
-            value={markdown}
-            format="markdown"
-            onChange={(v) => {
-              setMarkdown(v)
-              setDirty(true)
-            }}
-          />
+          <Suspense fallback={<p className="p-6 text-sm text-slate-500">loading editor…</p>}>
+            <CodeEditor
+              value={markdown}
+              format="markdown"
+              onChange={(v) => {
+                setMarkdown(v)
+                setDirty(true)
+              }}
+            />
+          </Suspense>
         ) : tab === 'review' ? (
           <div className="mx-auto max-w-3xl p-6">
             {draft.data?.review ? (

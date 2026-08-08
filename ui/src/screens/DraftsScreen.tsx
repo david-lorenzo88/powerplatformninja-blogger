@@ -6,7 +6,7 @@ import type { PostSummary } from '../api/types'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { formatTime } from '../lib/format'
 import { field, quietBtn, rowCard } from '../lib/ui'
-import { ScorePill } from './TopicIdeasScreen'
+import { ScorePill } from '../components/Pills'
 
 type Tri = 'all' | 'yes' | 'no'
 
