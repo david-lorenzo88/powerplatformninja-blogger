@@ -163,7 +163,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # suggest | explore | shortlist | write | cover | ingest
+    # suggest | explore | shortlist | write | cover | ingest | newsletter
     kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
@@ -537,6 +537,149 @@ class SchedulerJob(Base):
 Index("ix_scheduler_jobs_key", SchedulerJob.key, unique=True)
 
 
+# ---------------------------------------------------------------------------
+# Newsletters: definitions, issues, and the items in them
+#
+# An issue's markdown and HTML live in columns rather than files — a deliberate
+# exception to the crew's "content is files, the database is an index" rule. A
+# blog draft is a file because `ppn write` works with no server and the operator
+# edits the markdown by hand. An issue has no CLI-first story, is the *payload*
+# of a delivery, and is read by the sender: one query beats an Azure Files round
+# trip, and storing the rendered HTML makes a re-send byte-identical to the
+# first attempt.
+# ---------------------------------------------------------------------------
+
+
+class Newsletter(Base):
+    """One newsletter definition: what it draws from, and how often."""
+
+    __tablename__ = "newsletters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(120))
+    name: Mapped[str] = mapped_column(String(200), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    # Four schedule kinds rather than cron: cron needs a dependency for
+    # expressiveness nobody has asked for, and these cover "every six hours",
+    # "Wednesdays at 07:00" and "the 1st". `cron` is reserved so adding it later
+    # is a code change rather than hand-run DDL against production.
+    schedule_kind: Mapped[str] = mapped_column(String(16), default="manual")
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    weekday: Mapped[int] = mapped_column(Integer, default=0)  # 0=Mon .. 6=Sun
+    day_of_month: Mapped[int] = mapped_column(Integer, default=1)
+    hour_local: Mapped[int] = mapped_column(Integer, default=7)
+    minute_local: Mapped[int] = mapped_column(Integer, default=0)
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Madrid")
+    cron: Mapped[str] = mapped_column(String(120), default="")
+
+    lookback_hours: Mapped[int] = mapped_column(Integer, default=168)
+    max_items: Mapped[int] = mapped_column(Integer, default=12)
+    min_items: Mapped[int] = mapped_column(Integer, default=3)
+    max_per_feed: Mapped[int] = mapped_column(Integer, default=3)
+    audience: Mapped[str] = mapped_column(Text, default="")
+    tone: Mapped[str] = mapped_column(String(120), default="")
+    # Phase 4, and default false on purpose: the crew's standing rule is that
+    # nothing reaches an audience unattended.
+    auto_send: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stops a second issue being queued while the first is still generating. A
+    # column beats filtering a JSON params field, which is awkward on SQL Server
+    # and slow everywhere.
+    last_enqueued_run_id: Mapped[str] = mapped_column(String(36), default="")
+    # Plain Integer, not a ForeignKey — newsletters <-> issues is a cycle, the
+    # same shape as Post.current_version_id, and a hard FK would force use_alter
+    # at create_all time.
+    last_issue_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index("ix_newsletters_slug", Newsletter.slug, unique=True)
+Index("ix_newsletters_due", Newsletter.enabled, Newsletter.next_due_at)
+
+
+class NewsletterGroup(Base):
+    """Which feed groups a newsletter draws from."""
+
+    __tablename__ = "newsletter_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    newsletter_id: Mapped[int] = mapped_column(Integer, ForeignKey("newsletters.id"), index=True)
+    group_id: Mapped[int] = mapped_column(Integer, ForeignKey("feed_groups.id"), index=True)
+
+
+Index(
+    "ix_newsletter_group_pair",
+    NewsletterGroup.newsletter_id,
+    NewsletterGroup.group_id,
+    unique=True,
+)
+
+
+class NewsletterIssue(Base):
+    """One generated issue."""
+
+    __tablename__ = "newsletter_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    newsletter_id: Mapped[int] = mapped_column(Integer, ForeignKey("newsletters.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    number: Mapped[int] = mapped_column(Integer, default=1)
+    # draft | ready | sending | sent | failed | skipped
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    subject: Mapped[str] = mapped_column(String(300), default="")
+    preheader: Mapped[str] = mapped_column(String(300), default="")
+    intro: Mapped[str] = mapped_column(Text, default="")
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    html: Mapped[str] = mapped_column(Text, default="")
+    text_body: Mapped[str] = mapped_column(Text, default="")
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    generated_on: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index("ix_issues_newsletter_number", NewsletterIssue.newsletter_id, NewsletterIssue.number.desc())
+
+
+class NewsletterIssueItem(Base):
+    """One article as it appeared in one issue."""
+
+    __tablename__ = "newsletter_issue_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_id: Mapped[int] = mapped_column(Integer, ForeignKey("newsletter_issues.id"), index=True)
+    # Denormalised so "has this newsletter already used this article?" is one
+    # lookup rather than a join back through issues on every composition.
+    newsletter_id: Mapped[int] = mapped_column(Integer, index=True)
+    article_id: Mapped[int] = mapped_column(Integer, ForeignKey("articles.id"), index=True)
+    section: Mapped[str] = mapped_column(String(80), default="")
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    headline: Mapped[str] = mapped_column(String(400), default="")
+    blurb: Mapped[str] = mapped_column(Text, default="")
+
+
+# Deliberately NOT unique. "Never repeat an article" is a filter over items
+# belonging to issues that were actually sent or approved — a discarded or
+# failed issue must not permanently burn the article it happened to mention.
+Index(
+    "ix_issue_items_newsletter_article",
+    NewsletterIssueItem.newsletter_id,
+    NewsletterIssueItem.article_id,
+)
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -600,6 +743,10 @@ __all__ = [
     "Feed",
     "FeedGroup",
     "FeedGroupMember",
+    "Newsletter",
+    "NewsletterGroup",
+    "NewsletterIssue",
+    "NewsletterIssueItem",
     "Post",
     "PushSubscription",
     "Run",

@@ -12,6 +12,7 @@ check so both feedback loops are covered.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date
 from typing import Any
@@ -25,6 +26,7 @@ from .models import (
     Citation,
     Claim,
     Draft,
+    NewsletterIssueDraft,
     ResearchDossier,
     RuleFinding,
     ScoutReport,
@@ -484,6 +486,65 @@ def _validation(validator: str, strict: bool) -> ValidationReport:
     )
 
 
+def _newsletter_issue(prompt: str) -> NewsletterIssueDraft:
+    """A canned issue that deliberately misbehaves in three ways.
+
+    The stub's job is to walk the failure branches, not the happy path — the same
+    reason `exercise_loops` fails the first source check. So this returns:
+
+    * a real candidate id, taken from the brief, which must survive;
+    * an id that was never offered, which `IssuePublisher` must drop;
+    * a section that is not in the configured taxonomy, which must also be dropped.
+
+    Every dry run therefore proves the anti-fabrication gate works, rather than
+    proving only that a well-behaved model would have been fine.
+    """
+    from .models import NewsletterIssueDraft, NewsletterItem, NewsletterSection
+
+    offered = [int(x) for x in re.findall(r"^\[(\d+)\]", prompt, flags=re.M)]
+    real = offered[0] if offered else 1
+    fabricated = (max(offered) + 999) if offered else 999
+
+    return NewsletterIssueDraft(
+        subject="Three things worth your time",
+        preheader="A quiet week, but two of these matter",
+        intro="Short week. Two of these change what you can ship.",
+        sections=[
+            NewsletterSection(
+                id="microsoft",
+                title="From Microsoft",
+                items=[
+                    NewsletterItem(
+                        article_id=real,
+                        headline="A real item from the candidate list",
+                        blurb="This one was offered, so it must survive the gate.",
+                        section="microsoft",
+                    ),
+                    NewsletterItem(
+                        article_id=fabricated,
+                        headline="An item nobody offered",
+                        blurb="Never in the candidate list. The publisher must drop it.",
+                        section="microsoft",
+                    ),
+                ],
+            ),
+            NewsletterSection(
+                id="not_a_real_section",
+                title="Invented taxonomy",
+                items=[
+                    NewsletterItem(
+                        article_id=real,
+                        headline="In a section that does not exist",
+                        blurb="The whole section must be dropped.",
+                        section="not_a_real_section",
+                    )
+                ],
+            ),
+        ],
+        omitted=offered[1:3],
+    )
+
+
 class StubChatClient(BaseChatClient):
     """Returns schema-valid canned responses. No network, no credentials."""
 
@@ -525,6 +586,8 @@ class StubChatClient(BaseChatClient):
             if "Translate this approved post" in full:
                 return _translated_draft()
             return _draft(revision=self._bump("draft"))
+        if model is NewsletterIssueDraft:
+            return _newsletter_issue(full)
         if model in (ValidationReport, ValidationReportDraft):
             n = self._bump("validation")
             validator = "design" if "Structure & Design" in full or n % 2 == 0 else "content"

@@ -65,3 +65,44 @@ export function duration(startIso: string | null, endIso: string | null, now = D
   const hours = Math.floor(mins / 60)
   return `${hours}h ${mins % 60}m`
 }
+
+
+// relativeTime only looks backwards. A schedule is about the future, so the
+// feeds and newsletters screens both need this — hence here rather than in one
+// of them.
+export function relativeToNow(iso: string, now = Date.now()): string {
+  const seconds = Math.round((toDate(iso).getTime() - now) / 1000)
+  if (seconds <= 0) return 'due now'
+  if (seconds < 90) return 'in under a minute'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `in ${minutes}m`
+  const hours = Math.round(minutes / 60)
+  return hours < 48 ? `in ${hours}h` : `in ${Math.round(hours / 24)}d`
+}
+
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+// One sentence for a newsletter's schedule, matching the four kinds the server
+// supports (server/newsletters.py SCHEDULE_KINDS).
+export function describeSchedule(n: {
+  schedule_kind: string
+  interval_minutes: number
+  weekday: number
+  day_of_month: number
+  hour_local: number
+  minute_local: number
+}): string {
+  const at = `${String(n.hour_local).padStart(2, '0')}:${String(n.minute_local).padStart(2, '0')}`
+  switch (n.schedule_kind) {
+    case 'interval':
+      return n.interval_minutes % 60 === 0
+        ? `every ${n.interval_minutes / 60}h`
+        : `every ${n.interval_minutes}m`
+    case 'weekly':
+      return `${DAYS[n.weekday] ?? 'Monday'}s at ${at}`
+    case 'monthly':
+      return `day ${n.day_of_month} at ${at}`
+    default:
+      return 'manual only'
+  }
+}

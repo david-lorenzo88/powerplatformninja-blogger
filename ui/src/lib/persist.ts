@@ -30,6 +30,10 @@ const PERSISTED = new Set([
   'feeds',
   'feed',
   'feed-groups',
+  'newsletters',
+  'newsletter',
+  'issues',
+  'issue',
 ])
 
 export function shouldPersist(query: Query): boolean {

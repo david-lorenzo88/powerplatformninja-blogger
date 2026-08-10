@@ -37,6 +37,8 @@ config_app = typer.Typer(help="Configuration store operations (server database).
 app.add_typer(config_app, name="config")
 news_app = typer.Typer(help="News feeds: register sources and harvest them.")
 app.add_typer(news_app, name="news")
+letter_app = typer.Typer(help="Newsletters: preview what an issue would contain, and generate one.")
+app.add_typer(letter_app, name="newsletter")
 console = Console()
 
 
@@ -1266,6 +1268,113 @@ def news_read(
             when = (article["published_at"] or article["fetched_at"] or "")[:10]
             console.print(f"[dim]{when}[/] [cyan]{article['feed_name']}[/] {article['title']}")
             console.print(f"        [dim]{article['url']}[/]")
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Newsletters
+# ---------------------------------------------------------------------------
+
+
+@letter_app.command("list")
+def newsletter_list() -> None:
+    """Show the newsletters and when each next runs."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server.newsletters import list_newsletters
+
+        rows = await list_newsletters()
+        if not rows:
+            console.print("[yellow]No newsletters yet. Create one in the Letters screen.[/]")
+            return
+        table = Table(title=f"{len(rows)} newsletter(s)")
+        table.add_column("id", justify="right")
+        table.add_column("name")
+        table.add_column("schedule")
+        table.add_column("next")
+        table.add_column("issues", justify="right")
+        for row in rows:
+            table.add_row(
+                str(row["id"]),
+                row["name"],
+                row["schedule_kind"],
+                (row["next_due_at"] or "—")[:16],
+                str(row["issue_count"]),
+            )
+        console.print(table)
+
+    asyncio.run(run())
+
+
+@letter_app.command("preview")
+def newsletter_preview(
+    newsletter_id: int = typer.Option(..., "--id", help="Which newsletter."),
+) -> None:
+    """Show what the next issue would draw from. Calls no model and writes nothing."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server.newsletters import candidates
+
+        try:
+            material = await candidates(newsletter_id)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(1) from exc
+
+        if material.get("reason"):
+            console.print(f"[yellow]{material['reason']}[/]")
+            return
+        rows = material["candidates"]
+        console.print(
+            f"[green]{len(rows)}[/] candidate(s) between {material['window_from'][:10]} "
+            f"and {material['window_to'][:10]}"
+            + ("" if material.get("enough") else "  [yellow](below the minimum — a run would skip)[/]")
+        )
+        for row in rows:
+            console.print(f"  [dim]{row['published'] or '—'}[/] [cyan]{row['source']}[/] {row['title']}")
+
+    asyncio.run(run())
+
+
+@letter_app.command("generate")
+def newsletter_generate(
+    newsletter_id: int = typer.Option(..., "--id", help="Which newsletter."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Use the offline stub."),
+) -> None:
+    """Compose one issue. Nothing is sent — the issue is stored for review."""
+
+    async def run() -> None:
+        await _news_ready()
+        from . import workflows as wf
+        from .server.newsletter_runs import compose_and_store
+
+        if dry_run:
+            from .testing import stub_clients
+
+            console.print(
+                "[yellow]DRY RUN[/] — offline stub. The canned editor deliberately names "
+                "one article it was never offered, so the publisher gate is exercised."
+            )
+            real = wf.compose_issue
+
+            async def stubbed(newsletter, cands, **kw):
+                kw.setdefault("clients", stub_clients(exercise_loops=False))
+                return await real(newsletter, cands, **kw)
+
+            wf.compose_issue = stubbed
+
+        result = await compose_and_store(newsletter_id)
+        if result["skipped"]:
+            console.print(f"[yellow]No issue:[/] {result['reason']}")
+            return
+        console.print(
+            f"[green]Issue #{result['number']}[/] — {result['subject']}\n"
+            f"  {result['item_count']} item(s) from {result['candidates']} candidate(s)"
+            + (f", {result['dropped']} dropped by the gate" if result["dropped"] else "")
+        )
 
     asyncio.run(run())
 

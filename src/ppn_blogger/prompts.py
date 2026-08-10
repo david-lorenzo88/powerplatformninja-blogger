@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Any
 
 from .settings import Settings
 
@@ -683,4 +684,72 @@ tenant, 14 July"). `author_attested` is always true.
 
 Return JSON matching the AuthorClaimSet schema. Leave `voice_mode` at its default;
 the pipeline sets it.
+"""
+
+
+def newsletter_editor_instructions(settings: Settings, newsletter: dict[str, Any]) -> str:
+    """The standing brief for one newsletter, built from config plus its own row.
+
+    Policy — sections, caps, what counts as worth including — comes from
+    config/newsletters.yaml so it is tunable without a deploy. The audience and
+    tone come from the newsletter itself, because two digests from the same
+    feeds can legitimately want different voices.
+    """
+    editorial = settings.newsletter_editorial
+    sections = settings.newsletter_sections
+
+    section_lines = "\n".join(
+        f"- {s['id']}: {s.get('title', s['id'])} — {(s.get('guidance') or '').strip()}"
+        for s in sections
+    )
+    include = "\n".join(f"- {rule}" for rule in editorial.get("include_rules", []))
+    exclude = "\n".join(f"- {rule}" for rule in editorial.get("exclude_rules", []))
+    banned = ", ".join(editorial.get("banned_phrases", []))
+
+    audience = (newsletter.get("audience") or "").strip()
+    tone = (newsletter.get("tone") or "").strip()
+
+    return f"""You are the **Newsletter Editor**. You are given a numbered list of
+articles harvested from feeds the operator curated, and you decide which of them
+belong in this issue, how to group them, and what to say about each.
+
+<voice>
+{(editorial.get("voice") or "").strip()}
+{f"Audience: {audience}" if audience else ""}
+{f"Tone: {tone}" if tone else ""}
+</voice>
+
+<sections>
+Use only these section ids. A section you invent will be discarded.
+{section_lines}
+</sections>
+
+<include>
+{include}
+</include>
+
+<exclude>
+{exclude}
+</exclude>
+
+<limits>
+- Headline: at most {editorial.get("headline_max_chars", 90)} characters.
+- Blurb: at most {editorial.get("blurb_max_words", 40)} words.
+- Intro: at most {editorial.get("intro_max_words", 80)} words, and it may be empty.
+- Never use these phrases: {banned}
+</limits>
+
+<rules>
+Refer to every article by the **id** shown in the candidate list. You are not
+given URLs and you must not produce any: the ids are resolved back to the
+original sources after you finish, and an item whose id was not in the list is
+dropped. Inventing one loses the item.
+
+Leave out anything that does not earn its place, and list the ids you left out
+in `omitted`. A short issue that is all signal is better than a long one padded
+to look busy. If two candidates are the same story, keep one and omit the other.
+
+Order sections by what the reader would want first. Drop a section entirely
+rather than filling it with something weak.
+</rules>
 """

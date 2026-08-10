@@ -327,6 +327,9 @@ class NewsSettings:
     ingest_timeout_minutes: int = field(
         default_factory=lambda: _env_int("PPN_INGEST_TIMEOUT_MINUTES", 15)
     )
+    newsletter_timeout_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_NEWSLETTER_TIMEOUT_MINUTES", 15)
+    )
     max_items_per_feed: int = field(default_factory=lambda: _env_int("PPN_FEED_MAX_ITEMS", 100))
     prune_interval_hours: int = field(default_factory=lambda: _env_int("PPN_PRUNE_INTERVAL_HOURS", 24))
     # Notification caps for watched feeds. A duplicate buzz is worse than a
@@ -424,6 +427,29 @@ class Settings:
     @property
     def validation(self) -> dict[str, Any]:
         return self._document("validation_rules")
+
+    @property
+    def newsletters(self) -> dict[str, Any]:
+        """Editorial policy for generated issues — never per-newsletter state.
+
+        Which groups a newsletter draws from and how often it runs are rows; what
+        a good item looks like is policy, and policy belongs in a versioned
+        document the operator can edit without a deploy.
+        """
+        return self._document("newsletters")
+
+    @property
+    def newsletter_sections(self) -> list[dict[str, Any]]:
+        """The taxonomy the editor may use. Anything else is dropped by the gate."""
+        return list(self.newsletters.get("sections", []))
+
+    @property
+    def newsletter_editorial(self) -> dict[str, Any]:
+        return dict(self.newsletters.get("editorial", {}))
+
+    @property
+    def newsletter_render(self) -> dict[str, Any]:
+        return dict(self.newsletters.get("render", {}))
 
     @property
     def style_guide(self) -> str:

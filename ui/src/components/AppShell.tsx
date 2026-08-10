@@ -13,9 +13,8 @@ import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 //
 // So related screens are grouped behind one tab and separate through <SubNav>
 // inside the section: Ideas, Drafts and Sources are three views of one workflow —
-// find a topic, draft it, see the sources that fed it — and now share `Blog`.
-// That merge is what pays for `News`, and leaves the fifth slot for `Letters`
-// when newsletters land.
+// find a topic, draft it, see the sources that fed it — and share `Blog`. That
+// merge is what paid for `News` and `Letters`; five is the ceiling.
 //
 // `paths` exists because NavLink's own isActive only matches its `to`: the Blog
 // tab has to look active while you are on /drafts, which is not a route it links
@@ -28,6 +27,13 @@ const NAV = [
     short: 'News',
     icon: '⌗',
     paths: ['/articles', '/feeds', '/feed-groups'],
+  },
+  {
+    to: '/newsletters',
+    label: 'Letters',
+    short: 'Letters',
+    icon: '✉',
+    paths: ['/newsletters'],
   },
   {
     to: '/topic-ideas',

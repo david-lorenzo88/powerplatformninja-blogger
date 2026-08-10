@@ -16,6 +16,7 @@ from .clients import ClientBundle, hosted_web_search_tools
 from .models import (
     AuthorClaimSet,
     Draft,
+    NewsletterIssueDraft,
     ResearchDossier,
     ScoutReport,
     SourceVerdict,
@@ -36,6 +37,7 @@ CONTENT_VALIDATOR = "content_validator"
 DESIGN_VALIDATOR = "design_validator"
 SOURCE_CHECKER = "source_checker"
 TRANSLATOR = "translator"
+NEWSLETTER_EDITOR = "newsletter_editor"
 
 
 def _opts(response_format: type, temperature: float | None = None) -> dict:
@@ -208,4 +210,25 @@ def build_translator(settings: Settings, clients: ClientBundle) -> Agent:
         name=TRANSLATOR,
         description="Localises an approved English draft, preserving structure and code.",
         default_options=_opts(Draft, temperature=0.3),
+    )
+
+
+def build_newsletter_editor(
+    settings: Settings, clients: ClientBundle, newsletter: dict[str, Any] | None = None
+) -> Agent:
+    """Chooses what goes in an issue and writes it.
+
+    Deliberately given no web tools. `fetch_page` would invite it to wander and
+    cite something outside the candidate list, which is the one thing the
+    publisher gate exists to prevent — and it cannot produce a URL anyway, since
+    it refers to articles by id. `today` is enough to say "this week".
+    """
+    return Agent(
+        clients.reasoning,
+        prompts.newsletter_editor_instructions(settings, newsletter or {}),
+        id=NEWSLETTER_EDITOR,
+        name=NEWSLETTER_EDITOR,
+        description="Curates harvested articles into one newsletter issue.",
+        tools=[tools.today_tool],
+        default_options=_opts(NewsletterIssueDraft, 0.4),
     )

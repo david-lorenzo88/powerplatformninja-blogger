@@ -642,6 +642,21 @@ class RunManager:
             cover = await build_cover(draft, settings)
             return cover.model_dump(mode="json")
 
+        if kind == "newsletter":
+            # Costs model calls and takes minutes, so it belongs in the queue
+            # like any other run — same log, same cancellation, same history.
+            from .newsletter_runs import compose_and_store
+
+            return await asyncio.wait_for(
+                compose_and_store(
+                    int(params["newsletter_id"]),
+                    run_id=run_id,
+                    instruction=params.get("instruction", ""),
+                    on_event=self._on_event(run_id),
+                ),
+                timeout=settings.news.newsletter_timeout_minutes * 60,
+            )
+
         if kind == "ingest":
             # No model calls at all — this is HTTP and SQL. It runs as a run
             # anyway so a scheduled sweep is visible in the same list as

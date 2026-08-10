@@ -45,7 +45,7 @@ from .db import SchedulerJob, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.scheduler")
 
-FETCH, WATCH, PRUNE = "fetch", "watch", "prune"
+FETCH, WATCH, PRUNE, LETTERS = "fetch", "watch", "prune", "newsletters"
 
 
 @dataclass(slots=True)
@@ -94,6 +94,45 @@ async def _run_watch() -> str:
     return detail
 
 
+async def _run_newsletters() -> str:
+    """Queue an issue for every newsletter whose turn it is.
+
+    Each is claimed with the same compare-and-swap as a system job, so two
+    schedulers overlapping on a deploy cannot both queue the same issue — and a
+    newsletter whose previous run is still going is skipped rather than stacked.
+    """
+    from . import newsletters
+    from .runs import manager
+
+    queued = 0
+    for newsletter_id in await newsletters.due_newsletters():
+        if not await newsletters.claim_due(newsletter_id):
+            continue
+        row = await newsletters.get(newsletter_id)
+        if row is None:
+            continue
+        run_id = await manager().enqueue(
+            "newsletter", {"newsletter_id": newsletter_id}, f"Newsletter · {row['name']}"
+        )
+        await newsletters.attach_run(newsletter_id, run_id)
+        queued += 1
+    return f"{queued} issue(s) queued"
+
+
+async def _any_scheduled_newsletters() -> bool:
+    from sqlalchemy import func, true
+
+    from .db import Newsletter
+
+    async with session() as s:
+        count = await s.scalar(
+            select(func.count())
+            .select_from(Newsletter)
+            .where(Newsletter.enabled == true(), Newsletter.next_due_at.is_not(None))
+        )
+    return bool(count)
+
+
 async def _run_prune() -> str:
     from .news_store import prune_articles
 
@@ -129,6 +168,16 @@ def _jobs() -> list[Job]:
             lambda: news.realtime_interval_minutes,
             _run_watch,
             _any_watched_feeds,
+        ),
+        Job(
+            LETTERS,
+            "Generate due newsletters",
+            # Checked every 15 minutes so a 07:00 weekly lands close to 07:00.
+            # It is a cheap query and only exists once a newsletter is scheduled,
+            # so it does not hold the database awake on its own.
+            lambda: 15,
+            _run_newsletters,
+            _any_scheduled_newsletters,
         ),
         Job(PRUNE, "Prune old articles", lambda: news.prune_interval_hours * 60, _run_prune, _always),
     ]

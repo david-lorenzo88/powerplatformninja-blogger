@@ -7,7 +7,14 @@
 // canvas is keyed by kind.
 // `ingest` is the news fetch — no models, but it runs through the same queue so
 // a scheduled fetch is visible in the same list as everything else.
-export type RunKind = 'suggest' | 'explore' | 'shortlist' | 'write' | 'cover' | 'ingest'
+export type RunKind =
+  | 'suggest'
+  | 'explore'
+  | 'shortlist'
+  | 'write'
+  | 'cover'
+  | 'ingest'
+  | 'newsletter'
 
 export type RunStatus =
   | 'queued'
@@ -461,4 +468,87 @@ export interface ArticleFilters {
   since?: string
   q?: string
   limit?: number
+}
+
+
+// -- Newsletters --------------------------------------------------------------
+
+export type ScheduleKind = 'manual' | 'interval' | 'weekly' | 'monthly'
+export type IssueStatus = 'draft' | 'ready' | 'sending' | 'sent' | 'failed' | 'skipped'
+
+export interface NewsletterSummary {
+  id: number
+  slug: string
+  name: string
+  description: string
+  enabled: boolean
+  schedule_kind: ScheduleKind
+  interval_minutes: number
+  weekday: number
+  day_of_month: number
+  hour_local: number
+  minute_local: number
+  timezone: string
+  lookback_hours: number
+  max_items: number
+  min_items: number
+  max_per_feed: number
+  audience: string
+  tone: string
+  auto_send: boolean
+  group_ids: number[]
+  issue_count: number
+  next_due_at: string | null
+  last_run_at: string | null
+  last_issue_id: number | null
+  created_at: string | null
+  // The next few fire times, computed server-side. A schedule nobody can
+  // preview is a schedule nobody trusts.
+  upcoming: string[]
+}
+
+export interface NewsletterIssueSummary {
+  id: number
+  newsletter_id: number
+  newsletter_name: string
+  run_id: string | null
+  number: number
+  status: IssueStatus
+  subject: string
+  preheader: string
+  item_count: number
+  generated_on: string
+  error: string
+  window_from: string | null
+  window_to: string | null
+  created_at: string | null
+  sent_at: string | null
+}
+
+export interface IssueItem {
+  article_id: number
+  section: string
+  position: number
+  headline: string
+  blurb: string
+  url: string
+}
+
+export interface NewsletterIssue extends NewsletterIssueSummary {
+  intro: string
+  markdown: string
+  text_body: string
+  items: IssueItem[]
+}
+
+export interface NewsletterPreview {
+  newsletter_id: number
+  window_from: string
+  window_to: string
+  candidates: { id: number; title: string; url: string; source: string; published: string }[]
+  already_used?: number
+  min_items?: number
+  max_items?: number
+  enough?: boolean
+  reason?: string
 }
