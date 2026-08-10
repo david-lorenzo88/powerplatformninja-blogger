@@ -50,9 +50,10 @@ src/ppn_blogger/
   cli.py            typer commands
   server/           FastAPI: run queue, SSE, versioned config store, drafts API,
                     source reviews (server/reviews.py), news feeds
-                    (server/api_news.py, news_store.py, ingest.py)
+                    (server/api_news.py, news_store.py, ingest.py), the
+                    scheduler (scheduler.py) and watch notifications (watch.py)
 config/             editorial policy — the thing you actually tune
-tests/              145 tests, offline; conftest.py picks the DB backend
+tests/              168 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -65,7 +66,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 145 tests, ~29s, no network, no credentials
+pytest                      # 168 tests, ~30s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -196,6 +197,19 @@ instead of near-zero. This is why `PPN_INGEST_INTERVAL_MINUTES` defaults to 360,
 why the realtime cadence only exists once a feed opts in, and why
 **`/api/health` must never grow a database count**: it is on the container's
 readiness probe every 15 seconds and currently touches no database at all.
+
+**The scheduler sleeps until due; it does not tick.** `server/scheduler.py` is
+the only periodic work in the codebase. A fixed interval would query the database
+1,440 times a day and end auto-pause on its own — the sleep-to-horizon design is
+what keeps the cost a consequence of the operator's cadence choices rather than
+of the scheduler existing. An `asyncio.Event` (`scheduler().wake()`) makes an
+edit take effect immediately, which is what makes a long sleep safe.
+
+**One replica is not one process.** `minReplicas: 1` looks like a guarantee and
+is not: Container Apps starts the new revision before draining the old, so every
+deploy briefly runs two schedulers. Ticks are claimed with a compare-and-swap on
+`next_due_at` — no `SELECT FOR UPDATE`, no dialect-specific locking — and exactly
+one wins. Do not replace that with a plain read-then-write.
 
 **New run kinds must set their own timeout.** `RunManager._dispatch` wraps
 nothing; `suggest_timeout_minutes`/`write_timeout_minutes` are read only by

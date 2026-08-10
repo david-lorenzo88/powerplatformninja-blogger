@@ -29,6 +29,7 @@ import type {
   RunDetail,
   RunEvent,
   RunStatus,
+  Schedule,
   SourceReview,
   SourceReviewStatus,
   SourceReviewSummary,
@@ -377,5 +378,10 @@ export const listArticles = (filters: ArticleFilters = {}) => {
 }
 
 export const getNewsSummary = () => request<NewsSummary>('/news/summary')
+
+export const getSchedule = () => request<Schedule>('/news/schedule')
+
+export const runScheduledJob = (key: string) =>
+  request<{ key: string; detail: string }>(`/news/schedule/${key}/run`, { method: 'POST' })
 
 export type { RunEvent }

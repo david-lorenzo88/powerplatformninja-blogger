@@ -32,6 +32,10 @@ server = [
     # Web Push. Synchronous (built on requests), so every send goes through
     # asyncio.to_thread; py-vapid and http-ece come with it.
     "pywebpush>=2.0",
+    # zoneinfo needs a timezone database and python:3.11-slim ships none, so
+    # ZoneInfo("Europe/Madrid") works on macOS and raises in the container.
+    # Quiet hours depend on it. The PyPI package is the portable fix.
+    "tzdata>=2024.1",
 ]
 dev = [
     "pytest>=8.3",
