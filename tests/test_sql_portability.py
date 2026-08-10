@@ -8,6 +8,9 @@ failed on the first real request:
   Server answers *Incorrect syntax near '1'* and the whole query dies.
 * A ``DateTime(timezone=True)`` column reads back naive on SQLite and aware on
   Azure SQL, so comparing one to ``utcnow()`` raises only in production.
+* SQLite ships with ``PRAGMA foreign_keys`` **off** — it stores the constraints
+  and enforces none of them — so an orphan row is accepted in silence where
+  Azure SQL rejects the INSERT outright.
 
 Neither is catchable by running a query against SQLite, which is the only thing
 the rest of the suite does. These tests compile statements against the SQL Server
@@ -112,3 +115,37 @@ def test_no_indexed_column_is_text() -> None:
         "Indexed columns must be String(n), not Text — NVARCHAR(max) cannot be "
         f"indexed on Azure SQL: {', '.join(offenders)}"
     )
+
+
+async def test_sqlite_enforces_foreign_keys(database_url) -> None:
+    """The pragma must be on, on every connection.
+
+    SQLite defaults it off, which made a third bug of this shape possible: test
+    data referencing an article that did not exist passed locally and failed on
+    SQL Server. The pragma is per *connection*, not per database, so it is set by
+    a connect listener rather than once at startup — and this asserts it took,
+    on whichever backend the suite is running.
+    """
+    from sqlalchemy import text
+
+    from ppn_blogger.server import db
+
+    await db.init_db()
+    if not database_url.startswith("sqlite"):
+        return  # SQL Server always enforces them
+
+    async with db.session() as s:
+        assert (await s.execute(text("PRAGMA foreign_keys"))).scalar() == 1
+
+
+async def test_an_orphan_row_is_rejected(database_url) -> None:
+    """The behaviour the pragma buys: the same INSERT fails on both backends."""
+    import sqlalchemy.exc
+
+    from ppn_blogger.server import db
+
+    await db.init_db()
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        async with db.session() as s:
+            s.add(db.NewsletterIssueItem(issue_id=999, newsletter_id=999, article_id=999))
+            await s.commit()

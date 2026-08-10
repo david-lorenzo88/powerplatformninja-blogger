@@ -790,7 +790,37 @@ def engine():
             kwargs["poolclass"] = NullPool
             kwargs["connect_args"] = {"timeout": 30}
         _engine = create_async_engine(url, **kwargs)
+        if url.startswith("sqlite"):
+            _enforce_sqlite_foreign_keys(_engine)
     return _engine
+
+
+def _enforce_sqlite_foreign_keys(async_engine: Any) -> None:
+    """Make SQLite check foreign keys, as every other backend already does.
+
+    SQLite ships with ``PRAGMA foreign_keys`` **off**: it stores the constraints
+    and enforces none of them, so an orphan row is accepted in silence. Azure SQL
+    rejects the same INSERT outright. That is the third bug of this exact shape —
+    after ``IS 1`` and naive-vs-aware datetimes — where the tests run on the
+    forgiving backend and production runs on the strict one.
+
+    The pragma is **per connection**, not per database, so setting it once at
+    startup would cover exactly one connection and none of the ones real work
+    uses. Hence the connect listener.
+
+    This makes the local suite fail on the same data SQL Server would reject,
+    which is the whole point: a broken foreign key should be a red test on a
+    laptop, not a red deploy.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(async_engine.sync_engine, "connect")
+    def _set_pragma(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
 
 
 def session_factory() -> async_sessionmaker[AsyncSession]:

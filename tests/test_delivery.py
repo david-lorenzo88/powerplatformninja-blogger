@@ -27,8 +27,34 @@ async def store(database_url):
     yield
 
 
+async def _article() -> int:
+    """A real article row, because an issue item has a foreign key to one.
+
+    Hard-coding `article_id=1` used to work locally and fail on SQL Server:
+    SQLite ships with `PRAGMA foreign_keys` off and accepts the orphan, while
+    Azure SQL rejects the INSERT. The pragma is on now, so this helper is what
+    keeps these tests honest rather than merely passing.
+    """
+    from ppn_blogger.server.db import Article, session
+    from ppn_blogger.server.news_store import create_feed
+
+    feed = await create_feed("https://example.com/feed", name="Example")
+    async with session() as s:
+        article = Article(
+            feed_id=feed["id"],
+            entry_key="e1",
+            url_hash="h1",
+            url="https://example.com/one",
+            title="Something shipped",
+        )
+        s.add(article)
+        await s.commit()
+        return article.id
+
+
 async def _issue(status: str = "draft") -> dict:
     """A newsletter with one stored issue, ready to send."""
+    article_id = await _article()
     letter = await newsletters.create("Weekly")
     return await newsletters.save_issue(
         letter["id"],
@@ -41,7 +67,7 @@ async def _issue(status: str = "draft") -> dict:
                     "id": "ai",
                     "items": [
                         {
-                            "article_id": 1,
+                            "article_id": article_id,
                             "headline": "Something shipped",
                             "blurb": "why it matters",
                             "url": "https://example.com/one",
@@ -49,7 +75,7 @@ async def _issue(status: str = "draft") -> dict:
                     ],
                 }
             ],
-            "article_ids": [],
+            "article_ids": [article_id],
         },
         {"markdown": "# Three things", "html": "<p>hi</p>", "text_body": "Three things"},
         status=status,
