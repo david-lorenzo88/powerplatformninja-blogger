@@ -1,8 +1,19 @@
 """Database layer: SQLAlchemy models and session handling.
 
-SQLite by default so the whole thing runs locally with no services. The engine
-URL is the only Azure-facing seam — point ``PPN_DATABASE_URL`` at
-``postgresql+asyncpg://...`` and nothing else changes.
+The backend is whatever ``PPN_DATABASE_URL`` names, and there is deliberately no
+default. Production is Azure SQL over ``mssql+aioodbc``; SQLite is still a fine
+choice for a laptop, but it has to be asked for.
+
+The default used to be SQLite, and it cost real money twice. SQLite is the more
+forgiving dialect in exactly the places that matter — it accepts ``IS 1`` where
+SQL Server rejects the statement outright, and it returns naive datetimes from a
+timezone-aware column where Azure SQL returns aware ones. Both differences
+produced code that was green through the whole test suite and failed on the
+first request in Azure. A silent fallback meant nothing ever announced which
+dialect it was on; now an unconfigured environment says so instead of quietly
+picking the one that hides bugs.
+
+``tests/test_sql_portability.py`` guards the same seam from the other side.
 """
 
 from __future__ import annotations
@@ -11,6 +22,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -29,16 +41,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 
+# Importing settings is also what loads .env, which is where PPN_DATABASE_URL
+# lives on a laptop — so this import is load-bearing, not just for ROOT.
 from ..settings import ROOT
+
+LOCAL_SQLITE_URL = "sqlite+aiosqlite:///.ppn_state/ppn.db"
 
 
 def _database_url() -> str:
     configured = os.environ.get("PPN_DATABASE_URL", "").strip()
-    if configured:
-        return configured
-    path = ROOT / ".ppn_state" / "ppn.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{path}"
+    if not configured:
+        raise RuntimeError(
+            "PPN_DATABASE_URL is not set, and there is no default.\n\n"
+            "Production is Azure SQL. For a laptop, add this line to "
+            f"{ROOT / '.env'}:\n"
+            f"    PPN_DATABASE_URL={LOCAL_SQLITE_URL}\n\n"
+            "It has to be spelled out rather than assumed: SQLite accepts SQL "
+            "that Azure SQL rejects, so silently defaulting to it hid two bugs "
+            "until they reached production."
+        )
+    return configured
+
+
+def _ensure_sqlite_dir(url: str) -> None:
+    path = url.split("///", 1)[1].split("?", 1)[0] if "///" in url else ""
+    if path and path != ":memory:":
+        Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def utcnow() -> datetime:
@@ -471,6 +499,10 @@ def engine():
         url = _database_url()
         kwargs: dict[str, Any] = {"echo": False, "future": True}
         if url.startswith("sqlite"):
+            # The URL is now given rather than derived, so the directory it names
+            # is not guaranteed to exist; without this SQLite fails with a bare
+            # "unable to open database file".
+            _ensure_sqlite_dir(url)
             # NullPool for aiosqlite: each connection runs on its own worker
             # thread, and a pooled connection checked out by a task that gets
             # cancelled is never returned — the thread then outlives dispose()

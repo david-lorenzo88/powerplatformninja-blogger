@@ -201,6 +201,34 @@ guard — one replica is *not* one process during a Container Apps revision swap
 and real-time push. Phases 3-5 are newsletter generation, delivery
 (ACS email / Telegram / WhatsApp) and feed auto-discovery.
 
+## The SQLite/Azure SQL seam — closed (new)
+
+Two production incidents came from the same place: every test ran on SQLite and
+production runs on Azure SQL, and SQLite is the more forgiving dialect in exactly
+the ways that matter.
+
+| Bug | SQLite | Azure SQL |
+|---|---|---|
+| `.is_(True)` → `WHERE enabled IS 1` | accepted | `Incorrect syntax near '1'` — every ingest died |
+| `DateTime(timezone=True)` read back | naive | aware — comparing to `utcnow()` raised |
+
+Both were green through the whole suite. Three guards now, deliberately layered:
+
+- **`PPN_DATABASE_URL` has no default.** It used to fall back to SQLite silently,
+  so nothing ever announced which dialect it was on. An unconfigured environment
+  now raises with the line to paste into `.env`.
+- **CI runs the suite against real SQL Server** — a service container in
+  `deploy.yml`, with the same ODBC Driver 18 install the Dockerfile uses.
+  Locally `pytest` still uses a temp SQLite file and needs no services;
+  `tests/conftest.py` chooses from `PPN_TEST_DATABASE_URL`.
+- **`tests/test_sql_portability.py`** compiles statements against the SQL Server
+  dialect *and* greps the source for the pattern, so a `.is_(True)` written later
+  fails in CI rather than in Azure. Verified it fails when the bug is reintroduced.
+
+**Verified:** the full suite, 145 tests, run against a real SQL Server engine in
+a container (Azure SQL Edge locally; CI uses SQL Server 2022). That is the first
+time the schema and queries have been exercised on the production dialect at all.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

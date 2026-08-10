@@ -52,7 +52,7 @@ src/ppn_blogger/
                     source reviews (server/reviews.py), news feeds
                     (server/api_news.py, news_store.py, ingest.py)
 config/             editorial policy — the thing you actually tune
-tests/              67 tests, fully offline
+tests/              145 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -65,7 +65,8 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 137 tests, ~28s, no network, no credentials
+pytest                      # 145 tests, ~29s, no network, no credentials
+                            # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
 ppn preflight               # 2 cheap real model calls; detects temperature support
@@ -168,11 +169,25 @@ cap.
 the hardest integrations here — Agent Framework's real executor API and MAI's
 route — were solved by reading installed code, not docs about it.
 
-**Datetimes read back from the database.** SQLite returns *naive* datetimes from
-a `DateTime(timezone=True)` column; Azure SQL's DATETIMEOFFSET returns aware
-ones. Comparing one to `utcnow()` therefore raises `TypeError` in production and
-works perfectly in the tests. Always pass a stored timestamp through
-`db.as_utc()` before comparing it in Python.
+**SQLite is the forgiving dialect, and it has cost two production incidents.**
+`.is_(True)` compiles to `IS 1`, which SQL Server rejects outright; and a
+`DateTime(timezone=True)` column reads back *naive* on SQLite and aware on Azure
+SQL, so comparing one to `utcnow()` raises only in production. Both were green
+through the entire suite. Three things guard this seam now, and all three matter:
+
+- **`PPN_DATABASE_URL` has no default.** An unconfigured environment raises
+  rather than quietly picking the dialect that hides bugs. Put
+  `PPN_DATABASE_URL=sqlite+aiosqlite:///.ppn_state/ppn.db` in `.env` for local work.
+- **CI runs the whole suite against real SQL Server** (a service container in
+  `deploy.yml`). Locally `pytest` still uses a temp SQLite file and needs no
+  services — `tests/conftest.py` picks the backend from `PPN_TEST_DATABASE_URL`,
+  so pointing the suite at a real server is one environment variable.
+- **`tests/test_sql_portability.py`** compiles statements against the SQL Server
+  dialect and greps the source for the pattern, so a `.is_(True)` written next
+  month fails in CI rather than in Azure.
+
+Use `== true()` / `== false()` for boolean predicates, and `db.as_utc()` before
+comparing any stored timestamp in Python.
 
 **A polling cadence is a bill.** Azure SQL is serverless with
 `autoPauseDelay: 60`, so any server-side loop touching the database more often

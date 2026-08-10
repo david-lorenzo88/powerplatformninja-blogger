@@ -13,16 +13,18 @@ import pytest
 
 
 @pytest.fixture
-async def api(tmp_path, monkeypatch):
-    """A live app with its own SQLite file and drafts directory."""
-    monkeypatch.setenv("PPN_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+async def api(tmp_path, monkeypatch, database_url):
+    """A live app with a clean database and its own drafts directory.
+
+    The backend comes from the `database_url` fixture — a temp SQLite file
+    locally, a real SQL Server in CI. Nothing in here knows which.
+    """
     monkeypatch.setenv("PPN_MAX_CONCURRENT_RUNS", "2")
 
     from ppn_blogger.config_source import set_config_source
-    from ppn_blogger.server import db, runs
+    from ppn_blogger.server import runs
     from ppn_blogger.settings import get_settings
 
-    await db.reset_engine()
     await runs.reset_manager()
 
     settings = get_settings()
@@ -80,7 +82,6 @@ async def api(tmp_path, monkeypatch):
             yield client
 
     await runs.reset_manager()
-    await db.reset_engine()
     set_config_source(None)
 
 

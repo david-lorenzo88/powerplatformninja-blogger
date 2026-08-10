@@ -16,14 +16,12 @@ from ppn_blogger import news
 
 
 @pytest.fixture
-async def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("PPN_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'news.db'}")
+async def store(database_url):
+    """A migrated, empty database — SQLite locally, SQL Server in CI."""
     from ppn_blogger.server import db
 
-    await db.reset_engine()
     await db.init_db()
     yield
-    await db.reset_engine()
 
 
 def _entry(url: str, *, key: str = "", title: str = "A post", published=None) -> news.FetchedEntry:
