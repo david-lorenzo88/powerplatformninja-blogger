@@ -229,6 +229,45 @@ Both were green through the whole suite. Three guards now, deliberately layered:
 a container (Azure SQL Edge locally; CI uses SQL Server 2022). That is the first
 time the schema and queries have been exercised on the production dialect at all.
 
+## News phase 2 — scheduler and real-time watch (new)
+
+The feeds now keep themselves fresh, and a watched source buzzes the phone.
+**Built, tested on both backends, and driven end to end against a live feed.**
+
+- **`server/scheduler.py`** — three jobs (`fetch`, `watch`, `prune`) on durable
+  due-times in a `scheduler_jobs` table. It **sleeps until the next due time
+  rather than ticking**: a one-minute loop would query the database 1,440 times a
+  day and end Azure SQL's auto-pause by itself. An `asyncio.Event` makes an edit
+  take effect at once, which is what makes a long sleep acceptable.
+- **Ticks are claimed with a compare-and-swap.** `minReplicas: 1` does not mean
+  one process — Container Apps starts the new revision before draining the old,
+  so every deploy briefly runs two schedulers. `UPDATE ... WHERE next_due_at =
+  <what we read>` lets exactly one win, on any dialect.
+- **Missed ticks collapse.** A job due six times over fires once; the next due
+  time is computed from *now*, not from the one that was missed.
+- **Only the full sweep is a visible run.** The watch job runs inline: at fifteen
+  minutes it would file ~96 run rows a day and bury the Runs screen.
+- **`server/watch.py`** — notify once (structurally, via the unique
+  `(feed_id, entry_key)` index), stamp `notified_at` *before* sending so a crash
+  costs a missed notification rather than a duplicate, one notification per feed
+  rather than per article, a summary above the per-feed cap, a single rolled-up
+  line above the per-tick cap, and quiet hours that suppress **without** stamping
+  so the backlog survives the window.
+- **`GET /api/news/schedule`** reports `db_can_autopause`, and the Feeds screen
+  shows it: watching even one feed closely means the database never idles, which
+  is the difference between near-zero and roughly $150-200/month. That line sits
+  next to the toggle that causes it.
+- **Tests**: 23 new; suite is **168 passing**, green on SQLite *and* on a real
+  SQL Server engine in a container.
+
+**Verified end to end** (2026-08-10): with no watched feeds `db_can_autopause` is
+true; adding one flips it false and the cadence to 15 minutes; a tick fired all
+three jobs, harvested 30 real articles from a live feed and sent exactly **one**
+coalesced notification; the following tick correctly found nothing due.
+
+**Still off by default.** `PPN_SCHEDULER_ENABLED=false` everywhere except Bicep,
+so nothing polls until the deployment says so.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

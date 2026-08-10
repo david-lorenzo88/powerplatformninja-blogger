@@ -218,6 +218,19 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'PPN_TOPICS_DIR', value: '/data/topics' }
             { name: 'PPN_MAX_CONCURRENT_RUNS', value: '2' }
             { name: 'PPN_LOG_LEVEL', value: 'INFO' }
+            // News subsystem. The scheduler is the only place in the app that
+            // does periodic work, and it is off everywhere except here.
+            { name: 'PPN_SCHEDULER_ENABLED', value: 'true' }
+            { name: 'PPN_TIMEZONE', value: 'Europe/Madrid' }
+            // 360 minutes is a cost decision, not a taste one: the SQL database
+            // below is serverless with autoPauseDelay 60, so anything polling
+            // more often than hourly means it never pauses — on the order of
+            // $150-200/month at list price instead of near-zero. Feeds marked
+            // `realtime` opt into a 15-minute cadence individually, and doing
+            // that to even one feed makes the database effectively always-on.
+            { name: 'PPN_INGEST_INTERVAL_MINUTES', value: '360' }
+            { name: 'PPN_REALTIME_INTERVAL_MINUTES', value: '15' }
+            { name: 'PPN_REALTIME_QUIET_HOURS', value: '22:00-07:00' }
           ], empty(coverApiKey) ? [] : [
             { name: 'COVER_API_KEY', secretRef: 'cover-api-key' }
           ], empty(adminToken) ? [] : [

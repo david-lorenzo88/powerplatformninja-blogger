@@ -328,15 +328,55 @@ class NewsSettings:
         default_factory=lambda: _env_int("PPN_INGEST_TIMEOUT_MINUTES", 15)
     )
     max_items_per_feed: int = field(default_factory=lambda: _env_int("PPN_FEED_MAX_ITEMS", 100))
+    prune_interval_hours: int = field(default_factory=lambda: _env_int("PPN_PRUNE_INTERVAL_HOURS", 24))
+    # Notification caps for watched feeds. A duplicate buzz is worse than a
+    # missed one, and a firehose that notifies forty times is worse than both.
+    realtime_max_per_feed: int = field(
+        default_factory=lambda: _env_int("PPN_REALTIME_MAX_PER_FEED", 3)
+    )
+    realtime_max_per_tick: int = field(
+        default_factory=lambda: _env_int("PPN_REALTIME_MAX_PER_TICK", 6)
+    )
+    quiet_hours: str = field(default_factory=lambda: _env("PPN_REALTIME_QUIET_HOURS", "22:00-07:00"))
 
-    @property
-    def db_can_autopause(self) -> bool:
+    def effective_min_cadence(self, *, watched_feeds: int) -> int:
+        """The shortest interval anything actually polls at, in minutes.
+
+        The realtime job does not exist until a feed opts in, so with none the
+        cadence is the six-hourly sweep and the database is idle nearly all day.
+        """
+        if watched_feeds > 0:
+            return min(self.ingest_interval_minutes, self.realtime_interval_minutes)
+        return self.ingest_interval_minutes
+
+    def db_can_autopause(self, *, watched_feeds: int = 0) -> bool:
         """Whether the cadences still let the serverless database go idle.
 
-        False means the app is holding Azure SQL awake around the clock. Surfaced
-        so the trade is a number on screen rather than folklore.
+        Azure SQL is serverless with a 60-minute autoPauseDelay, so anything
+        polling more often than hourly keeps it awake around the clock — on the
+        order of $150-200/month at list price rather than near-zero. Exposed as a
+        flag so the trade is a number on screen rather than folklore.
         """
-        return self.ingest_interval_minutes >= 60
+        return self.effective_min_cadence(watched_feeds=watched_feeds) >= 60
+
+
+@dataclass(slots=True)
+class SchedulerSettings:
+    """The first periodic work in this codebase.
+
+    Off by default: tests and a laptop `ppn serve` must not start a loop that
+    fires real HTTP at real feeds. Bicep turns it on for the deployed app.
+    """
+
+    enabled: bool = field(default_factory=lambda: _env_bool("PPN_SCHEDULER_ENABLED", False))
+    # Ceiling on the idle sleep, so a schedule changed outside this process is
+    # noticed within the hour even without a wake signal.
+    max_sleep_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_SCHEDULER_MAX_SLEEP_MINUTES", 60)
+    )
+    # How long a claimed tick stays claimed if the process that took it dies.
+    lease_minutes: int = field(default_factory=lambda: _env_int("PPN_SCHEDULER_LEASE_MINUTES", 5))
+    timezone: str = field(default_factory=lambda: _env("PPN_TIMEZONE", "Europe/Madrid"))
 
 
 @dataclass(slots=True)
@@ -349,6 +389,7 @@ class Settings:
     run: RunSettings = field(default_factory=RunSettings)
     push: PushSettings = field(default_factory=PushSettings)
     news: NewsSettings = field(default_factory=NewsSettings)
+    scheduler: SchedulerSettings = field(default_factory=SchedulerSettings)
 
     # Config documents are pulled from the active ConfigSource (YAML files by
     # default, the database when the server is running) and cached until that
