@@ -18,7 +18,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select, true
 
 from .. import news
 from ..settings import get_settings
@@ -184,9 +184,9 @@ async def due_feeds(*, only_realtime: bool = False, now: datetime | None = None)
     """Ids of enabled feeds whose next poll is due."""
     moment = now or utcnow()
     async with session() as s:
-        stmt = select(Feed.id).where(Feed.enabled.is_(True))
+        stmt = select(Feed.id).where(Feed.enabled == true())
         if only_realtime:
-            stmt = stmt.where(Feed.realtime.is_(True))
+            stmt = stmt.where(Feed.realtime == true())
         stmt = stmt.where(or_(Feed.next_poll_at.is_(None), Feed.next_poll_at <= moment))
         return list((await s.execute(stmt)).scalars())
 
@@ -378,14 +378,14 @@ async def counts() -> dict[str, Any]:
     async with session() as s:
         feeds = await s.scalar(select(func.count()).select_from(Feed))
         enabled = await s.scalar(
-            select(func.count()).select_from(Feed).where(Feed.enabled.is_(True))
+            select(func.count()).select_from(Feed).where(Feed.enabled == true())
         )
         failing = await s.scalar(
             select(func.count()).select_from(Feed).where(Feed.consecutive_failures > 0)
         )
         realtime = await s.scalar(
             select(func.count()).select_from(Feed).where(
-                Feed.enabled.is_(True), Feed.realtime.is_(True)
+                Feed.enabled == true(), Feed.realtime == true()
             )
         )
         groups = await s.scalar(select(func.count()).select_from(FeedGroup))

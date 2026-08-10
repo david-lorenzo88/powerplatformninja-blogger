@@ -23,7 +23,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 
 from .. import news
 from ..settings import get_settings
@@ -50,9 +50,9 @@ async def ingest(
         if feed_ids is not None:
             stmt = stmt.where(Feed.id.in_(feed_ids))
         else:
-            stmt = stmt.where(Feed.enabled.is_(True))
+            stmt = stmt.where(Feed.enabled == true())
             if only_realtime:
-                stmt = stmt.where(Feed.realtime.is_(True))
+                stmt = stmt.where(Feed.realtime == true())
             if only_due:
                 now = utcnow()
                 stmt = stmt.where((Feed.next_poll_at.is_(None)) | (Feed.next_poll_at <= now))
