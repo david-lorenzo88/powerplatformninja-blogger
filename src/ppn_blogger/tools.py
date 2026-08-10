@@ -24,10 +24,16 @@ from urllib.parse import urlparse
 import httpx
 from agent_framework import tool
 
+from . import news
 from .settings import get_settings
 from .util import log_tool
 
-_USER_AGENT = "ppn-blogger/0.1 (+https://powerplatformninja.com)"
+# Shared with the news subsystem so there is one answer to "who are we". The
+# contact URL that used to be here is what Cloudflare was blocking — see the
+# note on news.USER_AGENT. This path is worse hit than the news one: read_feeds
+# turns a 403 into an empty list, so the Feed Scout has been quietly seeing
+# nothing from any Cloudflare-fronted MVP blog.
+_USER_AGENT = news.USER_AGENT
 _TIMEOUT = httpx.Timeout(25.0, connect=10.0)
 _page_cache: dict[str, str] = {}
 _head_cache: dict[str, dict[str, Any]] = {}

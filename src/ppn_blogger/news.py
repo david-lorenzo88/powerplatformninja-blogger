@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,7 +32,21 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
-USER_AGENT = "ppn-blogger/0.1 (+https://powerplatformninja.com)"
+# No contact URL in here, and that is not an oversight.
+#
+# The polite convention is `name/version (+https://site)`, and it is what this
+# sent until a real 403. Cloudflare's managed rules block *any* User-Agent
+# containing a URL unless the crawler is on their allow-list, so the etiquette
+# is what got us refused. Measured against matthewdevaney.com: with the URL 403,
+# without it 200; a browser string and a bare missing header both pass, so it is
+# the URL specifically and not the name. Reddit's rate limiter relaxed too
+# (429 -> 200).
+#
+# Overridable so the next host with an opinion is an environment variable rather
+# than a deploy. Read from the environment rather than Settings to keep this
+# module free of app imports — it is the one part of the subsystem with no
+# dependencies at all.
+USER_AGENT = os.environ.get("PPN_FEED_USER_AGENT", "").strip() or "ppn-blogger/0.1"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 DEFAULT_CONCURRENCY = 8
 
