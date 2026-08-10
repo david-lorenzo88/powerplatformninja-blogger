@@ -272,13 +272,26 @@ async def test_article_query_filters_over_http(api, monkeypatch) -> None:
     assert (await api.get("/api/news/articles/999999")).status_code == 404
 
 
-async def test_no_news_route_redirects(api) -> None:
-    """A 307 from redirect_slashes reads as an expired session in the UI client.
+async def test_a_trailing_slash_404s_and_never_redirects(api) -> None:
+    """A 307 reads as an expired session in the UI client, not as a 404.
 
     ui/src/api/client.ts fetches with redirect: 'manual' and bounces to the Entra
-    login on any redirect, so a trailing-slash route would log the operator out
-    instead of returning data.
+    login on any redirect, so a redirecting route logs the operator out instead
+    of returning an error they can see.
+
+    Declaring routes without a trailing slash is not enough on its own — that is
+    exactly what makes Starlette redirect *to* them. The app sets
+    redirect_slashes=False; this is the assertion that keeps it set.
+
+    The pre-existing routes are checked too, because they had the same problem
+    and it was masked in production by the SPA catch-all absorbing the path.
     """
-    for path in ("/api/news/feeds", "/api/news/feed-groups", "/api/news/articles"):
+    for path in (
+        "/api/news/feeds",
+        "/api/news/feed-groups",
+        "/api/news/articles",
+        "/api/runs",
+        "/api/config",
+    ):
         assert (await api.get(path)).status_code == 200
-        assert (await api.get(path + "/")).status_code != 307
+        assert (await api.get(path + "/")).status_code == 404
