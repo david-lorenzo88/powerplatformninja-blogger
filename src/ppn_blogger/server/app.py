@@ -83,6 +83,24 @@ def create_app() -> FastAPI:
         title="Power Platform Ninja — blogging crew",
         version="0.2.0",
         lifespan=lifespan,
+        # A trailing slash must 404, never 307.
+        #
+        # `ui/src/api/client.ts` fetches with `redirect: 'manual'` and treats any
+        # redirect as Easy Auth bouncing an expired session to Microsoft — so a
+        # 307 does not surface as a 404, it logs the operator out.
+        #
+        # That client assumed this could never fire because every route is
+        # declared without a trailing slash. It fired anyway: Starlette redirects
+        # `/api/runs/` to `/api/runs` precisely *because* the latter exists. In
+        # production the SPA catch-all happened to absorb it (it matches
+        # `/{full_path:path}` and 404s anything under `api/`), so the bug was
+        # invisible — but `ppn serve` in dev has no `ui/dist`, no catch-all, and
+        # every API path there 307s on a stray slash.
+        #
+        # Turning the redirect off makes the behaviour identical with and without
+        # a built UI, which is also what stops this from being a test that passes
+        # locally and fails in CI.
+        redirect_slashes=False,
     )
 
     # The Vite dev server runs on a different port during development.
