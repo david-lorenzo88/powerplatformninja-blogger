@@ -57,9 +57,12 @@ export class ApiError extends Error {
 // present: six polling queries all failing for no stated reason.
 //
 // `redirect: 'manual'` turns it into an opaqueredirect we can recognise. Safe
-// here because no endpoint in this file legitimately redirects: every path is a
-// concrete FastAPI route declared without a trailing slash, so the framework's
-// own redirect_slashes never fires. Re-check that if routes are added.
+// here because no endpoint in this file legitimately redirects — but note *why*,
+// because the original reasoning was wrong. Declaring every route without a
+// trailing slash does not prevent a redirect; it is the thing that causes one,
+// since Starlette redirects `/api/runs/` to `/api/runs` precisely because the
+// latter exists. The server therefore sets `redirect_slashes=False`, and a
+// trailing slash 404s. Keep it set, or a stray slash signs the operator out.
 let redirecting = false
 
 // Bouncing to the login page is the right move once. Doing it on every page load

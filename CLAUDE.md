@@ -187,10 +187,18 @@ nothing; `suggest_timeout_minutes`/`write_timeout_minutes` are read only by
 `cli.py`. A server-side run without its own `asyncio.wait_for` can hold a worker
 forever.
 
-**No API route may carry a trailing slash.** `ui/src/api/client.ts` fetches with
-`redirect: 'manual'` and reads any redirect as an expired Easy Auth session, so a
-route that trips FastAPI's `redirect_slashes` bounces the operator to the Entra
-login instead of returning data.
+**The app sets `redirect_slashes=False`; leave it off.** `ui/src/api/client.ts`
+fetches with `redirect: 'manual'` and reads any redirect as Easy Auth bouncing an
+expired session, so a 307 does not surface as an error — it signs the operator
+out. Declaring routes without a trailing slash does not prevent this; it *causes*
+it, because Starlette redirects `/api/runs/` to `/api/runs` precisely because the
+latter exists.
+
+This was masked in production: the SPA catch-all matches `/{full_path:path}` and
+404s anything under `api/`, so the redirect only ever fired where `ui/dist` does
+not exist — which is `ppn serve` in dev, and CI. If a test involving route
+resolution passes locally and fails in CI, a built `ui/dist` is the first thing
+to suspect.
 
 ## Git
 
