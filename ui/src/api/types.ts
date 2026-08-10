@@ -436,6 +436,7 @@ export interface Schedule {
   enabled: boolean
   jobs: ScheduleJob[]
   watched_feeds: number
+  scheduled_newsletters: number
   effective_min_cadence_minutes: number
   // False means the polling cadence is holding Azure SQL awake around the clock.
   db_can_autopause: boolean

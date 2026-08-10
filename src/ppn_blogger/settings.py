@@ -342,17 +342,32 @@ class NewsSettings:
     )
     quiet_hours: str = field(default_factory=lambda: _env("PPN_REALTIME_QUIET_HOURS", "22:00-07:00"))
 
-    def effective_min_cadence(self, *, watched_feeds: int) -> int:
+    # The scheduler checks for due newsletters on this cadence, and only once a
+    # newsletter actually has a due time. Kept here rather than in the scheduler
+    # so the cost calculation below has a single source for every cadence.
+    newsletter_check_minutes: int = 15
+
+    def effective_min_cadence(
+        self, *, watched_feeds: int = 0, scheduled_newsletters: int = 0
+    ) -> int:
         """The shortest interval anything actually polls at, in minutes.
 
-        The realtime job does not exist until a feed opts in, so with none the
-        cadence is the six-hourly sweep and the database is idle nearly all day.
+        Both short cadences are conditional: the realtime job does not exist
+        until a feed opts in, and the newsletter job does not exist until a
+        newsletter is scheduled. With neither, the only poll is the six-hourly
+        sweep and the database is idle nearly all day.
         """
+        cadences = [self.ingest_interval_minutes]
         if watched_feeds > 0:
-            return min(self.ingest_interval_minutes, self.realtime_interval_minutes)
-        return self.ingest_interval_minutes
+            cadences.append(self.realtime_interval_minutes)
+        if scheduled_newsletters > 0:
+            # A weekly newsletter fires once a week, but the *check* for whether
+            # it is due runs every 15 minutes — and it is the check that touches
+            # the database, so it is the check that decides the bill.
+            cadences.append(self.newsletter_check_minutes)
+        return min(cadences)
 
-    def db_can_autopause(self, *, watched_feeds: int = 0) -> bool:
+    def db_can_autopause(self, *, watched_feeds: int = 0, scheduled_newsletters: int = 0) -> bool:
         """Whether the cadences still let the serverless database go idle.
 
         Azure SQL is serverless with a 60-minute autoPauseDelay, so anything
@@ -360,7 +375,12 @@ class NewsSettings:
         order of $150-200/month at list price rather than near-zero. Exposed as a
         flag so the trade is a number on screen rather than folklore.
         """
-        return self.effective_min_cadence(watched_feeds=watched_feeds) >= 60
+        return (
+            self.effective_min_cadence(
+                watched_feeds=watched_feeds, scheduled_newsletters=scheduled_newsletters
+            )
+            >= 60
+        )
 
 
 @dataclass(slots=True)

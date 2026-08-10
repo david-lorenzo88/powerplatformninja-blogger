@@ -320,12 +320,17 @@ async def summary() -> dict[str, Any]:
     settings = get_settings().news
     counts = await news_store.counts()
     watched = counts["feeds_realtime"]
+    scheduled = len([n for n in await newsletters.list_newsletters() if n["next_due_at"]])
     return {
         **counts,
         "ingest_interval_minutes": settings.ingest_interval_minutes,
         "realtime_interval_minutes": settings.realtime_interval_minutes,
-        "effective_min_cadence_minutes": settings.effective_min_cadence(watched_feeds=watched),
-        "db_can_autopause": settings.db_can_autopause(watched_feeds=watched),
+        "effective_min_cadence_minutes": settings.effective_min_cadence(
+            watched_feeds=watched, scheduled_newsletters=scheduled
+        ),
+        "db_can_autopause": settings.db_can_autopause(
+            watched_feeds=watched, scheduled_newsletters=scheduled
+        ),
     }
 
 

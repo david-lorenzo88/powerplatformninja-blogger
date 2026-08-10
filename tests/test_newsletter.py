@@ -313,6 +313,46 @@ def test_an_unknown_schedule_kind_is_rejected(store) -> None:
     pass  # covered by the API test; kept here as a marker for the validation path
 
 
+async def test_a_scheduled_newsletter_counts_against_the_autopause_flag(store, monkeypatch) -> None:
+    """A weekly newsletter fires weekly; the *check* runs every 15 minutes.
+
+    It is the check that touches the database, so it is the check that decides
+    whether Azure SQL can idle. Counting only watched feeds would report "can
+    autopause" while the bill said otherwise.
+    """
+    from ppn_blogger.server import scheduler as sched_mod
+
+    await sched_mod.reset_scheduler()
+    sched = sched_mod.scheduler()
+    await sched.sync_jobs()
+
+    quiet = await sched.describe()
+    assert quiet["scheduled_newsletters"] == 0
+    assert quiet["db_can_autopause"] is True
+
+    await newsletters.create("Weekly", schedule_kind="weekly", weekday=2)
+    await sched.sync_jobs()
+    busy = await sched.describe()
+
+    assert busy["scheduled_newsletters"] == 1
+    assert busy["effective_min_cadence_minutes"] < 60
+    assert busy["db_can_autopause"] is False
+    await sched_mod.reset_scheduler()
+
+
+async def test_a_manual_newsletter_leaves_the_database_alone(store) -> None:
+    """Manual has no due time, so no check job exists and nothing is held awake."""
+    from ppn_blogger.server import scheduler as sched_mod
+
+    await sched_mod.reset_scheduler()
+    sched = sched_mod.scheduler()
+    await newsletters.create("On demand", schedule_kind="manual")
+    await sched.sync_jobs()
+
+    assert (await sched.describe())["db_can_autopause"] is True
+    await sched_mod.reset_scheduler()
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------

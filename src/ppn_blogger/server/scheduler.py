@@ -172,10 +172,10 @@ def _jobs() -> list[Job]:
         Job(
             LETTERS,
             "Generate due newsletters",
-            # Checked every 15 minutes so a 07:00 weekly lands close to 07:00.
-            # It is a cheap query and only exists once a newsletter is scheduled,
-            # so it does not hold the database awake on its own.
-            lambda: 15,
+            # Checked often enough that a 07:00 weekly lands close to 07:00.
+            # This is the cadence db_can_autopause costs the job at, so the two
+            # must not drift — hence the shared setting.
+            lambda: news.newsletter_check_minutes,
             _run_newsletters,
             _any_scheduled_newsletters,
         ),
@@ -382,6 +382,7 @@ class Scheduler:
     async def describe(self) -> dict[str, Any]:
         news = get_settings().news
         watched = await _watched_count()
+        scheduled = await _scheduled_newsletter_count()
         labels = {job.key: job.label for job in _jobs()}
         async with session() as s:
             rows = list((await s.execute(select(SchedulerJob).order_by(SchedulerJob.key))).scalars())
@@ -403,10 +404,17 @@ class Scheduler:
                 for r in rows
             ],
             "watched_feeds": watched,
-            "effective_min_cadence_minutes": news.effective_min_cadence(watched_feeds=watched),
+            "scheduled_newsletters": scheduled,
+            "effective_min_cadence_minutes": news.effective_min_cadence(
+                watched_feeds=watched, scheduled_newsletters=scheduled
+            ),
             # False means the polling cadence is holding Azure SQL awake around
-            # the clock. Reported so the trade is visible where it is chosen.
-            "db_can_autopause": news.db_can_autopause(watched_feeds=watched),
+            # the clock. Reported so the trade is visible where it is chosen —
+            # and a scheduled newsletter counts, because the 15-minute *check*
+            # for whether one is due is what touches the database.
+            "db_can_autopause": news.db_can_autopause(
+                watched_feeds=watched, scheduled_newsletters=scheduled
+            ),
         }
 
     async def run_now(self, key: str) -> dict[str, Any]:
@@ -417,6 +425,20 @@ class Scheduler:
         detail = await job.run()
         await self._finish(job.key, "ok", detail=detail)
         return {"key": key, "detail": detail}
+
+
+async def _scheduled_newsletter_count() -> int:
+    from sqlalchemy import func, true
+
+    from .db import Newsletter
+
+    async with session() as s:
+        count = await s.scalar(
+            select(func.count())
+            .select_from(Newsletter)
+            .where(Newsletter.enabled == true(), Newsletter.next_due_at.is_not(None))
+        )
+    return int(count or 0)
 
 
 async def _watched_count() -> int:
