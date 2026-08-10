@@ -172,15 +172,27 @@ self.addEventListener('notificationclick', (event) => {
 
 async function networkFirstShell(request: Request): Promise<Response> {
   try {
-    const response = await fetch(request)
+    // `redirect: 'manual'` is the entire point of this line.
+    //
+    // With the default 'follow', fetch resolves the Easy Auth 302 itself and
+    // hands back a response with `redirected === true`. Returning one of those
+    // to a *navigation* request is a network error by spec — the navigation
+    // fails outright and the user gets a blank page. That is precisely what
+    // happened: an expired session redirected, the worker followed it, and the
+    // app died rather than showing a login screen.
+    //
+    // 'manual' yields an opaqueredirect instead, which a navigation *is*
+    // allowed to receive, and the browser then performs the redirect itself —
+    // arriving at the Microsoft login page as it should.
+    const response = await fetch(request, { redirect: 'manual' })
     if (safeToCache(response)) {
       const cache = await caches.open(SHELL_CACHE)
       void cache.put(SHELL, response.clone())
     }
-    // Redirected, opaque, or an error status: hand it straight back. The browser
-    // follows it to the login page, which is exactly right. Note the fallback
-    // below triggers on a *network* failure only, never on an HTTP status — a
-    // reachable server always wins.
+    // Belt and braces. Nothing should be `redirected` under 'manual', but if it
+    // ever is, returning it would blank the page — so decline to handle the
+    // request and let the browser do it without us.
+    if (response.redirected) return await fetch(request)
     return response
   } catch {
     const cached = await caches.match(SHELL, { cacheName: SHELL_CACHE })

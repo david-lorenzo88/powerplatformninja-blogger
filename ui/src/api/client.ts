@@ -54,16 +54,33 @@ export class ApiError extends Error {
 // own redirect_slashes never fires. Re-check that if routes are added.
 let redirecting = false
 
+// Bouncing to the login page is the right move once. Doing it on every page load
+// is an infinite loop that leaves the operator unable to use the app at all, and
+// `redirecting` cannot prevent that on its own because a full navigation resets
+// it. So remember across loads: if we redirected moments ago and are being asked
+// again, the login is not fixing anything and looping will not help.
+const LOGIN_AT = 'ppn:login-redirect-at'
+const LOGIN_COOLDOWN_MS = 20_000
+
 function toLogin(): never {
+  const previous = Number(sessionStorage.getItem(LOGIN_AT) ?? 0)
+  const looping = Number.isFinite(previous) && Date.now() - previous < LOGIN_COOLDOWN_MS
+
   // Six concurrent polls would otherwise each call location.replace.
-  if (!redirecting) {
+  if (!redirecting && !looping) {
     redirecting = true
+    sessionStorage.setItem(LOGIN_AT, String(Date.now()))
     const back = `${location.pathname}${location.search}${location.hash}`
     // Must be a relative path: Easy Auth rejects absolute external URLs unless
     // they are listed in allowedExternalRedirectUrls.
     location.replace(`/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(back)}`)
   }
-  throw new ApiError(401, 'Signed out — redirecting to sign in.')
+  throw new ApiError(
+    401,
+    looping
+      ? 'Signed in, but the server still refused the request. Reload to try again.'
+      : 'Signed out — redirecting to sign in.',
+  )
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -74,7 +91,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   })
 
-  if (res.type === 'opaqueredirect' || res.status === 0) toLogin()
+  if (res.type === 'opaqueredirect') toLogin()
   // Belt and braces: some Easy Auth configurations serve the login page inline
   // at 200 rather than redirecting. HTML from a JSON endpoint means the same.
   if (res.ok && res.status !== 204 && (res.headers.get('content-type') ?? '').includes('text/html')) {
