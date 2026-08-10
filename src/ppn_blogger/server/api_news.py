@@ -19,11 +19,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .. import news
 from ..settings import get_settings
-from . import news_store
+from . import news_store, newsletters
 from .runs import manager
 from .scheduler import scheduler
 
@@ -319,12 +320,17 @@ async def summary() -> dict[str, Any]:
     settings = get_settings().news
     counts = await news_store.counts()
     watched = counts["feeds_realtime"]
+    scheduled = len([n for n in await newsletters.list_newsletters() if n["next_due_at"]])
     return {
         **counts,
         "ingest_interval_minutes": settings.ingest_interval_minutes,
         "realtime_interval_minutes": settings.realtime_interval_minutes,
-        "effective_min_cadence_minutes": settings.effective_min_cadence(watched_feeds=watched),
-        "db_can_autopause": settings.db_can_autopause(watched_feeds=watched),
+        "effective_min_cadence_minutes": settings.effective_min_cadence(
+            watched_feeds=watched, scheduled_newsletters=scheduled
+        ),
+        "db_can_autopause": settings.db_can_autopause(
+            watched_feeds=watched, scheduled_newsletters=scheduled
+        ),
     }
 
 
@@ -350,3 +356,148 @@ async def run_job(key: str) -> dict[str, Any]:
         return await scheduler().run_now(key)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Newsletters
+# ---------------------------------------------------------------------------
+
+
+class NewsletterBody(BaseModel):
+    name: str = ""
+    description: str | None = None
+    enabled: bool | None = None
+    group_ids: list[int] | None = None
+    schedule_kind: str | None = None
+    interval_minutes: int | None = None
+    weekday: int | None = None
+    day_of_month: int | None = None
+    hour_local: int | None = None
+    minute_local: int | None = None
+    timezone: str | None = None
+    lookback_hours: int | None = None
+    max_items: int | None = None
+    min_items: int | None = None
+    max_per_feed: int | None = None
+    audience: str | None = None
+    tone: str | None = None
+    auto_send: bool | None = None
+
+
+class IssuePatch(BaseModel):
+    subject: str | None = None
+    preheader: str | None = None
+    intro: str | None = None
+    markdown: str | None = None
+    status: str | None = None
+
+
+@router.get("/newsletters")
+async def list_newsletters() -> list[dict[str, Any]]:
+    return await newsletters.list_newsletters()
+
+
+@router.post("/newsletters", status_code=201)
+async def create_newsletter(body: NewsletterBody) -> dict[str, Any]:
+    try:
+        row = await newsletters.create(body.name, **body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await _reschedule()
+    return row
+
+
+@router.get("/newsletters/{newsletter_id}")
+async def get_newsletter(newsletter_id: int) -> dict[str, Any]:
+    row = await newsletters.get(newsletter_id)
+    if row is None:
+        raise HTTPException(404, f"No newsletter {newsletter_id}")
+    return row
+
+
+@router.patch("/newsletters/{newsletter_id}")
+async def patch_newsletter(newsletter_id: int, body: NewsletterBody) -> dict[str, Any]:
+    changes = body.model_dump(exclude_none=True)
+    changes.pop("name", None) if not changes.get("name") else None
+    try:
+        row = await newsletters.update(newsletter_id, changes)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await _reschedule()
+    return row
+
+
+@router.delete("/newsletters/{newsletter_id}")
+async def delete_newsletter(newsletter_id: int) -> dict[str, Any]:
+    if not await newsletters.delete_newsletter(newsletter_id):
+        raise HTTPException(404, f"No newsletter {newsletter_id}")
+    return {"deleted": True}
+
+
+@router.get("/newsletters/{newsletter_id}/preview")
+async def preview_newsletter(newsletter_id: int) -> dict[str, Any]:
+    """Exactly what the next issue would draw from — and no model is called.
+
+    The cheapest way to tune a newsletter: change its groups or its window and
+    see precisely what changes, for free.
+    """
+    try:
+        return await newsletters.candidates(newsletter_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/newsletters/{newsletter_id}/generate", status_code=202)
+async def generate_issue(newsletter_id: int, instruction: str = "") -> dict[str, str]:
+    row = await newsletters.get(newsletter_id)
+    if row is None:
+        raise HTTPException(404, f"No newsletter {newsletter_id}")
+    run_id = await manager().enqueue(
+        "newsletter",
+        {"newsletter_id": newsletter_id, "instruction": instruction},
+        f"Newsletter · {row['name']}",
+    )
+    await newsletters.attach_run(newsletter_id, run_id)
+    return {"id": run_id, "run_id": run_id}
+
+
+@router.get("/newsletters/{newsletter_id}/issues")
+async def list_newsletter_issues(newsletter_id: int) -> list[dict[str, Any]]:
+    return await newsletters.list_issues(newsletter_id)
+
+
+@router.get("/issues")
+async def list_issues(limit: int = Query(50, le=200)) -> list[dict[str, Any]]:
+    return await newsletters.list_issues(limit=limit)
+
+
+@router.get("/issues/{issue_id}")
+async def get_issue(issue_id: int) -> dict[str, Any]:
+    row = await newsletters.get_issue(issue_id)
+    if row is None:
+        raise HTTPException(404, f"No issue {issue_id}")
+    return row
+
+
+@router.patch("/issues/{issue_id}")
+async def patch_issue(issue_id: int, body: IssuePatch) -> dict[str, Any]:
+    try:
+        return await newsletters.update_issue(issue_id, body.model_dump(exclude_none=True))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/issues/{issue_id}/html", response_class=HTMLResponse)
+async def get_issue_html(issue_id: int) -> str:
+    """The rendered email, for the preview iframe."""
+    from .db import NewsletterIssue, session
+
+    async with session() as s:
+        row = await s.get(NewsletterIssue, issue_id)
+    if row is None:
+        raise HTTPException(404, f"No issue {issue_id}")
+    return row.html or "<p>This issue has no rendered body.</p>"

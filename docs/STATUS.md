@@ -268,6 +268,54 @@ coalesced notification; the following tick correctly found nothing due.
 **Still off by default.** `PPN_SCHEDULER_ENABLED=false` everywhere except Bicep,
 so nothing polls until the deployment says so.
 
+## News phase 3 — newsletter generation (new)
+
+Issues are generated from feed groups on a schedule and read in the app.
+**Deliberately no sending yet** — delivery is phase 4, so nothing can reach a
+recipient before the mechanism for it has been reviewed on its own.
+
+- **Four tables** (`server/db.py`): `newsletters`, `newsletter_groups`,
+  `newsletter_issues`, `newsletter_issue_items`. An issue's markdown/HTML live in
+  columns rather than files — a deliberate exception to the crew's "content is
+  files" rule, because an issue is the *payload* of a delivery and storing the
+  rendered HTML makes a re-send byte-identical.
+- **`config/newsletters.yaml`** — a new versioned config document holding
+  editorial policy only: the section taxonomy, blurb and headline caps,
+  include/exclude rules, banned phrases, brand colour. Tunable in the Config
+  screen with history and rollback, no deploy.
+- **One agent between two code gates** (`build_newsletter_workflow`):
+  `IssueBuilder → newsletter_editor → IssuePublisher`.
+  - The **only branch in the graph is an integer comparison**: below
+    `min_items` the run finishes `skipped` and **no model is called at all**.
+  - **`IssuePublisher` is the anti-fabrication gate.** The editor refers to
+    articles by id and is never given a URL; anything it names that was not in
+    the candidate list is dropped, as is any section outside the taxonomy. An
+    email cannot be un-sent.
+- **`GET /newsletters/{id}/preview`** returns exactly what the next issue would
+  draw from, **with no model call** — the cheapest way to tune a newsletter.
+- **`newsletter_render.py`** — markdown, email HTML (every style inlined, single
+  column, absolute URLs only, `javascript:` dropped) and plain text. Built from
+  the composed issue rather than by converting the markdown, so there is nothing
+  to sanitise.
+- **Schedules** are pure and previewable: `manual | interval | weekly | monthly`,
+  computed in the newsletter's own zone, with the next three fire times shown in
+  the UI. Monthly is capped at day 28 — "the 31st" silently meaning "the 28th" in
+  February is a schedule that lies. Claimed by the scheduler with the same
+  compare-and-swap as the system jobs.
+- **UI**: a fifth `Letters` tab (the ceiling), newsletter list/detail with a live
+  candidate preview and schedule editor, and an issue screen whose email preview
+  is a **sandboxed iframe** — email HTML carries its own inlined styles and would
+  wreck the app shell.
+- **Tests**: 21 new; suite is **190 passing**.
+
+**Verified end to end offline** against a live feed's articles: 10 candidates,
+the stub's fabricated id and invented section both dropped, one real item
+surviving with its URL taken from the candidate row, and a weekly schedule
+resolving correctly across the Madrid offset.
+
+**Next:** phase 4 is delivery (ACS email, Telegram, WhatsApp) and phase 5 is feed
+auto-discovery.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

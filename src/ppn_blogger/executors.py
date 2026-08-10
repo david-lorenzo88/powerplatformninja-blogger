@@ -1132,3 +1132,244 @@ class TranslationGate(Executor):
 
 def any_value(obj: Any) -> Any:  # pragma: no cover - typing convenience for handlers
     return obj
+
+
+# ---------------------------------------------------------------------------
+# Newsletter pipeline
+#
+# Two code gates around one agent. The agent decides what is worth including and
+# what to say about it; everything else — which articles exist, how many, and
+# whether an item survives — is plain Python here.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class NewsletterCandidate:
+    """One article offered to the editor, and the truth it is resolved back to."""
+
+    id: int
+    title: str
+    url: str
+    source: str
+    published: str
+    summary: str
+
+
+@dataclass(slots=True)
+class IssueRequest:
+    """Everything the graph needs to compose one issue."""
+
+    newsletter: dict[str, Any]
+    candidates: list[NewsletterCandidate]
+    window_from: str = ""
+    window_to: str = ""
+    instruction: str = ""
+
+
+@dataclass(slots=True)
+class ComposedIssue:
+    """The finished article of the graph — rendered, but not yet stored."""
+
+    newsletter_id: int
+    subject: str
+    preheader: str
+    intro: str
+    sections: list[dict[str, Any]]
+    article_ids: list[int]
+    dropped: list[int]
+    omitted: list[int]
+    skipped_reason: str = ""
+    generated_on: str = ""
+
+    @property
+    def item_count(self) -> int:
+        return len(self.article_ids)
+
+
+class IssueBuilder(Executor):
+    """Turns candidate articles into a brief. Makes the only branch in the graph.
+
+    If there are fewer candidates than the newsletter's `min_items`, the run ends
+    here and **no model is called at all**. That is what "no routing decision is
+    made by a model" looks like in this pipeline: the sole decision point is an
+    integer comparison, and a quiet week costs nothing rather than producing a
+    padded issue.
+    """
+
+    def __init__(self, id: str = "issue_builder") -> None:
+        super().__init__(id)
+        self.skipped: ComposedIssue | None = None
+        self.request: IssueRequest | None = None
+
+    @handler
+    async def start(
+        self,
+        request: IssueRequest,
+        ctx: WorkflowContext[AgentExecutorRequest, ComposedIssue],
+    ) -> None:
+        self.request = request
+        newsletter = request.newsletter
+        minimum = int(newsletter.get("min_items", 3) or 0)
+
+        if len(request.candidates) < minimum:
+            reason = (
+                f"only {len(request.candidates)} article(s) in the window, "
+                f"below the minimum of {minimum}"
+            )
+            logger.info("skipping issue: %s", reason)
+            self.skipped = ComposedIssue(
+                newsletter_id=int(newsletter.get("id", 0)),
+                subject="",
+                preheader="",
+                intro="",
+                sections=[],
+                article_ids=[],
+                dropped=[],
+                omitted=[],
+                skipped_reason=reason,
+                generated_on=date.today().isoformat(),
+            )
+            await ctx.yield_output(self.skipped)
+            return
+
+        logger.info(
+            "composing '%s' from %d candidate(s)",
+            newsletter.get("name", "newsletter"),
+            len(request.candidates),
+        )
+        await ctx.send_message(
+            AgentExecutorRequest(messages=[user_message(_issue_brief(request))], should_respond=True)
+        )
+
+
+def _issue_brief(request: IssueRequest) -> str:
+    """The candidate list, numbered. The ids here are the only ones that resolve."""
+    lines = []
+    for c in request.candidates:
+        lines.append(
+            f"[{c.id}] {c.title}\n"
+            f"     source: {c.source}   published: {c.published or 'unknown'}\n"
+            f"     {c.summary[:400]}"
+        )
+    window = (
+        f"Covering {request.window_from} to {request.window_to}."
+        if request.window_from
+        else "Covering the current window."
+    )
+    extra = f"\n\n{request.instruction.strip()}" if request.instruction.strip() else ""
+    return (
+        f"{window} There are {len(request.candidates)} candidate articles below.\n\n"
+        "Refer to each by its bracketed id. Do not produce URLs.\n\n"
+        + "\n\n".join(lines)
+        + extra
+    )
+
+
+class IssuePublisher(Executor):
+    """Resolves the editor's plan back to real articles, and drops what it cannot.
+
+    This is the anti-fabrication gate, and the direct analogue of ``ScoutReplay``
+    filtering to approved sources. The editor is given ids and returns ids; any
+    id that was not in the candidate list is discarded here, along with any
+    section that is not in the configured taxonomy. An email cannot be un-sent,
+    so a link nobody verified must never reach one.
+
+    It also enforces the caps rather than trusting the model to have counted.
+    """
+
+    def __init__(self, settings: Settings, id: str = "issue_publisher") -> None:
+        super().__init__(id)
+        self.settings = settings
+        self.result: ComposedIssue | None = None
+        self.request: IssueRequest | None = None
+
+    @handler
+    async def publish(
+        self,
+        response: AgentExecutorResponse,
+        ctx: WorkflowContext[Never, ComposedIssue],
+    ) -> None:
+        from .models import NewsletterIssueDraft
+
+        draft = parse_model(response, NewsletterIssueDraft)
+        request = self.request
+        assert request is not None, "IssuePublisher ran without a request"
+
+        by_id = {c.id: c for c in request.candidates}
+        allowed_sections = {s["id"]: s for s in self.settings.newsletter_sections}
+        editorial = self.settings.newsletter_editorial
+        headline_cap = int(editorial.get("headline_max_chars", 90))
+        blurb_cap = int(editorial.get("blurb_max_words", 40))
+        max_items = int(request.newsletter.get("max_items", 12) or 12)
+
+        sections: list[dict[str, Any]] = []
+        used: list[int] = []
+        dropped: list[int] = []
+        seen: set[int] = set()
+
+        for section in draft.sections:
+            if section.id not in allowed_sections:
+                logger.info("dropping section %r — not in the configured taxonomy", section.id)
+                dropped.extend(item.article_id for item in section.items)
+                continue
+
+            items: list[dict[str, Any]] = []
+            for item in section.items:
+                candidate = by_id.get(item.article_id)
+                if candidate is None:
+                    # The editor named something it was not given.
+                    logger.warning("dropping item %s — not in the candidate list", item.article_id)
+                    dropped.append(item.article_id)
+                    continue
+                if item.article_id in seen:
+                    dropped.append(item.article_id)
+                    continue
+                if len(used) >= max_items:
+                    dropped.append(item.article_id)
+                    continue
+                seen.add(item.article_id)
+                used.append(item.article_id)
+                items.append(
+                    {
+                        "article_id": candidate.id,
+                        # URL and source come from the candidate, never the model.
+                        "url": candidate.url,
+                        "source": candidate.source,
+                        "published": candidate.published,
+                        "headline": (item.headline or candidate.title).strip()[:headline_cap],
+                        "blurb": _cap_words(item.blurb, blurb_cap),
+                    }
+                )
+
+            if items:
+                sections.append(
+                    {
+                        "id": section.id,
+                        "title": section.title or allowed_sections[section.id].get("title", section.id),
+                        "items": items,
+                    }
+                )
+
+        if dropped:
+            logger.info("issue gate dropped %d item(s) the editor named", len(dropped))
+
+        self.result = ComposedIssue(
+            newsletter_id=int(request.newsletter.get("id", 0)),
+            subject=draft.subject.strip()[:300],
+            preheader=draft.preheader.strip()[:300],
+            intro=_cap_words(draft.intro, int(editorial.get("intro_max_words", 80))),
+            sections=sections,
+            article_ids=used,
+            dropped=dropped,
+            omitted=list(draft.omitted),
+            generated_on=date.today().isoformat(),
+        )
+        logger.info("issue composed: %d item(s) across %d section(s)", len(used), len(sections))
+        await ctx.yield_output(self.result)
+
+
+def _cap_words(text: str, limit: int) -> str:
+    words = (text or "").strip().split()
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[:limit]).rstrip(",;:") + "…"

@@ -29,6 +29,10 @@ import type {
   RunDetail,
   RunEvent,
   RunStatus,
+  NewsletterIssue,
+  NewsletterIssueSummary,
+  NewsletterPreview,
+  NewsletterSummary,
   Schedule,
   SourceReview,
   SourceReviewStatus,
@@ -380,6 +384,48 @@ export const listArticles = (filters: ArticleFilters = {}) => {
 export const getNewsSummary = () => request<NewsSummary>('/news/summary')
 
 export const getSchedule = () => request<Schedule>('/news/schedule')
+
+// -- Newsletters --------------------------------------------------------------
+
+export const listNewsletters = () => request<NewsletterSummary[]>('/news/newsletters')
+
+export const getNewsletter = (id: number) =>
+  request<NewsletterSummary>(`/news/newsletters/${id}`)
+
+export const createNewsletter = (body: Partial<NewsletterSummary> & { name: string }) =>
+  request<NewsletterSummary>('/news/newsletters', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const updateNewsletter = (id: number, body: Partial<NewsletterSummary>) =>
+  request<NewsletterSummary>(`/news/newsletters/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+
+export const deleteNewsletter = (id: number) =>
+  request<{ deleted: boolean }>(`/news/newsletters/${id}`, { method: 'DELETE' })
+
+// No model is called: this is what the next issue would draw from, for free.
+export const previewNewsletter = (id: number) =>
+  request<NewsletterPreview>(`/news/newsletters/${id}/preview`)
+
+export const generateIssue = (id: number) =>
+  request<{ id: string; run_id: string }>(`/news/newsletters/${id}/generate`, { method: 'POST' })
+
+export const listIssues = (newsletterId?: number) =>
+  request<NewsletterIssueSummary[]>(
+    newsletterId ? `/news/newsletters/${newsletterId}/issues` : '/news/issues',
+  )
+
+export const getIssue = (id: number) => request<NewsletterIssue>(`/news/issues/${id}`)
+
+export const updateIssue = (id: number, body: Partial<NewsletterIssue>) =>
+  request<NewsletterIssue>(`/news/issues/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+
+// The rendered email, for the sandboxed preview frame.
+export const issueHtmlUrl = (id: number) => `${API_BASE}/news/issues/${id}/html`
 
 export const runScheduledJob = (key: string) =>
   request<{ key: string; detail: string }>(`/news/schedule/${key}/run`, { method: 'POST' })

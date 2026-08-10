@@ -350,3 +350,42 @@ class PostPackage(BaseModel):
     translation_language: str = ""
     translation_path: str = ""
     translation_published: PublishTarget | None = None
+
+
+# ---------------------------------------------------------------------------
+# Newsletters
+#
+# The editor is handed a numbered list of candidate articles and returns a plan
+# referring to them by id. It never supplies a URL, which is the whole point:
+# `IssuePublisher` resolves every id back to the candidate it was given, so a
+# fabricated link cannot reach an issue. An email cannot be un-sent, so this is
+# the one place in the news subsystem where a hallucination would be permanent.
+# ---------------------------------------------------------------------------
+
+
+class NewsletterItem(BaseModel):
+    """One article as the editor wants it to appear."""
+
+    article_id: int = Field(..., description="The id from the candidate list. Never invent one.")
+    headline: str = Field(..., description="Rewritten for the digest, under 90 characters")
+    blurb: str = Field(..., description="One or two sentences: why this matters to the reader")
+    section: str = Field(..., description="id of a section from the newsletter policy")
+
+
+class NewsletterSection(BaseModel):
+    id: str = Field(..., description="Section id from the policy")
+    title: str = Field(..., description="Heading as it should appear")
+    items: list[NewsletterItem] = Field(default_factory=list)
+
+
+class NewsletterIssueDraft(BaseModel):
+    """What the editor produces. Bound to the agent as its response_format."""
+
+    subject: str = Field(..., description="Email subject line — specific, no clickbait")
+    preheader: str = Field("", description="The preview line after the subject in an inbox")
+    intro: str = Field("", description="A short paragraph framing the issue. May be empty.")
+    sections: list[NewsletterSection] = Field(default_factory=list)
+    omitted: list[int] = Field(
+        default_factory=list,
+        description="Candidate ids deliberately left out, so the choice is auditable",
+    )

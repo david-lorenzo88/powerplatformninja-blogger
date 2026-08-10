@@ -16,7 +16,7 @@ import { Modal } from '../components/Modal'
 import { NewsSubNav } from '../components/SubNav'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { useOnline } from '../hooks/useOnline'
-import { HEALTH_STYLES, relativeTime, toDate } from '../lib/format'
+import { HEALTH_STYLES, relativeTime, relativeToNow } from '../lib/format'
 import { field, ghostBtn, label, primaryBtn, quietBtn, rowCard } from '../lib/ui'
 
 export function FeedsScreen() {
@@ -197,7 +197,7 @@ function ScheduleBar() {
     refetchInterval: 60_000,
   })
   if (!schedule.data) return null
-  const { enabled, jobs, watched_feeds, db_can_autopause } = schedule.data
+  const { enabled, jobs, watched_feeds, scheduled_newsletters, db_can_autopause } = schedule.data
   const fetchJob = jobs.find((j) => j.key === 'fetch')
 
   return (
@@ -218,8 +218,16 @@ function ScheduleBar() {
         </span>
       )}
       {!db_can_autopause && (
-        <span className="text-amber-400" title="Azure SQL cannot idle at this cadence">
+        <span
+          className="text-amber-400"
+          title={
+            watched_feeds > 0
+              ? 'A closely-watched feed polls every 15 minutes'
+              : 'A scheduled newsletter is checked every 15 minutes'
+          }
+        >
           database stays awake · ~$150–200/mo
+          {watched_feeds === 0 && scheduled_newsletters > 0 ? ' (scheduled newsletter)' : ''}
         </span>
       )}
       {fetchJob?.last_error && <span className="text-rose-400">{fetchJob.last_error}</span>}
@@ -227,16 +235,6 @@ function ScheduleBar() {
   )
 }
 
-// "in 2h" rather than "2h ago" — relativeTime only looks backwards.
-function relativeToNow(iso: string): string {
-  const seconds = Math.round((toDate(iso).getTime() - Date.now()) / 1000)
-  if (seconds <= 0) return 'due now'
-  if (seconds < 90) return 'in under a minute'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `in ${minutes}m`
-  const hours = Math.round(minutes / 60)
-  return hours < 48 ? `in ${hours}h` : `in ${Math.round(hours / 24)}d`
-}
 
 export function HealthChip({ feed }: { feed: Feed }) {
   const text = feed.health === 'failing' && feed.last_status ? `HTTP ${feed.last_status}` : feed.health

@@ -93,6 +93,12 @@ async def test_watching_a_feed_brings_the_watch_job_into_being(sched) -> None:
     assert watch.enabled is True and watch.next_due_at is not None
 
 
+def sched_mod_jobs():
+    from ppn_blogger.server import scheduler as sched_mod
+
+    return sched_mod._jobs()
+
+
 async def test_sync_jobs_is_idempotent(sched) -> None:
     from ppn_blogger.server.db import SchedulerJob, session
 
@@ -100,7 +106,8 @@ async def test_sync_jobs_is_idempotent(sched) -> None:
         await sched.sync_jobs()
     async with session() as s:
         rows = list((await s.execute(select(SchedulerJob))).scalars())
-    assert len(rows) == len({r.key for r in rows}) == 3
+    # One row per job key, however many jobs there are.
+    assert len(rows) == len({r.key for r in rows}) == len(sched_mod_jobs())
 
 
 # ---------------------------------------------------------------------------
@@ -272,14 +279,27 @@ async def _watched_feed_with(monkeypatch, entries) -> int:
 
 @pytest.fixture
 def sent(monkeypatch):
-    """Capture pushes instead of sending them."""
+    """Capture pushes instead of sending them, with quiet hours out of the way.
+
+    Quiet hours default to 22:00-07:00 in the operator's timezone, so without
+    this every test below asserts a notification that the code is right to
+    suppress — and the suite passes in the afternoon and fails at night, on
+    either backend. Found exactly that way: a SQL Server run at 22:50 Madrid
+    time failed three tests that had nothing to do with the dialect.
+
+    The quiet-hours behaviour itself is covered separately, by patching
+    `in_quiet_hours` directly.
+    """
+    from ppn_blogger.server import push
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(get_settings().news, "quiet_hours", "")
+
     calls: list[tuple[str, str, str, str]] = []
 
     async def fake_notify(title, body, url, tag=""):
         calls.append((title, body, url, tag))
         return 1
-
-    from ppn_blogger.server import push
 
     monkeypatch.setattr(push, "notify", fake_notify)
     return calls

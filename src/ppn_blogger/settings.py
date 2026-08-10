@@ -327,6 +327,9 @@ class NewsSettings:
     ingest_timeout_minutes: int = field(
         default_factory=lambda: _env_int("PPN_INGEST_TIMEOUT_MINUTES", 15)
     )
+    newsletter_timeout_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_NEWSLETTER_TIMEOUT_MINUTES", 15)
+    )
     max_items_per_feed: int = field(default_factory=lambda: _env_int("PPN_FEED_MAX_ITEMS", 100))
     prune_interval_hours: int = field(default_factory=lambda: _env_int("PPN_PRUNE_INTERVAL_HOURS", 24))
     # Notification caps for watched feeds. A duplicate buzz is worse than a
@@ -339,17 +342,32 @@ class NewsSettings:
     )
     quiet_hours: str = field(default_factory=lambda: _env("PPN_REALTIME_QUIET_HOURS", "22:00-07:00"))
 
-    def effective_min_cadence(self, *, watched_feeds: int) -> int:
+    # The scheduler checks for due newsletters on this cadence, and only once a
+    # newsletter actually has a due time. Kept here rather than in the scheduler
+    # so the cost calculation below has a single source for every cadence.
+    newsletter_check_minutes: int = 15
+
+    def effective_min_cadence(
+        self, *, watched_feeds: int = 0, scheduled_newsletters: int = 0
+    ) -> int:
         """The shortest interval anything actually polls at, in minutes.
 
-        The realtime job does not exist until a feed opts in, so with none the
-        cadence is the six-hourly sweep and the database is idle nearly all day.
+        Both short cadences are conditional: the realtime job does not exist
+        until a feed opts in, and the newsletter job does not exist until a
+        newsletter is scheduled. With neither, the only poll is the six-hourly
+        sweep and the database is idle nearly all day.
         """
+        cadences = [self.ingest_interval_minutes]
         if watched_feeds > 0:
-            return min(self.ingest_interval_minutes, self.realtime_interval_minutes)
-        return self.ingest_interval_minutes
+            cadences.append(self.realtime_interval_minutes)
+        if scheduled_newsletters > 0:
+            # A weekly newsletter fires once a week, but the *check* for whether
+            # it is due runs every 15 minutes — and it is the check that touches
+            # the database, so it is the check that decides the bill.
+            cadences.append(self.newsletter_check_minutes)
+        return min(cadences)
 
-    def db_can_autopause(self, *, watched_feeds: int = 0) -> bool:
+    def db_can_autopause(self, *, watched_feeds: int = 0, scheduled_newsletters: int = 0) -> bool:
         """Whether the cadences still let the serverless database go idle.
 
         Azure SQL is serverless with a 60-minute autoPauseDelay, so anything
@@ -357,7 +375,12 @@ class NewsSettings:
         order of $150-200/month at list price rather than near-zero. Exposed as a
         flag so the trade is a number on screen rather than folklore.
         """
-        return self.effective_min_cadence(watched_feeds=watched_feeds) >= 60
+        return (
+            self.effective_min_cadence(
+                watched_feeds=watched_feeds, scheduled_newsletters=scheduled_newsletters
+            )
+            >= 60
+        )
 
 
 @dataclass(slots=True)
@@ -424,6 +447,29 @@ class Settings:
     @property
     def validation(self) -> dict[str, Any]:
         return self._document("validation_rules")
+
+    @property
+    def newsletters(self) -> dict[str, Any]:
+        """Editorial policy for generated issues — never per-newsletter state.
+
+        Which groups a newsletter draws from and how often it runs are rows; what
+        a good item looks like is policy, and policy belongs in a versioned
+        document the operator can edit without a deploy.
+        """
+        return self._document("newsletters")
+
+    @property
+    def newsletter_sections(self) -> list[dict[str, Any]]:
+        """The taxonomy the editor may use. Anything else is dropped by the gate."""
+        return list(self.newsletters.get("sections", []))
+
+    @property
+    def newsletter_editorial(self) -> dict[str, Any]:
+        return dict(self.newsletters.get("editorial", {}))
+
+    @property
+    def newsletter_render(self) -> dict[str, Any]:
+        return dict(self.newsletters.get("render", {}))
 
     @property
     def style_guide(self) -> str:

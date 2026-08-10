@@ -42,10 +42,15 @@ from . import agents as A
 from .clients import ClientBundle, default_clients
 from .executors import (
     BriefBuilder,
+    ComposedIssue,
     DossierEntry,
     DossierGate,
     DraftGate,
     Finalizer,
+    IssueBuilder,
+    IssuePublisher,
+    IssueRequest,
+    NewsletterCandidate,
     NotesGate,
     ResumePayload,
     ReviewGate,
@@ -465,3 +470,92 @@ async def write_post_from_dossier(
     if built.finalizer.package is not None:
         return built.finalizer.package
     raise RuntimeError("The pipeline finished without producing a draft.")
+
+
+# ---------------------------------------------------------------------------
+# Newsletter pipeline
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class NewsletterWorkflow:
+    workflow: Any
+    builder: IssueBuilder
+    publisher: IssuePublisher
+
+
+def build_newsletter_workflow(
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+    newsletter: dict[str, Any] | None = None,
+) -> NewsletterWorkflow:
+    """issue_builder -> newsletter_editor -> issue_publisher.
+
+    One agent between two code gates. The builder decides whether there is
+    enough to write about at all (and can end the run without calling a model);
+    the publisher resolves the editor's ids back to real articles and drops
+    anything it cannot account for.
+    """
+    settings = settings or get_settings()
+    clients = clients or default_clients()
+
+    builder = IssueBuilder()
+    editor = AgentExecutor(
+        A.build_newsletter_editor(settings, clients, newsletter), id=A.NEWSLETTER_EDITOR
+    )
+    publisher = IssuePublisher(settings)
+
+    workflow = (
+        WorkflowBuilder(
+            start_executor=builder,
+            name="ppn-newsletter",
+            description="Curate harvested articles into one newsletter issue.",
+            max_iterations=20,
+        )
+        .add_edge(builder, editor)
+        .add_edge(editor, publisher)
+        .build()
+    )
+    return NewsletterWorkflow(workflow=workflow, builder=builder, publisher=publisher)
+
+
+async def compose_issue(
+    newsletter: dict[str, Any],
+    candidates: list[NewsletterCandidate],
+    *,
+    window_from: str = "",
+    window_to: str = "",
+    instruction: str = "",
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+    on_event: Any = None,
+) -> ComposedIssue:
+    """Run the graph for one issue."""
+    built = build_newsletter_workflow(settings, clients, newsletter)
+    payload = IssueRequest(
+        newsletter=newsletter,
+        candidates=candidates,
+        window_from=window_from,
+        window_to=window_to,
+        instruction=instruction,
+    )
+    # The publisher needs the candidate list to resolve ids against, and it is
+    # not on the message path — the agent response is. Hand it over directly.
+    built.publisher.request = payload
+
+    if on_event is None:
+        result = await built.workflow.run(payload)
+    else:
+        stream = built.workflow.run(payload, stream=True)
+        async for event in stream:
+            on_event(event)
+        result = await stream.get_final_response()
+
+    outputs = [o for o in result.get_outputs() if isinstance(o, ComposedIssue)]
+    if outputs:
+        return outputs[-1]
+    if built.publisher.result is not None:
+        return built.publisher.result
+    if built.builder.skipped is not None:
+        return built.builder.skipped
+    raise RuntimeError("The newsletter graph produced no issue. Check the run log above.")

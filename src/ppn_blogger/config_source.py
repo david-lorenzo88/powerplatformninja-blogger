@@ -28,6 +28,7 @@ DOCUMENTS: dict[str, str] = {
     "topics": "yaml",
     "sources": "yaml",
     "validation_rules": "yaml",
+    "newsletters": "yaml",
     "style_guide": "markdown",
 }
 

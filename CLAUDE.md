@@ -40,20 +40,22 @@ src/ppn_blogger/
   agents.py         the ten agent factories
   tools.py          search, fetch, feeds, Learn, blog search, trust checks
   executors.py      gates: parsing, routing, loop conditions, artefact writing
-  workflows.py      the two Agent Framework graphs + the entry-point functions
+  workflows.py      the Agent Framework graphs + the entry-point functions
   covers.py         neon cover art (MAI / OpenAI-compatible / OpenAI-direct)
   wordpress.py      REST client + Markdown → Gutenberg block conversion
   sources.py        harvest sites from a wide sweep; file the operator's verdict
   news.py           news feeds, pure: canonicalise, conditional GET, parse, discover
+  newsletter_render.py  one composed issue -> markdown, email HTML, plain text
   storage.py        drafts, dossiers, review reports, package JSON
   testing.py        offline stub chat client
   cli.py            typer commands
   server/           FastAPI: run queue, SSE, versioned config store, drafts API,
                     source reviews (server/reviews.py), news feeds
                     (server/api_news.py, news_store.py, ingest.py), the
-                    scheduler (scheduler.py) and watch notifications (watch.py)
+                    scheduler (scheduler.py), watch notifications (watch.py) and
+                    newsletters (newsletters.py, newsletter_runs.py)
 config/             editorial policy — the thing you actually tune
-tests/              168 tests, offline; conftest.py picks the DB backend
+tests/              190 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -66,7 +68,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 168 tests, ~30s, no network, no credentials
+pytest                      # 190 tests, ~31s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -78,6 +80,7 @@ ppn news validate <url>     # is there a feed there? (no model, no writes)
 ppn news add <url>          # register a feed, after confirming it is one
 ppn news poll               # fetch every enabled feed; run twice to see the 304s
 ppn news list | ppn news read
+ppn newsletter list|preview|generate   # preview calls no model
 ```
 
 `pip install -e ".[dev]"` gives you the CLI, the server extras and pytest.
@@ -113,6 +116,14 @@ counters in the system, each with exactly one bound
 (`PPN_MAX_SOURCE_ROUNDS`, `PPN_MAX_REVISION_ROUNDS`). Exhausting a budget
 finalises the run anyway — producing nothing after 40 minutes is worse than
 producing a draft marked NOT APPROVED.
+
+**A newsletter's links are code, never judgement.** The editor is handed a
+numbered candidate list and returns *ids*; it is never given a URL and cannot
+produce one. `IssuePublisher` resolves each id back to the article it came from
+and drops anything that was not offered, along with any section outside the
+configured taxonomy. An email cannot be un-sent, which is why this is stricter
+than the blog side. The offline stub deliberately returns one fabricated id and
+one invented section, so every dry run exercises the gate.
 
 **The source review is code, never judgement.** In exploration mode the candidate
 list is harvested from the scouts' own reported URLs by `sources.py`, so what the

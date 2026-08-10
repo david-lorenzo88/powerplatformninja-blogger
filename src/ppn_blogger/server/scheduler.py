@@ -45,7 +45,7 @@ from .db import SchedulerJob, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.scheduler")
 
-FETCH, WATCH, PRUNE = "fetch", "watch", "prune"
+FETCH, WATCH, PRUNE, LETTERS = "fetch", "watch", "prune", "newsletters"
 
 
 @dataclass(slots=True)
@@ -94,6 +94,45 @@ async def _run_watch() -> str:
     return detail
 
 
+async def _run_newsletters() -> str:
+    """Queue an issue for every newsletter whose turn it is.
+
+    Each is claimed with the same compare-and-swap as a system job, so two
+    schedulers overlapping on a deploy cannot both queue the same issue — and a
+    newsletter whose previous run is still going is skipped rather than stacked.
+    """
+    from . import newsletters
+    from .runs import manager
+
+    queued = 0
+    for newsletter_id in await newsletters.due_newsletters():
+        if not await newsletters.claim_due(newsletter_id):
+            continue
+        row = await newsletters.get(newsletter_id)
+        if row is None:
+            continue
+        run_id = await manager().enqueue(
+            "newsletter", {"newsletter_id": newsletter_id}, f"Newsletter · {row['name']}"
+        )
+        await newsletters.attach_run(newsletter_id, run_id)
+        queued += 1
+    return f"{queued} issue(s) queued"
+
+
+async def _any_scheduled_newsletters() -> bool:
+    from sqlalchemy import func, true
+
+    from .db import Newsletter
+
+    async with session() as s:
+        count = await s.scalar(
+            select(func.count())
+            .select_from(Newsletter)
+            .where(Newsletter.enabled == true(), Newsletter.next_due_at.is_not(None))
+        )
+    return bool(count)
+
+
 async def _run_prune() -> str:
     from .news_store import prune_articles
 
@@ -129,6 +168,16 @@ def _jobs() -> list[Job]:
             lambda: news.realtime_interval_minutes,
             _run_watch,
             _any_watched_feeds,
+        ),
+        Job(
+            LETTERS,
+            "Generate due newsletters",
+            # Checked often enough that a 07:00 weekly lands close to 07:00.
+            # This is the cadence db_can_autopause costs the job at, so the two
+            # must not drift — hence the shared setting.
+            lambda: news.newsletter_check_minutes,
+            _run_newsletters,
+            _any_scheduled_newsletters,
         ),
         Job(PRUNE, "Prune old articles", lambda: news.prune_interval_hours * 60, _run_prune, _always),
     ]
@@ -333,6 +382,7 @@ class Scheduler:
     async def describe(self) -> dict[str, Any]:
         news = get_settings().news
         watched = await _watched_count()
+        scheduled = await _scheduled_newsletter_count()
         labels = {job.key: job.label for job in _jobs()}
         async with session() as s:
             rows = list((await s.execute(select(SchedulerJob).order_by(SchedulerJob.key))).scalars())
@@ -354,10 +404,17 @@ class Scheduler:
                 for r in rows
             ],
             "watched_feeds": watched,
-            "effective_min_cadence_minutes": news.effective_min_cadence(watched_feeds=watched),
+            "scheduled_newsletters": scheduled,
+            "effective_min_cadence_minutes": news.effective_min_cadence(
+                watched_feeds=watched, scheduled_newsletters=scheduled
+            ),
             # False means the polling cadence is holding Azure SQL awake around
-            # the clock. Reported so the trade is visible where it is chosen.
-            "db_can_autopause": news.db_can_autopause(watched_feeds=watched),
+            # the clock. Reported so the trade is visible where it is chosen —
+            # and a scheduled newsletter counts, because the 15-minute *check*
+            # for whether one is due is what touches the database.
+            "db_can_autopause": news.db_can_autopause(
+                watched_feeds=watched, scheduled_newsletters=scheduled
+            ),
         }
 
     async def run_now(self, key: str) -> dict[str, Any]:
@@ -368,6 +425,20 @@ class Scheduler:
         detail = await job.run()
         await self._finish(job.key, "ok", detail=detail)
         return {"key": key, "detail": detail}
+
+
+async def _scheduled_newsletter_count() -> int:
+    from sqlalchemy import func, true
+
+    from .db import Newsletter
+
+    async with session() as s:
+        count = await s.scalar(
+            select(func.count())
+            .select_from(Newsletter)
+            .where(Newsletter.enabled == true(), Newsletter.next_due_at.is_not(None))
+        )
+    return int(count or 0)
 
 
 async def _watched_count() -> int:

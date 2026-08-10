@@ -198,6 +198,7 @@ async def workflows() -> list[dict[str, Any]]:
 
     from ..testing import stub_clients
     from ..workflows import (
+        build_newsletter_workflow,
         build_post_workflow,
         build_shortlist_workflow,
         build_source_exploration_workflow,
@@ -214,6 +215,7 @@ async def workflows() -> list[dict[str, Any]]:
         ),
         ("shortlist", "Topic shortlist", build_shortlist_workflow(clients=clients).workflow),
         ("write", "Post pipeline", build_post_workflow(clients=clients).workflow),
+        ("newsletter", "Newsletter", build_newsletter_workflow(clients=clients).workflow),
     ]
     out = []
     for kind, title, workflow in built:

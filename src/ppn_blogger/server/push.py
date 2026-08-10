@@ -230,6 +230,16 @@ def _describe(kind: str, status: str, label: str, result: dict[str, Any] | None)
         n = len(result.get("suggestions") or [])
         return ("Topics ready", f"{name}: {n} suggestion{'' if n == 1 else 's'}", "/topic-ideas")
 
+    if kind == "newsletter":
+        if result.get("skipped"):
+            return ("Nothing to send", f"{name}: {result.get('reason', 'too little new')}", "/newsletters")
+        n = int(result.get("item_count") or 0)
+        return (
+            "Issue ready to review",
+            f"{name}: {n} item{'' if n == 1 else 's'} — nothing sends until you say so.",
+            f"/newsletters/issues/{result.get('issue_id', '')}".rstrip("/"),
+        )
+
     if kind == "ingest":
         n = int(result.get("new_articles") or 0)
         errors = int(result.get("errors") or 0)

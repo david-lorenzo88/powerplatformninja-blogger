@@ -105,7 +105,14 @@ async def test_health_and_config_seeded_from_yaml(api):
 
     documents = (await api.get("/api/config")).json()
     names = {d["name"] for d in documents}
-    assert names == {"blog_profile", "topics", "sources", "validation_rules", "style_guide"}
+    assert names == {
+        "blog_profile",
+        "topics",
+        "sources",
+        "validation_rules",
+        "newsletters",
+        "style_guide",
+    }
     # The move to the database must not lose anything — v1 is the YAML import.
     assert all(d["version"] == 1 for d in documents)
 
@@ -154,7 +161,7 @@ async def test_invalid_yaml_is_rejected_before_it_can_break_a_run(api):
 async def test_workflow_graphs_come_from_the_code(api):
     graphs = (await api.get("/api/workflows")).json()
     kinds = {g["kind"]: g for g in graphs}
-    assert set(kinds) == {"suggest", "explore", "shortlist", "write"}
+    assert set(kinds) == {"suggest", "explore", "shortlist", "write", "newsletter"}
 
     post = kinds["write"]["mermaid"]
     assert post.startswith("flowchart TD")

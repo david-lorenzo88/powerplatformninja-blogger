@@ -45,6 +45,17 @@ export function NewsSubNav() {
   )
 }
 
+export function LettersSubNav() {
+  return (
+    <SubNav
+      items={[
+        { to: '/newsletters', label: 'Newsletters', end: true },
+        { to: '/newsletters/issues', label: 'Issues' },
+      ]}
+    />
+  )
+}
+
 export function BlogSubNav() {
   // The same 15-second poll the shell runs, so TanStack serves both from one
   // request rather than two.
