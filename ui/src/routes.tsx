@@ -64,6 +64,9 @@ const NewsletterDetailScreen = lazy(() =>
 const IssueDetailScreen = lazy(() =>
   import('./screens/IssueDetailScreen').then((m) => ({ default: m.IssueDetailScreen })),
 )
+const RecipientsScreen = lazy(() =>
+  import('./screens/RecipientsScreen').then((m) => ({ default: m.RecipientsScreen })),
+)
 
 export const router = createBrowserRouter([
   {
@@ -87,6 +90,7 @@ export const router = createBrowserRouter([
       { path: 'newsletters', element: <NewslettersScreen /> },
       // Before ':id', or "issues" is parsed as a newsletter id.
       { path: 'newsletters/issues', element: <IssuesScreen /> },
+      { path: 'newsletters/recipients', element: <RecipientsScreen /> },
       { path: 'newsletters/issues/:id', element: <IssueDetailScreen /> },
       { path: 'newsletters/:id', element: <NewsletterDetailScreen /> },
     ],

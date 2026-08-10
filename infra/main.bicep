@@ -33,6 +33,20 @@ param vapidPrivateKey string = ''
 @description('VAPID contact, e.g. mailto:you@example.com. Push services require a way to reach the sender.')
 param vapidSubject string = ''
 
+@description('Email sending. "acs" provisions Azure Communication Services below; "none" leaves email off.')
+@allowed(['none', 'acs'])
+param emailProvider string = 'none'
+@description('The From address, e.g. news@powerplatformninja.com. Must belong to a verified ACS domain.')
+param emailFrom string = ''
+@description('Telegram bot token. Blank = the channel stays off. Telegram is the only channel that can post to a group.')
+@secure()
+param telegramBotToken string = ''
+@description('WhatsApp Cloud API. Individual numbers only (Meta has no group API) and the template must be pre-approved.')
+@secure()
+param whatsappToken string = ''
+param whatsappPhoneNumberId string = ''
+param whatsappTemplateName string = ''
+
 param sqlAdmin string = 'ppnadmin'
 @secure()
 param sqlPassword string
@@ -109,6 +123,34 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
+// ---- email (Azure Communication Services) --------------------------------
+// Only created when emailProvider is 'acs'. The managed domain sends
+// immediately with no DNS, which is what makes the first test possible; a
+// custom domain needs records adding and verifying, so it is a deliberate
+// follow-up rather than part of this template.
+//
+// Not SMTP: Container Apps blocks outbound port 25, and mail leaving a Container
+// Apps egress IP with no SPF/DKIM alignment lands in spam whatever port it uses.
+resource emailService 'Microsoft.Communication/emailServices@2023-04-01' = if (emailProvider == 'acs') {
+  name: '${appName}-email'
+  location: 'global'
+  properties: { dataLocation: 'Europe' }
+}
+resource emailDomain 'Microsoft.Communication/emailServices/domains@2023-04-01' = if (emailProvider == 'acs') {
+  parent: emailService
+  name: 'AzureManagedDomain'
+  location: 'global'
+  properties: { domainManagement: 'AzureManaged' }
+}
+resource comms 'Microsoft.Communication/communicationServices@2023-04-01' = if (emailProvider == 'acs') {
+  name: '${appName}-comms'
+  location: 'global'
+  properties: {
+    dataLocation: 'Europe'
+    linkedDomains: emailProvider == 'acs' ? [emailDomain.id] : []
+  }
+}
+
 // ---- Container Apps environment + files link ----------------------------
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
@@ -178,6 +220,12 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         { name: 'admin-token', value: adminToken }
       ], empty(vapidPrivateKey) ? [] : [
         { name: 'vapid-private-key', value: vapidPrivateKey }
+      ], emailProvider != 'acs' ? [] : [
+        { name: 'acs-connection-string', value: comms.listKeys().primaryConnectionString }
+      ], empty(telegramBotToken) ? [] : [
+        { name: 'telegram-bot-token', value: telegramBotToken }
+      ], empty(whatsappToken) ? [] : [
+        { name: 'whatsapp-token', value: whatsappToken }
       ])
     }
     template: {
@@ -231,6 +279,19 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'PPN_INGEST_INTERVAL_MINUTES', value: '360' }
             { name: 'PPN_REALTIME_INTERVAL_MINUTES', value: '15' }
             { name: 'PPN_REALTIME_QUIET_HOURS', value: '22:00-07:00' }
+            // Where an issue can be read, for the channels that can only carry
+            // a link. Behind Easy Auth, so useful to people in the tenant.
+            { name: 'PPN_APP_URL', value: 'https://${appName}.${env.properties.defaultDomain}' }
+          ], emailProvider != 'acs' ? [] : [
+            { name: 'EMAIL_PROVIDER', value: 'acs' }
+            { name: 'EMAIL_FROM', value: emailFrom }
+            { name: 'ACS_CONNECTION_STRING', secretRef: 'acs-connection-string' }
+          ], empty(telegramBotToken) ? [] : [
+            { name: 'TELEGRAM_BOT_TOKEN', secretRef: 'telegram-bot-token' }
+          ], empty(whatsappToken) ? [] : [
+            { name: 'WHATSAPP_TOKEN', secretRef: 'whatsapp-token' }
+            { name: 'WHATSAPP_PHONE_NUMBER_ID', value: whatsappPhoneNumberId }
+            { name: 'WHATSAPP_TEMPLATE_NAME', value: whatsappTemplateName }
           ], empty(coverApiKey) ? [] : [
             { name: 'COVER_API_KEY', secretRef: 'cover-api-key' }
           ], empty(adminToken) ? [] : [
@@ -252,6 +313,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
+// The managed sender domain, so the first test send can go out with no DNS.
+output emailSenderDomain string = emailProvider == 'acs' ? emailDomain.properties.mailFromSenderDomain : ''
 output appFqdn string = app.properties.configuration.ingress.fqdn
 output principalId string = uami.properties.principalId
 output clientId string = uami.properties.clientId
