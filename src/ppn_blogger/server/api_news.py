@@ -399,8 +399,15 @@ async def list_newsletters() -> list[dict[str, Any]]:
 
 @router.post("/newsletters", status_code=201)
 async def create_newsletter(body: NewsletterBody) -> dict[str, Any]:
+    fields = body.model_dump(exclude_none=True)
+    # `name` is the positional argument, so it must not also arrive in the
+    # splat — that is a TypeError, and it surfaces as a bare 500 because it is
+    # raised before any validation the caller could act on.
+    name = str(fields.pop("name", "")).strip()
+    if not name:
+        raise HTTPException(422, "A newsletter needs a name.")
     try:
-        row = await newsletters.create(body.name, **body.model_dump(exclude_none=True))
+        row = await newsletters.create(name, **fields)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     await _reschedule()
@@ -418,7 +425,11 @@ async def get_newsletter(newsletter_id: int) -> dict[str, Any]:
 @router.patch("/newsletters/{newsletter_id}")
 async def patch_newsletter(newsletter_id: int, body: NewsletterBody) -> dict[str, Any]:
     changes = body.model_dump(exclude_none=True)
-    changes.pop("name", None) if not changes.get("name") else None
+    # The model defaults `name` to "", so a PATCH that does not mean to rename
+    # has to be told apart from one that does — otherwise editing the schedule
+    # would blank the name.
+    if not str(changes.get("name", "")).strip():
+        changes.pop("name", None)
     try:
         row = await newsletters.update(newsletter_id, changes)
     except KeyError as exc:
