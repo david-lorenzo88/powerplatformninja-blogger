@@ -118,6 +118,20 @@ async def compose_and_store(
         status="draft",
     )
 
+    # auto_send is off by default and stays the operator's decision — the crew's
+    # standing rule is that nothing reaches an audience unattended. When it is
+    # on, delivery is a separate queued run rather than inline: the issue is
+    # already safely stored, and a slow provider must not hold this worker.
+    if newsletter.get("auto_send"):
+        from .runs import manager
+
+        await manager().enqueue(
+            "deliver",
+            {"issue_id": issue["id"]},
+            f"Send · {newsletter['name']} #{issue['number']}",
+        )
+        logger.info("auto_send is on — queued delivery for issue %d", issue["id"])
+
     if composed.dropped:
         logger.warning(
             "%d item(s) the editor named were not in the candidate list and were dropped",
@@ -134,6 +148,7 @@ async def compose_and_store(
         "dropped": len(composed.dropped),
         "omitted": len(composed.omitted),
         "skipped": False,
+        "auto_send": bool(newsletter.get("auto_send")),
     }
 
 

@@ -1,13 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
-import { getIssue, issueHtmlUrl, updateIssue } from '../api/client'
+import {
+  getDeliveries,
+  getIssue,
+  issueHtmlUrl,
+  listChannels,
+  listRecipients,
+  retryIssue,
+  sendIssue,
+  updateIssue,
+} from '../api/client'
+import { Modal } from '../components/Modal'
 import { useOnline } from '../hooks/useOnline'
 import { formatTime } from '../lib/format'
-import { card, field, ghostBtn, label, primaryBtn } from '../lib/ui'
+import { card, field, ghostBtn, label, primaryBtn, quietBtn } from '../lib/ui'
 import { IssueStatusChip } from './NewslettersScreen'
 
-type Tab = 'preview' | 'edit' | 'items'
+type Tab = 'preview' | 'edit' | 'items' | 'delivery'
 
 export function IssueDetailScreen() {
   const { id } = useParams()
@@ -15,6 +25,7 @@ export function IssueDetailScreen() {
   const online = useOnline()
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('preview')
+  const [confirming, setConfirming] = useState(false)
 
   const issue = useQuery({
     queryKey: ['issue', issueId],
@@ -36,10 +47,28 @@ export function IssueDetailScreen() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['issue', issueId] }),
   })
 
+  // Polled while anything is still in flight, then left alone — a delivery
+  // that has settled does not change again.
+  const deliveries = useQuery({
+    queryKey: ['deliveries', issueId],
+    queryFn: () => getDeliveries(issueId),
+    enabled: Number.isFinite(issueId),
+    refetchInterval: (q) => (q.state.data && q.state.data.pending > 0 ? 3000 : false),
+  })
+
+  const afterSend = () => {
+    qc.invalidateQueries({ queryKey: ['issue', issueId] })
+    qc.invalidateQueries({ queryKey: ['deliveries', issueId] })
+    qc.invalidateQueries({ queryKey: ['runs'] })
+  }
+  const send = useMutation({ mutationFn: () => sendIssue(issueId), onSuccess: afterSend })
+  const retry = useMutation({ mutationFn: () => retryIssue(issueId), onSuccess: afterSend })
+
   if (issue.isLoading) return <p className="p-6 text-sm text-slate-500">loading…</p>
   if (!issue.data) return <p className="p-6 text-sm text-slate-500">No such issue.</p>
   const i = issue.data
   const settled = i.status === 'sending' || i.status === 'sent'
+  const failed = deliveries.data?.failed ?? 0
 
   return (
     <div className="flex h-full flex-col">
@@ -71,7 +100,7 @@ export function IssueDetailScreen() {
 
         {i.status !== 'skipped' && (
           <nav className="mt-3 flex gap-1">
-            {(['preview', 'edit', 'items'] as Tab[]).map((t) => (
+            {(['preview', 'edit', 'items', 'delivery'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -145,6 +174,42 @@ export function IssueDetailScreen() {
               </details>
             </div>
           </div>
+        ) : tab === 'delivery' ? (
+          <div className="mx-auto max-w-3xl p-4 lg:p-6">
+            {(deliveries.data?.deliveries ?? []).length === 0 ? (
+              <p className="text-sm text-slate-500">Not sent yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {(deliveries.data?.deliveries ?? []).map((d) => (
+                  <li key={d.id} className={`${card} p-3`}>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm text-slate-200">{d.recipient}</span>
+                      <span className="text-xs text-slate-500">{d.channel}</span>
+                      <span
+                        className={`ml-auto text-xs ${
+                          d.status === 'sent'
+                            ? 'text-emerald-300'
+                            : d.status === 'failed'
+                              ? 'text-rose-300'
+                              : d.status === 'skipped'
+                                ? 'text-slate-500'
+                                : 'text-amber-300'
+                        }`}
+                      >
+                        {d.status}
+                      </span>
+                    </div>
+                    {d.error && <p className="mt-1 text-xs text-rose-400">{d.error}</p>}
+                    {d.next_retry_at && (
+                      <p className="mt-1 text-xs text-slate-600">
+                        retrying {formatTime(d.next_retry_at)}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         ) : (
           <div className="mx-auto max-w-3xl p-4 lg:p-6">
             <p className="mb-3 text-xs text-slate-500">
@@ -175,15 +240,104 @@ export function IssueDetailScreen() {
       {i.status !== 'skipped' && (
         <div className="shrink-0 border-t border-slate-800 px-4 py-3 pb-safe lg:px-6">
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-            <button className={ghostBtn} disabled title="Delivery arrives in the next phase">
-              Send…
+            <button
+              className={primaryBtn}
+              disabled={!online || settled || send.isPending}
+              onClick={() => setConfirming(true)}
+            >
+              {settled ? `Already ${i.status}` : send.isPending ? 'Sending…' : 'Send…'}
             </button>
-            <p className="text-xs text-slate-600">
-              Sending is not built yet — issues stay here until delivery lands.
-            </p>
+            {failed > 0 && (
+              <button
+                className={ghostBtn}
+                disabled={!online || retry.isPending}
+                onClick={() => retry.mutate()}
+              >
+                {retry.isPending ? 'Retrying…' : `Retry ${failed} failure${failed === 1 ? '' : 's'}`}
+              </button>
+            )}
+            {deliveries.data && deliveries.data.total > 0 && (
+              <p className="text-xs text-slate-500 lg:ml-auto">
+                {deliveries.data.sent} sent
+                {deliveries.data.failed ? ` · ${deliveries.data.failed} failed` : ''}
+                {deliveries.data.pending ? ` · ${deliveries.data.pending} pending` : ''}
+                {deliveries.data.skipped ? ` · ${deliveries.data.skipped} skipped` : ''}
+              </p>
+            )}
           </div>
         </div>
       )}
+
+      {confirming && (
+        <SendDialog onClose={() => setConfirming(false)} onSend={() => send.mutate()} />
+      )}
     </div>
+  )
+}
+
+// Sending is the one irreversible thing this app does — an email cannot be
+// un-sent — so it goes behind a confirmation that says exactly who will receive
+// it, on which channel, rather than a count.
+function SendDialog({ onClose, onSend }: { onClose: () => void; onSend: () => void }) {
+  const channels = useQuery({ queryKey: ['channels'], queryFn: listChannels })
+  const recipients = useQuery({ queryKey: ['recipients'], queryFn: listRecipients })
+
+  const active = (recipients.data ?? []).filter((r) => r.enabled && !r.failed_at)
+  const configured = new Map((channels.data ?? []).map((c) => [c.id, c]))
+  const willSend = active.filter((r) => configured.get(r.channel)?.configured)
+  const willSkip = active.filter((r) => !configured.get(r.channel)?.configured)
+
+  return (
+    <Modal title="Send this issue" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        {willSend.length === 0 ? (
+          <p className="text-sm text-amber-400">
+            Nobody is set up to receive this. Add a recipient on a configured channel — or
+            use <span className="text-slate-300">Copy out by hand</span>, which needs no setup.
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-slate-300">
+              This will go to {willSend.length} recipient{willSend.length === 1 ? '' : 's'}:
+            </p>
+            <ul className={`${card} max-h-56 overflow-auto p-3`}>
+              {willSend.map((r) => (
+                <li key={r.id} className="py-0.5 text-xs text-slate-400">
+                  <span className="text-slate-300">{r.name}</span>
+                  <span className="text-slate-600"> · {r.channel}</span>
+                  {r.address && <span className="text-slate-600"> · {r.address}</span>}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {willSkip.length > 0 && (
+          <p className="rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
+            {willSkip.length} recipient{willSkip.length === 1 ? '' : 's'} will be skipped — their
+            channel is not configured. Skipped is not failed; nothing is lost and they can be
+            sent to later.
+          </p>
+        )}
+
+        <p className="text-xs text-slate-600">This cannot be undone.</p>
+
+        <div className="flex flex-col gap-2 lg:flex-row lg:justify-end">
+          <button className={quietBtn} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className={primaryBtn}
+            disabled={willSend.length === 0}
+            onClick={() => {
+              onSend()
+              onClose()
+            }}
+          >
+            Send now
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }

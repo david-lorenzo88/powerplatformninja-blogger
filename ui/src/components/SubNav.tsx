@@ -51,6 +51,7 @@ export function LettersSubNav() {
       items={[
         { to: '/newsletters', label: 'Newsletters', end: true },
         { to: '/newsletters/issues', label: 'Issues' },
+        { to: '/newsletters/recipients', label: 'Recipients' },
       ]}
     />
   )

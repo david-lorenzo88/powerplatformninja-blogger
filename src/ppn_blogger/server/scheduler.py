@@ -45,7 +45,13 @@ from .db import SchedulerJob, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.scheduler")
 
-FETCH, WATCH, PRUNE, LETTERS = "fetch", "watch", "prune", "newsletters"
+FETCH, WATCH, PRUNE, LETTERS, RETRIES = (
+    "fetch",
+    "watch",
+    "prune",
+    "newsletters",
+    "retry_deliveries",
+)
 
 
 @dataclass(slots=True)
@@ -133,6 +139,36 @@ async def _any_scheduled_newsletters() -> bool:
     return bool(count)
 
 
+async def _run_retries() -> str:
+    """Re-attempt deliveries whose backoff has expired.
+
+    Folded into the same due-time horizon as everything else rather than given
+    its own poll — and it only exists while something is actually waiting, so a
+    quiet system holds nothing awake.
+    """
+    from .delivery import deliver_issue, due_retries
+
+    retried = 0
+    for issue_id in await due_retries():
+        await deliver_issue(issue_id, only_pending=True)
+        retried += 1
+    return f"{retried} issue(s) retried"
+
+
+async def _any_pending_deliveries() -> bool:
+    from sqlalchemy import func
+
+    from .db import Delivery
+
+    async with session() as s:
+        count = await s.scalar(
+            select(func.count())
+            .select_from(Delivery)
+            .where(Delivery.status == "pending", Delivery.next_retry_at.is_not(None))
+        )
+    return bool(count)
+
+
 async def _run_prune() -> str:
     from .news_store import prune_articles
 
@@ -178,6 +214,13 @@ def _jobs() -> list[Job]:
             lambda: news.newsletter_check_minutes,
             _run_newsletters,
             _any_scheduled_newsletters,
+        ),
+        Job(
+            RETRIES,
+            "Retry failed deliveries",
+            lambda: 5,
+            _run_retries,
+            _any_pending_deliveries,
         ),
         Job(PRUNE, "Prune old articles", lambda: news.prune_interval_hours * 60, _run_prune, _always),
     ]

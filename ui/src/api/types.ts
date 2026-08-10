@@ -15,6 +15,7 @@ export type RunKind =
   | 'cover'
   | 'ingest'
   | 'newsletter'
+  | 'deliver'
 
 export type RunStatus =
   | 'queued'
@@ -552,4 +553,58 @@ export interface NewsletterPreview {
   max_items?: number
   enough?: boolean
   reason?: string
+}
+
+
+// -- Delivery ----------------------------------------------------------------
+
+export type ChannelId = 'webpush' | 'manual' | 'email' | 'telegram' | 'whatsapp'
+export type DeliveryStatus = 'pending' | 'sent' | 'failed' | 'skipped'
+
+export interface ChannelInfo {
+  id: ChannelId
+  label: string
+  // Broadcast channels have no per-recipient target — web push goes to every
+  // subscribed browser, which is not a recipient row.
+  broadcast: boolean
+  configured: boolean
+  detail: string
+}
+
+export interface Recipient {
+  id: number
+  channel: ChannelId
+  address: string
+  name: string
+  enabled: boolean
+  newsletter_ids: number[]
+  notes: string
+  // Set when a channel reported the address is permanently bad. The recipient
+  // is parked rather than deleted; re-enabling clears it.
+  failed_at: string | null
+  last_error: string
+  created_at: string | null
+}
+
+export interface DeliveryRow {
+  id: number
+  channel: ChannelId
+  status: DeliveryStatus
+  attempts: number
+  error: string
+  provider_message_id: string
+  recipient_id: number | null
+  recipient: string
+  sent_at: string | null
+  next_retry_at: string | null
+}
+
+export interface DeliverySummary {
+  issue_id: number
+  total: number
+  sent: number
+  failed: number
+  pending: number
+  skipped: number
+  deliveries: DeliveryRow[]
 }
