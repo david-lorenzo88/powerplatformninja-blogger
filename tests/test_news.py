@@ -11,6 +11,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from ppn_blogger import news
 from ppn_blogger.news import (
     FetchedEntry,
     canonical_url,
@@ -264,6 +265,25 @@ def test_discover_feeds_in_html_ignores_non_feed_alternates() -> None:
 def test_discover_feeds_in_html_survives_rubbish() -> None:
     assert discover_feeds_in_html("", "https://example.com") == []
     assert discover_feeds_in_html("<<<>>>", "https://example.com") == []
+
+
+def test_the_user_agent_carries_no_url() -> None:
+    """A contact URL in the User-Agent is what gets us blocked.
+
+    `name/version (+https://site)` is the polite convention and it is exactly
+    what Cloudflare's managed rules refuse: measured against a real host, the
+    same request was 403 with the URL and 200 without it, while a browser string
+    and a missing header both passed. Reddit's rate limiter relaxed too.
+
+    This test exists because the polite form is the one a future reader will want
+    to restore.
+    """
+    from ppn_blogger import tools
+
+    assert "http" not in news.USER_AGENT.lower()
+    assert news.USER_AGENT.startswith("ppn-blogger")
+    # One answer to "who are we" — the crew's fetching is behind the same rules.
+    assert tools._USER_AGENT == news.USER_AGENT
 
 
 def test_fetched_entry_defaults_are_not_shared() -> None:

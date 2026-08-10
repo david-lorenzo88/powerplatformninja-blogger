@@ -20,6 +20,7 @@ from .api import router
 from .api_news import router as news_router
 from .db import engine, init_db
 from .runs import manager
+from .scheduler import scheduler
 
 logger = logging.getLogger("ppn.server")
 
@@ -70,10 +71,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # own reading of sources.yaml is untouched.
     await seed_feeds()
     await manager().start()
+    # After the run manager, because the scheduler enqueues onto it. Off unless
+    # PPN_SCHEDULER_ENABLED, so a laptop `ppn serve` never starts polling real
+    # feeds; sync_jobs() still runs so the schedule is visible either way.
+    await scheduler().start()
     logger.info("ppn server ready")
     try:
         yield
     finally:
+        await scheduler().stop()
         await manager().stop()
         await engine().dispose()
 

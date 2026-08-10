@@ -5,6 +5,7 @@ import {
   ApiError,
   createFeed,
   getNewsSummary,
+  getSchedule,
   listFeedGroups,
   listFeeds,
   refreshAllFeeds,
@@ -15,7 +16,7 @@ import { Modal } from '../components/Modal'
 import { NewsSubNav } from '../components/SubNav'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { useOnline } from '../hooks/useOnline'
-import { HEALTH_STYLES, relativeTime } from '../lib/format'
+import { HEALTH_STYLES, relativeTime, toDate } from '../lib/format'
 import { field, ghostBtn, label, primaryBtn, quietBtn, rowCard } from '../lib/ui'
 
 export function FeedsScreen() {
@@ -66,6 +67,8 @@ export function FeedsScreen() {
         <div className="mt-3">
           <NewsSubNav />
         </div>
+
+        <ScheduleBar />
 
         {failing > 0 && (
           // A feed that has quietly started failing is the whole reason this
@@ -179,6 +182,60 @@ export function FeedsScreen() {
       {adding && <AddFeedDialog onClose={() => setAdding(false)} />}
     </div>
   )
+}
+
+// When the feeds next refresh themselves, and what that cadence costs.
+//
+// The auto-pause line is not decoration. Azure SQL is serverless with a
+// 60-minute idle pause, so watching even one feed closely means it never pauses
+// — the difference between near-zero and roughly $150-200/month. That belongs
+// on screen next to the setting that causes it, not buried in a config file.
+function ScheduleBar() {
+  const schedule = useQuery({
+    queryKey: ['schedule'],
+    queryFn: getSchedule,
+    refetchInterval: 60_000,
+  })
+  if (!schedule.data) return null
+  const { enabled, jobs, watched_feeds, db_can_autopause } = schedule.data
+  const fetchJob = jobs.find((j) => j.key === 'fetch')
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+      {enabled ? (
+        <span>
+          Next fetch{' '}
+          <span className="text-slate-300">
+            {fetchJob?.next_due_at ? relativeToNow(fetchJob.next_due_at) : 'not scheduled'}
+          </span>
+        </span>
+      ) : (
+        <span className="text-slate-600">Automatic fetching is off — use Fetch now.</span>
+      )}
+      {watched_feeds > 0 && (
+        <span>
+          <span className="text-slate-300">{watched_feeds}</span> watched closely
+        </span>
+      )}
+      {!db_can_autopause && (
+        <span className="text-amber-400" title="Azure SQL cannot idle at this cadence">
+          database stays awake · ~$150–200/mo
+        </span>
+      )}
+      {fetchJob?.last_error && <span className="text-rose-400">{fetchJob.last_error}</span>}
+    </div>
+  )
+}
+
+// "in 2h" rather than "2h ago" — relativeTime only looks backwards.
+function relativeToNow(iso: string): string {
+  const seconds = Math.round((toDate(iso).getTime() - Date.now()) / 1000)
+  if (seconds <= 0) return 'due now'
+  if (seconds < 90) return 'in under a minute'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `in ${minutes}m`
+  const hours = Math.round(minutes / 60)
+  return hours < 48 ? `in ${hours}h` : `in ${Math.round(hours / 24)}d`
 }
 
 export function HealthChip({ feed }: { feed: Feed }) {
