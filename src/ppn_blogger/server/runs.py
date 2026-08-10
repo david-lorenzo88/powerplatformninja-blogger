@@ -642,6 +642,15 @@ class RunManager:
             cover = await build_cover(draft, settings)
             return cover.model_dump(mode="json")
 
+        if kind == "deliver":
+            from .delivery import deliver_issue, retry_issue
+
+            issue_id = int(params["issue_id"])
+            action = retry_issue if params.get("retry") else deliver_issue
+            return await asyncio.wait_for(
+                action(issue_id), timeout=settings.delivery.timeout_minutes * 60
+            )
+
         if kind == "newsletter":
             # Costs model calls and takes minutes, so it belongs in the queue
             # like any other run — same log, same cancellation, same history.

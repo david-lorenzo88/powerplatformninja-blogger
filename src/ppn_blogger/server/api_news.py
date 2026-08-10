@@ -401,7 +401,7 @@ async def list_newsletters() -> list[dict[str, Any]]:
 async def create_newsletter(body: NewsletterBody) -> dict[str, Any]:
     fields = body.model_dump(exclude_none=True)
     # `name` is the positional argument, so it must not also arrive in the
-    # splat — that is a TypeError, and it surfaces as a bare 500 because it is
+    # splat — that is a TypeError, and it 500s rather than 422s because it is
     # raised before any validation the caller could act on.
     name = str(fields.pop("name", "")).strip()
     if not name:
@@ -425,9 +425,9 @@ async def get_newsletter(newsletter_id: int) -> dict[str, Any]:
 @router.patch("/newsletters/{newsletter_id}")
 async def patch_newsletter(newsletter_id: int, body: NewsletterBody) -> dict[str, Any]:
     changes = body.model_dump(exclude_none=True)
-    # The model defaults `name` to "", so a PATCH that does not mean to rename
-    # has to be told apart from one that does — otherwise editing the schedule
-    # would blank the name.
+    # An empty name would blank the newsletter; the model defaults it to "" so
+    # a PATCH that does not mean to rename has to be told apart from one that
+    # does.
     if not str(changes.get("name", "")).strip():
         changes.pop("name", None)
     try:
@@ -512,3 +512,120 @@ async def get_issue_html(issue_id: int) -> str:
     if row is None:
         raise HTTPException(404, f"No issue {issue_id}")
     return row.html or "<p>This issue has no rendered body.</p>"
+
+
+# ---------------------------------------------------------------------------
+# Recipients and delivery
+# ---------------------------------------------------------------------------
+
+
+class RecipientCreate(BaseModel):
+    channel: str = Field(..., min_length=1)
+    address: str = ""
+    name: str = ""
+    newsletter_ids: list[int] = Field(default_factory=list)
+
+
+class RecipientPatch(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    notes: str | None = None
+    newsletter_ids: list[int] | None = None
+
+
+@router.get("/channels")
+async def list_channels() -> list[dict[str, Any]]:
+    """Which channels exist and whether each is configured.
+
+    Shaped like the dots on /api/health, and settings-only — no database, so it
+    stays cheap enough for the UI to poll.
+    """
+    from .channels import describe_channels
+
+    return describe_channels()
+
+
+@router.get("/recipients")
+async def list_recipients() -> list[dict[str, Any]]:
+    return await newsletters.list_recipients()
+
+
+@router.post("/recipients", status_code=201)
+async def create_recipient(body: RecipientCreate) -> dict[str, Any]:
+    try:
+        return await newsletters.create_recipient(
+            body.channel, body.address, name=body.name, newsletter_ids=body.newsletter_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.patch("/recipients/{recipient_id}")
+async def patch_recipient(recipient_id: int, body: RecipientPatch) -> dict[str, Any]:
+    try:
+        return await newsletters.update_recipient(
+            recipient_id, body.model_dump(exclude_none=True)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete("/recipients/{recipient_id}")
+async def delete_recipient(recipient_id: int) -> dict[str, Any]:
+    if not await newsletters.delete_recipient(recipient_id):
+        raise HTTPException(404, f"No recipient {recipient_id}")
+    return {"deleted": True}
+
+
+@router.post("/issues/{issue_id}/send", status_code=202)
+async def send_issue(issue_id: int) -> dict[str, str]:
+    """Queue delivery. Refuses an issue that has already gone out."""
+    issue = await newsletters.get_issue(issue_id)
+    if issue is None:
+        raise HTTPException(404, f"No issue {issue_id}")
+    if issue["status"] in ("sending", "sent"):
+        raise HTTPException(409, f"Issue {issue_id} is already {issue['status']}.")
+    if issue["status"] == "skipped":
+        raise HTTPException(409, "This issue was skipped — there is nothing to send.")
+
+    run_id = await manager().enqueue(
+        "deliver",
+        {"issue_id": issue_id},
+        f"Send · {issue['newsletter_name']} #{issue['number']}",
+    )
+    return {"id": run_id, "run_id": run_id}
+
+
+@router.post("/issues/{issue_id}/retry", status_code=202)
+async def retry_issue(issue_id: int) -> dict[str, str]:
+    """Re-attempt only the failed deliveries. Anything already sent is left alone."""
+    if await newsletters.get_issue(issue_id) is None:
+        raise HTTPException(404, f"No issue {issue_id}")
+    run_id = await manager().enqueue(
+        "deliver", {"issue_id": issue_id, "retry": True}, f"Retry · issue {issue_id}"
+    )
+    return {"id": run_id, "run_id": run_id}
+
+
+@router.get("/issues/{issue_id}/deliveries")
+async def issue_deliveries(issue_id: int) -> dict[str, Any]:
+    from .delivery import summary
+
+    return await summary(issue_id)
+
+
+@router.post("/recipients/{recipient_id}/test")
+async def test_recipient(recipient_id: int, issue_id: int) -> dict[str, Any]:
+    """Send one issue to one recipient, leaving the issue's own state untouched.
+
+    What you use before trusting a channel — it proves the credentials and the
+    address, and records nothing that would confuse the delivery history.
+    """
+    from .delivery import test_send
+
+    try:
+        return await test_send(recipient_id, issue_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

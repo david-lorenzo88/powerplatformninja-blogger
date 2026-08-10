@@ -384,6 +384,123 @@ class NewsSettings:
 
 
 @dataclass(slots=True)
+class EmailSettings:
+    """Sending issues by email.
+
+    `EMAIL_PROVIDER` is deliberately unprefixed, matching the existing
+    SEARCH_PROVIDER and COVER_PROVIDER; the vendor blocks carry their own
+    prefixes because they name a third-party service.
+
+    ACS is the real target. SMTP is kept for local development only: Container
+    Apps blocks outbound port 25, and mail sent from a Container Apps egress IP
+    with no SPF/DKIM alignment lands in spam whatever port it leaves by.
+    """
+
+    provider: str = field(default_factory=lambda: _env("EMAIL_PROVIDER", "none").lower())
+    from_address: str = field(default_factory=lambda: _env("EMAIL_FROM"))
+    from_name: str = field(default_factory=lambda: _env("EMAIL_FROM_NAME", "Power Platform Ninja"))
+    # Azure Communication Services. Managed identity when only the endpoint is
+    # set; the connection string is the fallback for local runs.
+    acs_endpoint: str = field(default_factory=lambda: _env("ACS_ENDPOINT"))
+    acs_connection_string: str = field(default_factory=lambda: _env("ACS_CONNECTION_STRING"))
+    # SMTP, local development only.
+    smtp_host: str = field(default_factory=lambda: _env("SMTP_HOST"))
+    smtp_port: int = field(default_factory=lambda: _env_int("SMTP_PORT", 587))
+    smtp_username: str = field(default_factory=lambda: _env("SMTP_USERNAME"))
+    smtp_password: str = field(default_factory=lambda: _env("SMTP_PASSWORD"))
+    smtp_starttls: bool = field(default_factory=lambda: _env_bool("SMTP_STARTTLS", True))
+
+    @property
+    def is_configured(self) -> bool:
+        if self.provider == "acs":
+            return bool(self.from_address and (self.acs_endpoint or self.acs_connection_string))
+        if self.provider == "smtp":
+            return bool(self.from_address and self.smtp_host)
+        return False
+
+    @property
+    def status_detail(self) -> str:
+        if self.provider == "none":
+            return "EMAIL_PROVIDER is not set"
+        if not self.from_address:
+            return "EMAIL_FROM is not set"
+        if self.provider == "acs" and not (self.acs_endpoint or self.acs_connection_string):
+            return "ACS_ENDPOINT or ACS_CONNECTION_STRING is not set"
+        if self.provider == "smtp" and not self.smtp_host:
+            return "SMTP_HOST is not set"
+        return f"{self.provider} as {self.from_address}"
+
+
+@dataclass(slots=True)
+class TelegramSettings:
+    """A bot token is the whole configuration.
+
+    Telegram is the only channel here that can post to a *group*: a group or
+    channel is just a chat id (negative for groups), and the bot has to be added
+    to it first. That is why it exists — WhatsApp has no group API at all.
+    """
+
+    bot_token: str = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.bot_token)
+
+    @property
+    def status_detail(self) -> str:
+        return "ready" if self.is_configured else "TELEGRAM_BOT_TOKEN is not set"
+
+
+@dataclass(slots=True)
+class WhatsAppSettings:
+    """Meta's Cloud API, and it is narrower than it looks.
+
+    Individual phone numbers only — there is no group API, which is why Telegram
+    carries that case. And a newsletter is a business-initiated message outside
+    the 24-hour service window, so it can only be a **pre-approved template**,
+    billed per conversation. The template therefore carries a short teaser and a
+    link rather than the issue itself.
+    """
+
+    token: str = field(default_factory=lambda: _env("WHATSAPP_TOKEN"))
+    phone_number_id: str = field(default_factory=lambda: _env("WHATSAPP_PHONE_NUMBER_ID"))
+    template_name: str = field(default_factory=lambda: _env("WHATSAPP_TEMPLATE_NAME"))
+    template_language: str = field(
+        default_factory=lambda: _env("WHATSAPP_TEMPLATE_LANGUAGE", "en")
+    )
+    api_version: str = field(default_factory=lambda: _env("WHATSAPP_API_VERSION", "v21.0"))
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.token and self.phone_number_id and self.template_name)
+
+    @property
+    def status_detail(self) -> str:
+        missing = [
+            name
+            for name, value in (
+                ("WHATSAPP_TOKEN", self.token),
+                ("WHATSAPP_PHONE_NUMBER_ID", self.phone_number_id),
+                ("WHATSAPP_TEMPLATE_NAME", self.template_name),
+            )
+            if not value
+        ]
+        return "ready" if not missing else f"{', '.join(missing)} not set"
+
+
+@dataclass(slots=True)
+class DeliverySettings:
+    max_attempts: int = field(default_factory=lambda: _env_int("PPN_DELIVERY_MAX_ATTEMPTS", 3))
+    concurrency: int = field(default_factory=lambda: _env_int("PPN_DELIVERY_CONCURRENCY", 5))
+    timeout_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_DELIVERY_TIMEOUT_MINUTES", 15)
+    )
+    # Where an issue can be read, for the channels that can only carry a link.
+    # Behind Easy Auth, so only useful to people in the tenant.
+    app_url: str = field(default_factory=lambda: _env("PPN_APP_URL"))
+
+
+@dataclass(slots=True)
 class SchedulerSettings:
     """The first periodic work in this codebase.
 
@@ -413,6 +530,10 @@ class Settings:
     push: PushSettings = field(default_factory=PushSettings)
     news: NewsSettings = field(default_factory=NewsSettings)
     scheduler: SchedulerSettings = field(default_factory=SchedulerSettings)
+    email: EmailSettings = field(default_factory=EmailSettings)
+    telegram: TelegramSettings = field(default_factory=TelegramSettings)
+    whatsapp: WhatsAppSettings = field(default_factory=WhatsAppSettings)
+    delivery: DeliverySettings = field(default_factory=DeliverySettings)
 
     # Config documents are pulled from the active ConfigSource (YAML files by
     # default, the database when the server is running) and cached until that

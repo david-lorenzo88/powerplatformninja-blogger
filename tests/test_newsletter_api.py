@@ -1,7 +1,7 @@
-"""The newsletter endpoints, over real HTTP.
+"""The newsletter and delivery endpoints, over real HTTP.
 
 This file exists because of a bug that reached production. Every newsletter test
-called ``newsletters.create()`` directly, so the *endpoint* was never exercised —
+called `newsletters.create()` directly, so the *endpoint* was never exercised —
 and the endpoint passed ``name`` both positionally and in the keyword splat,
 which is a TypeError and a bare 500 with nothing useful in it. The store was
 correct the whole time; only the layer that assembles the arguments was wrong.
@@ -12,6 +12,8 @@ lives.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -37,6 +39,22 @@ async def api(monkeypatch, database_url):
 
     await runs.reset_manager()
     set_config_source(None)
+
+
+async def _wait_for(client, run_id, timeout=20):
+    from ppn_blogger.server.runs import TERMINAL
+
+    for _ in range(timeout * 10):
+        body = (await client.get(f"/api/runs/{run_id}")).json()
+        if body["status"] in TERMINAL:
+            return body
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"run {run_id} never finished")
+
+
+# ---------------------------------------------------------------------------
+# Newsletters
+# ---------------------------------------------------------------------------
 
 
 async def test_creating_a_newsletter_over_http(api) -> None:
@@ -137,8 +155,111 @@ async def test_preview_of_an_empty_newsletter_explains_itself(api) -> None:
     assert (await api.get("/api/news/newsletters/999999/preview")).status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Recipients and delivery
+# ---------------------------------------------------------------------------
+
+
+async def test_channels_report_what_is_configured(api) -> None:
+    channels = (await api.get("/api/news/channels")).json()
+    ids = {c["id"] for c in channels}
+    assert ids == {"webpush", "manual", "email", "telegram", "whatsapp"}
+
+    manual = next(c for c in channels if c["id"] == "manual")
+    # The one channel that needs no setup at all — which is what makes the
+    # feature usable before any vendor decision.
+    assert manual["configured"] is True and manual["broadcast"] is True
+
+    whatsapp = next(c for c in channels if c["id"] == "whatsapp")
+    assert whatsapp["broadcast"] is False
+
+
+async def test_recipient_crud_over_http(api) -> None:
+    created = await api.post(
+        "/api/news/recipients",
+        json={"channel": "email", "address": "Someone@Example.com", "name": "Someone"},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    # Normalised on the way in, so the same person cannot be added twice.
+    assert body["address"] == "someone@example.com"
+
+    duplicate = await api.post(
+        "/api/news/recipients", json={"channel": "email", "address": " someone@example.com "}
+    )
+    assert duplicate.status_code == 409
+
+    patched = (
+        await api.patch(f"/api/news/recipients/{body['id']}", json={"enabled": False})
+    ).json()
+    assert patched["enabled"] is False
+
+    assert (await api.delete(f"/api/news/recipients/{body['id']}")).status_code == 200
+    assert (await api.get("/api/news/recipients")).json() == []
+
+
+async def test_an_unknown_channel_is_refused_by_the_api(api) -> None:
+    response = await api.post(
+        "/api/news/recipients", json={"channel": "carrier-pigeon", "address": "x"}
+    )
+    assert response.status_code == 409
+    assert "Unknown channel" in response.json()["detail"]
+
+
+async def test_sending_an_issue_is_a_run(api, monkeypatch) -> None:
+    from ppn_blogger.server import newsletters
+    from ppn_blogger.server.channels import CHANNELS, DeliveryResult
+
+    letter = (await api.post("/api/news/newsletters", json={"name": "Weekly"})).json()
+    issue = await newsletters.save_issue(
+        letter["id"],
+        {"subject": "s", "sections": [], "article_ids": []},
+        {"markdown": "m", "html": "<p>h</p>", "text_body": "t"},
+    )
+    await api.post("/api/news/recipients", json={"channel": "manual", "address": ""})
+
+    async def send(payload, target):
+        return DeliveryResult(True, provider_message_id="ok")
+
+    monkeypatch.setattr(CHANNELS["manual"], "send", send)
+
+    started = await api.post(f"/api/news/issues/{issue['id']}/send")
+    assert started.status_code == 202
+    finished = await _wait_for(api, started.json()["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    assert finished["result"]["sent"] == 1
+
+    deliveries = (await api.get(f"/api/news/issues/{issue['id']}/deliveries")).json()
+    assert deliveries["sent"] == 1
+
+    # An issue that has gone out cannot be sent again by accident.
+    again = await api.post(f"/api/news/issues/{issue['id']}/send")
+    assert again.status_code == 409
+    assert "already sent" in again.json()["detail"]
+
+
+async def test_a_skipped_issue_cannot_be_sent_over_http(api) -> None:
+    from ppn_blogger.server import newsletters
+
+    letter = (await api.post("/api/news/newsletters", json={"name": "Quiet"})).json()
+    issue = await newsletters.save_issue(
+        letter["id"],
+        {"subject": "", "sections": [], "article_ids": [], "skipped_reason": "too little"},
+        {"markdown": "", "html": "", "text_body": ""},
+        status="skipped",
+    )
+    response = await api.post(f"/api/news/issues/{issue['id']}/send")
+    assert response.status_code == 409
+    assert "nothing to send" in response.json()["detail"]
+
+
+async def test_send_and_deliveries_404_for_an_unknown_issue(api) -> None:
+    assert (await api.post("/api/news/issues/999999/send")).status_code == 404
+    assert (await api.post("/api/news/issues/999999/retry")).status_code == 404
+
+
 async def test_no_newsletter_route_redirects(api) -> None:
     """Same rule as the rest of the router: a trailing slash 404s, never 307s."""
-    for path in ("/api/news/newsletters", "/api/news/issues"):
+    for path in ("/api/news/newsletters", "/api/news/recipients", "/api/news/channels"):
         assert (await api.get(path)).status_code == 200
         assert (await api.get(path + "/")).status_code == 404

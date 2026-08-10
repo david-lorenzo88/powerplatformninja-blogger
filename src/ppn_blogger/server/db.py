@@ -163,7 +163,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # suggest | explore | shortlist | write | cover | ingest | newsletter
+    # suggest | explore | shortlist | write | cover | ingest | newsletter | deliver
     kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
@@ -680,6 +680,94 @@ Index(
 )
 
 
+# ---------------------------------------------------------------------------
+# Delivery: who receives an issue, and what happened when it was sent
+# ---------------------------------------------------------------------------
+
+
+class Recipient(Base):
+    """One address on one channel.
+
+    The list is private and managed by the operator, so there is no signup flow,
+    no double opt-in and no consent record. ``unsubscribe_token`` and
+    ``consent_source`` are nonetheless declared, unused: `create_all` never
+    ALTERs, so they are the difference between "add a public signup later" and
+    "hand-run DDL against production later". They cost two nullable columns.
+    """
+
+    __tablename__ = "recipients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # email | telegram | whatsapp | webpush | manual
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    # An address, a Telegram chat id, or an E.164 number. Empty for the
+    # broadcast channels, which have no per-recipient target.
+    address: Mapped[str] = mapped_column(Text, default="")
+    # sha256 of the normalised address. Indexed instead of `address` for the same
+    # reason article URLs are: an indexable key has to be bounded.
+    address_hash: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(200), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Empty means every newsletter.
+    newsletter_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    # Set when a channel reports the address is permanently bad, so a dead
+    # address stops being retried without being deleted.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(String(400), default="")
+    unsubscribe_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consent_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index("ix_recipients_addr", Recipient.channel, Recipient.address_hash, unique=True)
+
+
+class Delivery(Base):
+    """One attempt to get one issue to one recipient.
+
+    Written as ``pending`` *before* anything is sent, so the intent is durable
+    before the side effect — the same ordering discipline as ``reviews.decide``.
+    A process that dies mid-send leaves rows saying exactly how far it got.
+    """
+
+    __tablename__ = "deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_id: Mapped[int] = mapped_column(Integer, ForeignKey("newsletter_issues.id"), index=True)
+    # Null for a broadcast channel (web push goes to every subscribed browser,
+    # which is not a recipient row).
+    recipient_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("recipients.id"), nullable=True, index=True
+    )
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    # pending | sent | failed | skipped
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    provider_message_id: Mapped[str] = mapped_column(String(200), default="")
+    error: Mapped[str] = mapped_column(String(500), default="")
+    # Null once the row is terminal. A retry job selects on this rather than
+    # scanning every pending row.
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_deliveries_issue_recipient", Delivery.issue_id, Delivery.recipient_id)
+Index("ix_deliveries_retry", Delivery.status, Delivery.next_retry_at)
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -739,6 +827,7 @@ __all__ = [
     "Article",
     "Base",
     "ConfigDocument",
+    "Delivery",
     "DraftVersion",
     "Feed",
     "FeedGroup",
@@ -749,6 +838,7 @@ __all__ = [
     "NewsletterIssueItem",
     "Post",
     "PushSubscription",
+    "Recipient",
     "Run",
     "RunEvent",
     "SchedulerJob",

@@ -33,6 +33,7 @@ from .db import (
     NewsletterGroup,
     NewsletterIssue,
     NewsletterIssueItem,
+    Recipient,
     as_utc,
     session,
     utcnow,
@@ -664,3 +665,110 @@ def _issue_dict(row: NewsletterIssue, newsletter_name: str, *, full: bool = Fals
 def settings_defaults() -> dict[str, Any]:
     """Section ids the UI can offer, straight from the config document."""
     return {"sections": get_settings().newsletter_sections}
+
+
+# ---------------------------------------------------------------------------
+# Recipients
+# ---------------------------------------------------------------------------
+
+
+def _normalise_address(channel_id: str, address: str) -> str:
+    """One spelling per address, so the same person cannot be added twice.
+
+    Email is case-insensitive in practice; a phone number is the same number
+    with or without its plus and spaces; a Telegram chat id is already canonical.
+    """
+    raw = (address or "").strip()
+    if channel_id == "email":
+        return raw.lower()
+    if channel_id == "whatsapp":
+        return "+" + "".join(ch for ch in raw if ch.isdigit())
+    return raw
+
+
+async def list_recipients() -> list[dict[str, Any]]:
+    async with session() as s:
+        rows = list(
+            (await s.execute(select(Recipient).order_by(Recipient.channel, Recipient.name))).scalars()
+        )
+    return [_recipient_dict(r) for r in rows]
+
+
+async def create_recipient(
+    channel_id: str, address: str, *, name: str = "", newsletter_ids: list[int] | None = None
+) -> dict[str, Any]:
+    from hashlib import sha256
+
+    from .channels import channel as get_channel
+
+    impl = get_channel(channel_id)
+    if impl is None:
+        raise ValueError(f"Unknown channel {channel_id!r}")
+
+    normalised = _normalise_address(channel_id, address)
+    if not normalised and not impl.broadcast:
+        raise ValueError(f"{impl.label} needs an address.")
+
+    digest = sha256(f"{channel_id}:{normalised}".encode()).hexdigest()
+    async with session() as s:
+        clash = (
+            await s.execute(
+                select(Recipient).where(
+                    Recipient.channel == channel_id, Recipient.address_hash == digest
+                )
+            )
+        ).scalar_one_or_none()
+        if clash is not None:
+            raise ValueError(f"That {impl.label} recipient is already on the list.")
+        row = Recipient(
+            channel=channel_id,
+            address=normalised,
+            address_hash=digest,
+            name=name.strip()[:200] or normalised or impl.label,
+            newsletter_ids=list(newsletter_ids or []),
+        )
+        s.add(row)
+        await s.commit()
+        return _recipient_dict(row)
+
+
+async def update_recipient(recipient_id: int, changes: dict[str, Any]) -> dict[str, Any]:
+    async with session() as s:
+        row = await s.get(Recipient, recipient_id)
+        if row is None:
+            raise KeyError(f"No recipient {recipient_id}")
+        for key in ("name", "enabled", "notes", "newsletter_ids"):
+            if key in changes and changes[key] is not None:
+                setattr(row, key, changes[key])
+        if changes.get("enabled"):
+            # Re-enabling is "try again": clear the parked failure, or the very
+            # next send skips it for a reason that is no longer true.
+            row.failed_at = None
+            row.last_error = ""
+        await s.commit()
+        return _recipient_dict(row)
+
+
+async def delete_recipient(recipient_id: int) -> bool:
+    async with session() as s:
+        row = await s.get(Recipient, recipient_id)
+        if row is None:
+            return False
+        await s.delete(row)
+        await s.commit()
+    return True
+
+
+def _recipient_dict(row: Recipient) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "channel": row.channel,
+        "address": row.address,
+        "name": row.name,
+        "enabled": row.enabled,
+        "newsletter_ids": row.newsletter_ids or [],
+        "notes": row.notes,
+        "failed_at": _iso(row.failed_at),
+        "last_error": row.last_error,
+        "created_at": _iso(row.created_at),
+    }

@@ -32,7 +32,10 @@ import type {
   NewsletterIssue,
   NewsletterIssueSummary,
   NewsletterPreview,
+  ChannelInfo,
+  DeliverySummary,
   NewsletterSummary,
+  Recipient,
   Schedule,
   SourceReview,
   SourceReviewStatus,
@@ -426,6 +429,40 @@ export const updateIssue = (id: number, body: Partial<NewsletterIssue>) =>
 
 // The rendered email, for the sandboxed preview frame.
 export const issueHtmlUrl = (id: number) => `${API_BASE}/news/issues/${id}/html`
+
+// -- Delivery ----------------------------------------------------------------
+
+export const listChannels = () => request<ChannelInfo[]>('/news/channels')
+
+export const listRecipients = () => request<Recipient[]>('/news/recipients')
+
+export const createRecipient = (body: {
+  channel: string
+  address: string
+  name?: string
+  newsletter_ids?: number[]
+}) => request<Recipient>('/news/recipients', { method: 'POST', body: JSON.stringify(body) })
+
+export const updateRecipient = (id: number, body: Partial<Recipient>) =>
+  request<Recipient>(`/news/recipients/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+
+export const deleteRecipient = (id: number) =>
+  request<{ deleted: boolean }>(`/news/recipients/${id}`, { method: 'DELETE' })
+
+export const sendIssue = (id: number) =>
+  request<{ id: string; run_id: string }>(`/news/issues/${id}/send`, { method: 'POST' })
+
+export const retryIssue = (id: number) =>
+  request<{ id: string; run_id: string }>(`/news/issues/${id}/retry`, { method: 'POST' })
+
+export const getDeliveries = (id: number) =>
+  request<DeliverySummary>(`/news/issues/${id}/deliveries`)
+
+export const testRecipient = (recipientId: number, issueId: number) =>
+  request<{ ok: boolean; error: string; detail: string }>(
+    `/news/recipients/${recipientId}/test?issue_id=${issueId}`,
+    { method: 'POST' },
+  )
 
 export const runScheduledJob = (key: string) =>
   request<{ key: string; detail: string }>(`/news/schedule/${key}/run`, { method: 'POST' })
