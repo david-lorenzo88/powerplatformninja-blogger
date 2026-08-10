@@ -489,6 +489,54 @@ Index("ix_articles_published", Article.published_at.desc())
 Index("ix_articles_fetched", Article.fetched_at.desc())
 
 
+class SchedulerJob(Base):
+    """Durable due-time for one periodic job.
+
+    The due time lives here rather than in memory so a restart resumes the same
+    schedule, and — more importantly — so two processes cannot both fire a tick.
+    `minReplicas: 1` is not the guarantee it looks like: Container Apps starts the
+    new revision before draining the old on every deploy, so there are routinely
+    two schedulers alive for a minute or so. The claim is a compare-and-swap on
+    `next_due_at` (see server/scheduler.py), which needs no dialect-specific
+    locking and works identically on SQLite and Azure SQL.
+
+    `lease_owner`/`lease_expires_at` cover the other half: a process that claims a
+    tick and then dies would otherwise leave the job looking taken forever.
+
+    Newsletters will carry their own `next_due_at` on the newsletter row when they
+    arrive — a fire time belongs with the definition the operator edits, and two
+    sources of truth for one schedule is how a digest gets sent twice.
+    """
+
+    __tablename__ = "scheduler_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # fetch | watch | prune
+    key: Mapped[str] = mapped_column(String(64))
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_status: Mapped[str] = mapped_column(String(16), default="")  # ok | error | skipped
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    last_detail: Mapped[str] = mapped_column(String(300), default="")
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    lease_owner: Mapped[str] = mapped_column(String(64), default="")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+Index("ix_scheduler_jobs_key", SchedulerJob.key, unique=True)
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -556,6 +604,7 @@ __all__ = [
     "PushSubscription",
     "Run",
     "RunEvent",
+    "SchedulerJob",
     "SourceReview",
     "TopicIdea",
     "as_utc",

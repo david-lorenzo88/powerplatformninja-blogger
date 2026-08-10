@@ -5,7 +5,9 @@
 // second half, run once the operator has approved sources. They are separate
 // kinds rather than a flag because each is a different workflow graph, and the
 // canvas is keyed by kind.
-export type RunKind = 'suggest' | 'explore' | 'shortlist' | 'write' | 'cover'
+// `ingest` is the news fetch — no models, but it runs through the same queue so
+// a scheduled fetch is visible in the same list as everything else.
+export type RunKind = 'suggest' | 'explore' | 'shortlist' | 'write' | 'cover' | 'ingest'
 
 export type RunStatus =
   | 'queued'
@@ -405,6 +407,29 @@ export interface NewsSummary {
   articles_last_24h: number
   ingest_interval_minutes: number
   realtime_interval_minutes: number
+  effective_min_cadence_minutes: number
+  // False means the polling cadence is holding Azure SQL awake around the clock.
+  db_can_autopause: boolean
+}
+
+export interface ScheduleJob {
+  key: string
+  label: string
+  enabled: boolean
+  interval_minutes: number
+  next_due_at: string | null
+  last_finished_at: string | null
+  last_status: string
+  last_detail: string
+  last_error: string
+  runs: number
+}
+
+export interface Schedule {
+  enabled: boolean
+  jobs: ScheduleJob[]
+  watched_feeds: number
+  effective_min_cadence_minutes: number
   // False means the polling cadence is holding Azure SQL awake around the clock.
   db_can_autopause: boolean
 }

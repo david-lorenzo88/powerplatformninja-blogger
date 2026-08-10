@@ -25,8 +25,20 @@ from .. import news
 from ..settings import get_settings
 from . import news_store
 from .runs import manager
+from .scheduler import scheduler
 
 router = APIRouter(prefix="/api/news")
+
+
+async def _reschedule() -> None:
+    """Re-derive the schedule after a change that could alter it.
+
+    Whether the watch job exists at all depends on whether any feed is watched,
+    and the scheduler sleeps until its next due time rather than polling — so a
+    change that nothing announces would not take effect until that sleep ended.
+    """
+    await scheduler().sync_jobs()
+    scheduler().wake()
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +102,7 @@ async def create_feed(body: FeedCreate) -> dict[str, Any]:
         title, site_url = probe.title, probe.site_url
 
     try:
-        return await news_store.create_feed(
+        feed = await news_store.create_feed(
             body.url,
             name=body.name,
             title=title,
@@ -103,6 +115,8 @@ async def create_feed(body: FeedCreate) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+    await _reschedule()
+    return feed
 
 
 @router.post("/feeds/validate")
@@ -168,9 +182,11 @@ async def get_feed(feed_id: int) -> dict[str, Any]:
 async def patch_feed(feed_id: int, body: FeedPatch) -> dict[str, Any]:
     changes = body.model_dump(exclude_none=True)
     try:
-        return await news_store.update_feed(feed_id, changes)
+        feed = await news_store.update_feed(feed_id, changes)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+    await _reschedule()
+    return feed
 
 
 @router.delete("/feeds/{feed_id}")
@@ -178,6 +194,7 @@ async def delete_feed(feed_id: int, purge: bool = False) -> dict[str, Any]:
     removed = await news_store.delete_feed(feed_id, purge=purge)
     if not removed:
         raise HTTPException(404, f"No feed {feed_id}")
+    await _reschedule()
     return {"deleted": True, "purged": purge}
 
 
@@ -301,9 +318,35 @@ async def summary() -> dict[str, Any]:
     """
     settings = get_settings().news
     counts = await news_store.counts()
+    watched = counts["feeds_realtime"]
     return {
         **counts,
         "ingest_interval_minutes": settings.ingest_interval_minutes,
         "realtime_interval_minutes": settings.realtime_interval_minutes,
-        "db_can_autopause": settings.db_can_autopause,
+        "effective_min_cadence_minutes": settings.effective_min_cadence(watched_feeds=watched),
+        "db_can_autopause": settings.db_can_autopause(watched_feeds=watched),
     }
+
+
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schedule")
+async def get_schedule() -> dict[str, Any]:
+    """Job due-times, plus what the current cadence costs.
+
+    `db_can_autopause` is the number worth watching: false means the polling
+    cadence is holding the serverless database awake around the clock.
+    """
+    return await scheduler().describe()
+
+
+@router.post("/schedule/{key}/run")
+async def run_job(key: str) -> dict[str, Any]:
+    """Force one job now, ignoring its due time."""
+    try:
+        return await scheduler().run_now(key)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
