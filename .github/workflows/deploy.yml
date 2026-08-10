@@ -42,21 +42,92 @@ env:
   IMAGE_REPO: ppn-blogger
 
 jobs:
-  # ---- gate: the offline suite must pass before anything ships -------------
+  # ---- gate: the suite must pass on the real backend before anything ships --
+  #
+  # It runs against SQL Server here, not SQLite. The suite is offline either way
+  # — no network, no credentials — but the *dialect* is the one production uses.
+  #
+  # That distinction was bought the hard way. SQLite is more forgiving in exactly
+  # the places that matter, and twice it passed code that failed on the first
+  # request in Azure: `.is_(True)` compiles to `IS 1`, which SQL Server rejects
+  # outright, and a timezone-aware column reads back naive on SQLite and aware on
+  # Azure SQL. Neither is reachable by running a query against SQLite.
+  #
+  # Locally `pytest` still uses a temp SQLite file and needs no services; the
+  # backend is chosen entirely by PPN_TEST_DATABASE_URL (see tests/conftest.py).
   test:
     runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          # Ephemeral, reachable only from this job's network, destroyed with the
+          # runner. Deliberately literal rather than a secret: a secret here would
+          # imply it guards something.
+          MSSQL_SA_PASSWORD: "Str0ng!Passw0rd123"
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+
+    env:
+      SA_PASSWORD: "Str0ng!Passw0rd123"
+
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
+
+      # Microsoft's own packages-microsoft-prod.deb, with the release derived
+      # from the runner rather than hardcoded: `ubuntu-latest` moves between LTS
+      # versions on GitHub's schedule, and a pinned codename would turn that into
+      # a deploy blocked on an apt 404 with no obvious cause.
+      - name: Install ODBC Driver 18
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          curl -fsSL -O "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb"
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+          odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev]" aioodbc
+
+      # The service container reports healthy before the engine finishes
+      # recovering, so poll for a real connection rather than trusting readiness.
+      - name: Wait for SQL Server and create the test database
+        run: |
+          python - <<'PY'
+          import time, pyodbc, os
+          dsn = (
+              "DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost,1433;"
+              f"UID=sa;PWD={os.environ['SA_PASSWORD']};Encrypt=no"
+          )
+          for attempt in range(60):
+              try:
+                  conn = pyodbc.connect(dsn, autocommit=True, timeout=5)
+                  break
+              except Exception:
+                  if attempt == 59:
+                      raise
+                  time.sleep(2)
+          conn.cursor().execute("IF DB_ID('ppn_test') IS NULL CREATE DATABASE ppn_test")
+          print("ppn_test ready")
+          PY
+
       - name: Lint
         run: ruff check src tests
-      - name: Test
-        run: pytest -q          # 37 offline tests, no network, no credentials
+
+      - name: Test (SQL Server — the dialect production runs)
+        env:
+          PPN_TEST_DATABASE_URL: "mssql+aioodbc://sa:Str0ng%21Passw0rd123@localhost:1433/ppn_test?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=no"
+        run: pytest -q
 
   # ---- build the image in ACR and roll the Container App ------------------
   deploy:

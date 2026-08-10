@@ -17,14 +17,12 @@ from ppn_blogger import news
 
 
 @pytest.fixture
-async def api(tmp_path, monkeypatch):
-    monkeypatch.setenv("PPN_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'news-api.db'}")
+async def api(monkeypatch, database_url):
     monkeypatch.setenv("PPN_MAX_CONCURRENT_RUNS", "2")
 
     from ppn_blogger.config_source import set_config_source
-    from ppn_blogger.server import db, runs
+    from ppn_blogger.server import runs
 
-    await db.reset_engine()
     await runs.reset_manager()
 
     import httpx
@@ -38,7 +36,6 @@ async def api(tmp_path, monkeypatch):
             yield client
 
     await runs.reset_manager()
-    await db.reset_engine()
     set_config_source(None)
 
 
