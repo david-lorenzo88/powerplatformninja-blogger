@@ -1,19 +1,48 @@
 import { Suspense, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { getHealth, listSourceReviews } from '../api/client'
 import type { Health } from '../api/types'
 import { useOnline } from '../hooks/useOnline'
 import { applyUpdate, registerSW } from '../lib/registerSW'
 import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 
+// Four destinations, not eight. Adding the news subsystem as its own tabs would
+// have meant nine columns at ~43px each on a phone, below the 44px floor the
+// whole UI is built to.
+//
+// So related screens are grouped behind one tab and separate through <SubNav>
+// inside the section: Ideas, Drafts and Sources are three views of one workflow —
+// find a topic, draft it, see the sources that fed it — and now share `Blog`.
+// That merge is what pays for `News`, and leaves the fifth slot for `Letters`
+// when newsletters land.
+//
+// `paths` exists because NavLink's own isActive only matches its `to`: the Blog
+// tab has to look active while you are on /drafts, which is not a route it links
+// to. `badge` replaces what used to be two hardcoded `item.to === ...` branches.
 const NAV = [
-  { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷' },
-  { to: '/topic-ideas', label: 'Topic Ideas', short: 'Ideas', icon: '◆' },
-  { to: '/source-reviews', label: 'Sources', short: 'Sources', icon: '⌖' },
-  { to: '/drafts', label: 'Drafts', short: 'Drafts', icon: '✎' },
-  { to: '/config', label: 'Config', short: 'Config', icon: '⚙' },
+  { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷', paths: ['/runs'] },
+  {
+    to: '/articles',
+    label: 'News',
+    short: 'News',
+    icon: '⌗',
+    paths: ['/articles', '/feeds', '/feed-groups'],
+  },
+  {
+    to: '/topic-ideas',
+    label: 'Blog',
+    short: 'Blog',
+    icon: '◆',
+    paths: ['/topic-ideas', '/drafts', '/source-reviews'],
+    badge: 'source-reviews' as const,
+  },
+  { to: '/config', label: 'Config', short: 'Config', icon: '⚙', paths: ['/config'] },
 ]
+
+function isSectionActive(pathname: string, paths: string[]): boolean {
+  return paths.some((p) => pathname === p || pathname.startsWith(`${p}/`))
+}
 
 function navClass({ isActive }: { isActive: boolean }): string {
   const base =
@@ -112,6 +141,7 @@ export function AppShell() {
     refetchInterval: 15_000,
   })
   const pendingCount = pending?.length ?? 0
+  const { pathname } = useLocation()
   const [healthOpen, setHealthOpen] = useState(false)
   const [updateReady, setUpdateReady] = useState(false)
   const online = useOnline()
@@ -138,7 +168,7 @@ export function AppShell() {
   return (
     <div className="flex h-full flex-col lg:flex-row">
       {/* The desktop sidebar. Below lg it is not rendered at all rather than
-          collapsed — the bottom tab bar carries the same five destinations. */}
+          collapsed — the bottom tab bar carries the same destinations. */}
       <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-950/60 p-4 lg:flex">
         <div className="mb-6 px-2">
           <div className="text-sm font-semibold tracking-tight text-slate-100">PPN Blogger</div>
@@ -146,10 +176,14 @@ export function AppShell() {
         </div>
         <nav className="flex flex-col gap-1">
           {NAV.map((item) => (
-            <NavLink key={item.to} to={item.to} className={navClass}>
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={() => navClass({ isActive: isSectionActive(pathname, item.paths) })}
+            >
               <span className="text-accent/70">{item.icon}</span>
               {item.label}
-              {item.to === '/source-reviews' && pendingCount > 0 && (
+              {item.badge === 'source-reviews' && pendingCount > 0 && (
                 <span className="ml-auto rounded-full bg-amber-500/20 px-2 text-xs font-semibold text-amber-300">
                   {pendingCount}
                 </span>
@@ -232,10 +266,14 @@ export function AppShell() {
           <ul className="flex">
             {NAV.map((item) => (
               <li key={item.to} className="flex-1">
-                <NavLink to={item.to} className={tabClass} aria-label={item.label}>
+                <NavLink
+                  to={item.to}
+                  className={() => tabClass({ isActive: isSectionActive(pathname, item.paths) })}
+                  aria-label={item.label}
+                >
                   <span className="relative text-lg leading-none" aria-hidden="true">
                     {item.icon}
-                    {item.to === '/source-reviews' && pendingCount > 0 && (
+                    {item.badge === 'source-reviews' && pendingCount > 0 && (
                       <span className="absolute -right-2.5 -top-1 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[10px] font-bold leading-4 text-slate-950">
                         {pendingCount}
                       </span>

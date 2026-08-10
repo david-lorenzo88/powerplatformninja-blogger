@@ -44,11 +44,13 @@ src/ppn_blogger/
   covers.py         neon cover art (MAI / OpenAI-compatible / OpenAI-direct)
   wordpress.py      REST client + Markdown → Gutenberg block conversion
   sources.py        harvest sites from a wide sweep; file the operator's verdict
+  news.py           news feeds, pure: canonicalise, conditional GET, parse, discover
   storage.py        drafts, dossiers, review reports, package JSON
   testing.py        offline stub chat client
   cli.py            typer commands
   server/           FastAPI: run queue, SSE, versioned config store, drafts API,
-                    source reviews (server/reviews.py)
+                    source reviews (server/reviews.py), news feeds
+                    (server/api_news.py, news_store.py, ingest.py)
 config/             editorial policy — the thing you actually tune
 tests/              67 tests, fully offline
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
@@ -63,13 +65,17 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 67 tests, ~25s, no network, no credentials
+pytest                      # 137 tests, ~28s, no network, no credentials
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
 ppn preflight               # 2 cheap real model calls; detects temperature support
 ppn suggest --dry-run       # whole graph offline
 ppn suggest --explore --dry-run --yes   # wide sweep + source approval, offline
 ppn write --index 1 --dry-run
+ppn news validate <url>     # is there a feed there? (no model, no writes)
+ppn news add <url>          # register a feed, after confirming it is one
+ppn news poll               # fetch every enabled feed; run twice to see the 304s
+ppn news list | ppn news read
 ```
 
 `pip install -e ".[dev]"` gives you the CLI, the server extras and pytest.
@@ -161,6 +167,30 @@ cap.
 **Introspect the installed package rather than trusting documentation.** Both of
 the hardest integrations here — Agent Framework's real executor API and MAI's
 route — were solved by reading installed code, not docs about it.
+
+**Datetimes read back from the database.** SQLite returns *naive* datetimes from
+a `DateTime(timezone=True)` column; Azure SQL's DATETIMEOFFSET returns aware
+ones. Comparing one to `utcnow()` therefore raises `TypeError` in production and
+works perfectly in the tests. Always pass a stored timestamp through
+`db.as_utc()` before comparing it in Python.
+
+**A polling cadence is a bill.** Azure SQL is serverless with
+`autoPauseDelay: 60`, so any server-side loop touching the database more often
+than hourly stops it ever pausing — on the order of $150-200/month at list price
+instead of near-zero. This is why `PPN_INGEST_INTERVAL_MINUTES` defaults to 360,
+why the realtime cadence only exists once a feed opts in, and why
+**`/api/health` must never grow a database count**: it is on the container's
+readiness probe every 15 seconds and currently touches no database at all.
+
+**New run kinds must set their own timeout.** `RunManager._dispatch` wraps
+nothing; `suggest_timeout_minutes`/`write_timeout_minutes` are read only by
+`cli.py`. A server-side run without its own `asyncio.wait_for` can hold a worker
+forever.
+
+**No API route may carry a trailing slash.** `ui/src/api/client.ts` fetches with
+`redirect: 'manual'` and reads any redirect as an expired Easy Auth session, so a
+route that trips FastAPI's `redirect_slashes` bounces the operator to the Entra
+login instead of returning data.
 
 ## Git
 

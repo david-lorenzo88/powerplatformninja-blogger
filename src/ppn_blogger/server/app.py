@@ -17,6 +17,7 @@ from ..settings import ROOT
 from ..util import setup_logging
 from . import config_store
 from .api import router
+from .api_news import router as news_router
 from .db import engine, init_db
 from .runs import manager
 
@@ -61,8 +62,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if seeded:
         logger.info("configuration imported from config/ — the database is now authoritative")
     from . import catalog
+    from .ingest import seed_feeds
 
     await catalog.backfill()
+    # Idempotent by url_hash, so it is safe on every boot. Gives the News screen
+    # something to show on a fresh database instead of an empty page; the crew's
+    # own reading of sources.yaml is untouched.
+    await seed_feeds()
     await manager().start()
     logger.info("ppn server ready")
     try:
@@ -96,6 +102,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(news_router)
 
     # Serve the built SPA when it exists, so production is a single process.
     if UI_DIST.exists():

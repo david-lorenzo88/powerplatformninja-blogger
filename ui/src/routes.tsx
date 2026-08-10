@@ -40,6 +40,18 @@ const SourceReviewsScreen = lazy(() =>
 const SourceReviewScreen = lazy(() =>
   import('./screens/SourceReviewScreen').then((m) => ({ default: m.SourceReviewScreen })),
 )
+const ArticlesScreen = lazy(() =>
+  import('./screens/ArticlesScreen').then((m) => ({ default: m.ArticlesScreen })),
+)
+const FeedsScreen = lazy(() =>
+  import('./screens/FeedsScreen').then((m) => ({ default: m.FeedsScreen })),
+)
+const FeedDetailScreen = lazy(() =>
+  import('./screens/FeedDetailScreen').then((m) => ({ default: m.FeedDetailScreen })),
+)
+const FeedGroupsScreen = lazy(() =>
+  import('./screens/FeedGroupsScreen').then((m) => ({ default: m.FeedGroupsScreen })),
+)
 
 export const router = createBrowserRouter([
   {
@@ -56,6 +68,10 @@ export const router = createBrowserRouter([
       { path: 'config', element: <ConfigScreen /> },
       { path: 'drafts', element: <DraftsScreen /> },
       { path: 'drafts/:id', element: <PostDetailScreen /> },
+      { path: 'articles', element: <ArticlesScreen /> },
+      { path: 'feeds', element: <FeedsScreen /> },
+      { path: 'feeds/:id', element: <FeedDetailScreen /> },
+      { path: 'feed-groups', element: <FeedGroupsScreen /> },
     ],
   },
 ])

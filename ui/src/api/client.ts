@@ -4,6 +4,8 @@
 // in `detail`, which is exactly what the Config editor surfaces inline.
 
 import type {
+  Article,
+  ArticleFilters,
   ConfigContent,
   ConfigHistoryItem,
   ConfigListItem,
@@ -13,7 +15,13 @@ import type {
   Draft,
   DraftListItem,
   DraftVersion,
+  Feed,
+  FeedCreateRequest,
+  FeedGroup,
+  FeedPatchRequest,
+  FeedProbe,
   Health,
+  NewsSummary,
   Post,
   PostSummary,
   RegenerateRequest,
@@ -291,5 +299,80 @@ export const unsubscribePush = (body: { endpoint: string }) =>
 
 export const sendTestPush = () =>
   request<{ delivered: number; subscriptions: number }>('/push/test', { method: 'POST' })
+
+// -- News: feeds, groups, articles -------------------------------------------
+//
+// These sit under /api/news on a second FastAPI router. Same rule as everything
+// above: no path may carry a trailing slash, or `redirect: 'manual'` reads the
+// resulting 307 as an expired Easy Auth session and bounces to the login page.
+
+export interface FeedFilters {
+  enabled?: boolean
+  realtime?: boolean
+  group_id?: number
+  q?: string
+}
+
+export const listFeeds = (filters: FeedFilters = {}) => {
+  const query = new URLSearchParams()
+  if (filters.enabled !== undefined) query.set('enabled', String(filters.enabled))
+  if (filters.realtime !== undefined) query.set('realtime', String(filters.realtime))
+  if (filters.group_id !== undefined) query.set('group_id', String(filters.group_id))
+  if (filters.q) query.set('q', filters.q)
+  const qs = query.toString()
+  return request<Feed[]>(`/news/feeds${qs ? `?${qs}` : ''}`)
+}
+
+export const getFeed = (id: number) => request<Feed>(`/news/feeds/${id}`)
+
+export const createFeed = (body: FeedCreateRequest) =>
+  request<Feed>('/news/feeds', { method: 'POST', body: JSON.stringify(body) })
+
+export const updateFeed = (id: number, body: FeedPatchRequest) =>
+  request<Feed>(`/news/feeds/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+
+export const deleteFeed = (id: number, purge = false) =>
+  request<{ deleted: boolean }>(`/news/feeds/${id}?purge=${purge}`, { method: 'DELETE' })
+
+export const validateFeed = (url: string) =>
+  request<FeedProbe>('/news/feeds/validate', { method: 'POST', body: JSON.stringify({ url }) })
+
+export const refreshFeed = (id: number) =>
+  request<{ id: string; run_id: string }>(`/news/feeds/${id}/refresh`, { method: 'POST' })
+
+export const refreshAllFeeds = () =>
+  request<{ id: string; run_id: string }>('/news/refresh', { method: 'POST' })
+
+export const listFeedGroups = () => request<FeedGroup[]>('/news/feed-groups')
+
+export const getFeedGroup = (id: number) => request<FeedGroup>(`/news/feed-groups/${id}`)
+
+export const createFeedGroup = (name: string, description = '') =>
+  request<FeedGroup>('/news/feed-groups', {
+    method: 'POST',
+    body: JSON.stringify({ name, description }),
+  })
+
+export const deleteFeedGroup = (id: number) =>
+  request<{ deleted: boolean }>(`/news/feed-groups/${id}`, { method: 'DELETE' })
+
+export const setFeedGroupFeeds = (id: number, feed_ids: number[]) =>
+  request<FeedGroup>(`/news/feed-groups/${id}/feeds`, {
+    method: 'PUT',
+    body: JSON.stringify({ feed_ids }),
+  })
+
+export const listArticles = (filters: ArticleFilters = {}) => {
+  const query = new URLSearchParams()
+  if (filters.group_id !== undefined) query.set('group_id', String(filters.group_id))
+  if (filters.feed_id !== undefined) query.set('feed_id', String(filters.feed_id))
+  if (filters.since) query.set('since', filters.since)
+  if (filters.q) query.set('q', filters.q)
+  if (filters.limit) query.set('limit', String(filters.limit))
+  const qs = query.toString()
+  return request<Article[]>(`/news/articles${qs ? `?${qs}` : ''}`)
+}
+
+export const getNewsSummary = () => request<NewsSummary>('/news/summary')
 
 export type { RunEvent }

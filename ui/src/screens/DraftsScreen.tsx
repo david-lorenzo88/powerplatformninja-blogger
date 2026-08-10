@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { listPosts } from '../api/client'
 import type { PostSummary } from '../api/types'
+import { BlogSubNav } from '../components/SubNav'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { formatTime } from '../lib/format'
 import { field, quietBtn, rowCard } from '../lib/ui'
@@ -64,6 +65,9 @@ export function DraftsScreen() {
               Filters{activeFilters > 0 && ` · ${activeFilters}`} {filtersOpen ? '▴' : '▾'}
             </button>
           )}
+        </div>
+        <div className="mt-3">
+          <BlogSubNav />
         </div>
         <div
           className={`mt-3 grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-center ${

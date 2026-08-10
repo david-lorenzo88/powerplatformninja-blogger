@@ -14,7 +14,23 @@ import { clear, del, get, set } from 'idb-keyval'
 // cached `running` shown an hour later is not stale data, it is a lie about
 // what the crew is doing right now, and worse than showing nothing. Health is
 // the same. So neither is persisted, and both simply come back empty offline.
-const PERSISTED = new Set(['posts', 'post', 'drafts', 'draft', 'draft-versions', 'topic-ideas', 'topic-idea'])
+// News articles and the feed list join for the same reason: a digest read on a
+// train is content. `news-summary` deliberately does not — its counts and the
+// "is the database still able to pause" flag are live state, and a stale answer
+// to that is worse than none.
+const PERSISTED = new Set([
+  'posts',
+  'post',
+  'drafts',
+  'draft',
+  'draft-versions',
+  'topic-ideas',
+  'topic-idea',
+  'articles',
+  'feeds',
+  'feed',
+  'feed-groups',
+])
 
 export function shouldPersist(query: Query): boolean {
   const root = query.queryKey[0]

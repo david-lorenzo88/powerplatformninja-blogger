@@ -296,6 +296,50 @@ class PushSettings:
 
 
 @dataclass(slots=True)
+class NewsSettings:
+    """Feed ingestion for the news subsystem.
+
+    `PPN_` throughout: these are app-runtime knobs, not a third-party service.
+
+    The cadence numbers carry a cost the defaults are chosen around. Azure SQL is
+    serverless with a 60-minute autoPauseDelay, so any poll running more often
+    than hourly means the database never pauses — on the order of $150-200/month
+    at list price instead of near-zero. Hence a six-hourly default sweep, and a
+    realtime cadence that only comes into being when a feed opts in.
+    """
+
+    ingest_interval_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_INGEST_INTERVAL_MINUTES", 360)
+    )
+    realtime_interval_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_REALTIME_INTERVAL_MINUTES", 15)
+    )
+    feed_concurrency: int = field(default_factory=lambda: _env_int("PPN_FEED_CONCURRENCY", 8))
+    feed_timeout_seconds: int = field(
+        default_factory=lambda: _env_int("PPN_FEED_TIMEOUT_SECONDS", 20)
+    )
+    # A feed that fails this many times running is disabled rather than retried
+    # forever. Without it a dead host drowns the log and hides live errors.
+    max_failures: int = field(default_factory=lambda: _env_int("PPN_FEED_MAX_FAILURES", 10))
+    article_retention_days: int = field(
+        default_factory=lambda: _env_int("PPN_ARTICLE_RETENTION_DAYS", 120)
+    )
+    ingest_timeout_minutes: int = field(
+        default_factory=lambda: _env_int("PPN_INGEST_TIMEOUT_MINUTES", 15)
+    )
+    max_items_per_feed: int = field(default_factory=lambda: _env_int("PPN_FEED_MAX_ITEMS", 100))
+
+    @property
+    def db_can_autopause(self) -> bool:
+        """Whether the cadences still let the serverless database go idle.
+
+        False means the app is holding Azure SQL awake around the clock. Surfaced
+        so the trade is a number on screen rather than folklore.
+        """
+        return self.ingest_interval_minutes >= 60
+
+
+@dataclass(slots=True)
 class Settings:
     foundry: FoundrySettings = field(default_factory=FoundrySettings)
     wordpress: WordPressSettings = field(default_factory=WordPressSettings)
@@ -304,6 +348,7 @@ class Settings:
     translation: TranslationSettings = field(default_factory=TranslationSettings)
     run: RunSettings = field(default_factory=RunSettings)
     push: PushSettings = field(default_factory=PushSettings)
+    news: NewsSettings = field(default_factory=NewsSettings)
 
     # Config documents are pulled from the active ConfigSource (YAML files by
     # default, the database when the server is running) and cached until that

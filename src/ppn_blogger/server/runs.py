@@ -642,6 +642,26 @@ class RunManager:
             cover = await build_cover(draft, settings)
             return cover.model_dump(mode="json")
 
+        if kind == "ingest":
+            # No model calls at all — this is HTTP and SQL. It runs as a run
+            # anyway so a scheduled sweep is visible in the same list as
+            # everything else, with the same log, cancellation and history.
+            #
+            # The timeout is applied here rather than left to the manager
+            # because the manager applies none: suggest/write set theirs in
+            # cli.py, so a server-side run has no wall-clock ceiling at all and
+            # one unresponsive host could hold a worker forever.
+            from .ingest import ingest
+
+            return await asyncio.wait_for(
+                ingest(
+                    feed_ids=params.get("feed_ids"),
+                    only_realtime=bool(params.get("only_realtime")),
+                    only_due=bool(params.get("only_due")),
+                ),
+                timeout=settings.news.ingest_timeout_minutes * 60,
+            )
+
         raise ValueError(f"Unknown run kind: {kind}")
 
     async def _finish(

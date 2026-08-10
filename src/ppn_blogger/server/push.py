@@ -230,6 +230,16 @@ def _describe(kind: str, status: str, label: str, result: dict[str, Any] | None)
         n = len(result.get("suggestions") or [])
         return ("Topics ready", f"{name}: {n} suggestion{'' if n == 1 else 's'}", "/topic-ideas")
 
+    if kind == "ingest":
+        n = int(result.get("new_articles") or 0)
+        errors = int(result.get("errors") or 0)
+        detail = f"{n} new article{'' if n == 1 else 's'}"
+        if errors:
+            # A feed that has started failing is the thing worth surfacing here;
+            # it is otherwise invisible until someone opens the Feeds screen.
+            detail += f" · {errors} feed{'' if errors == 1 else 's'} failing"
+        return ("News updated", detail, "/articles")
+
     return ("Run finished", name, "/runs")
 
 

@@ -151,6 +151,56 @@ driven against real Azure.**
   is only as good as what the scouts actually report, and the stub cannot tell you
   whether a real wide sweep returns 8 useful new domains or 40 useless ones.
 
+## News aggregation — phase 1 of 5 (new)
+
+The first half of the news/newsletter subsystem: a managed feed registry with
+persistent, deduplicated harvesting. **Built, tested offline, and verified
+against real feeds** (see below). No models, no third-party accounts, no
+scheduler yet.
+
+- **`src/ppn_blogger/news.py`** — the pure layer: `canonical_url`, `url_hash`,
+  `entry_key`, `fetch_feed` with **conditional GET**, `fetch_many` over one
+  shared connection pool, `probe`, `discover_feeds_in_html`. Never raises;
+  a failure is a `FeedFetch` carrying its reason.
+- **Four tables** (`server/db.py`): `feeds`, `articles`, `feed_groups`,
+  `feed_group_members`. URLs are stored as `Text` and indexed through a
+  `String(64)` sha256 of the canonical form — article URLs blow past the ~450
+  characters an indexable NVARCHAR holds on Azure SQL. The unique
+  `(feed_id, entry_key)` index **is** the dedup guarantee.
+- **`server/ingest.py`** and **`server/news_store.py`** — polling, select-then-write
+  upserts, per-feed health, auto-disable after `PPN_FEED_MAX_FAILURES`, and
+  `seed_feeds()` copying the nine `sources.yaml` feeds in on first boot
+  (idempotent, like `catalog.backfill()`).
+- **New run kind `ingest`**, so a fetch appears in the Runs list with the same
+  log, cancellation and history as everything else. It is the first kind to
+  apply its own `asyncio.wait_for` — the manager applies none.
+- **`server/api_news.py`** — a second `APIRouter`, prefix `/api/news`.
+  No route carries a trailing slash (see the note in `ui/src/api/client.ts`).
+- **UI**: the bottom tab bar was regrouped from five destinations to four —
+  Ideas, Drafts and Sources merged behind **Blog** with a `SubNav`, which is what
+  pays for **News** (Stream · Feeds · Groups) and leaves a slot for Letters.
+- **Tests**: 70 new (30 pure, 27 store/ingest, 13 API); suite is **137 passing**.
+
+**Verified against real feeds** (2026-08-10, three live sources — Simon Willison,
+the .NET blog, arXiv cs.AI): discovery found the feed behind a bare site URL;
+140 articles harvested on the first poll; **all three returned 304 Not Modified
+on the second**, exercising all three validator strategies (Last-Modified only,
+both, ETag only); a duplicate feed differing only by a trailing slash and a
+`utm_source` was rejected; a dead host recorded `status=0` and its reason rather
+than raising.
+
+**One bug caught by this work worth knowing about:** SQLite returns *naive*
+datetimes from a `DateTime(timezone=True)` column while Azure SQL returns aware
+ones, so comparing a stored timestamp to `utcnow()` raises on one backend and
+silently works on the other — the worst possible shape, since the tests run on
+the forgiving one. `db.as_utc()` now exists for exactly this, and there is a
+regression test.
+
+**Next:** phase 2 is the scheduler (sleep-until-due, with a compare-and-swap
+guard — one replica is *not* one process during a Container Apps revision swap)
+and real-time push. Phases 3-5 are newsletter generation, delivery
+(ACS email / Telegram / WhatsApp) and feed auto-discovery.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

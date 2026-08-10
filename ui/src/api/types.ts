@@ -314,3 +314,126 @@ export interface WriteRequest {
   translate?: boolean | null
   label?: string
 }
+
+// -- News: feeds, groups, articles -------------------------------------------
+
+// ok is the ordinary state. 'failing' means the last fetch errored; 'stale'
+// means it fetches perfectly but has published nothing in months — a different
+// problem, and only the second is a judgement call for the operator.
+export type FeedHealth = 'ok' | 'stale' | 'failing' | 'disabled'
+
+export interface Feed {
+  id: number
+  url: string
+  name: string
+  title: string
+  site_url: string
+  domain: string
+  tier: string
+  topics: string[]
+  enabled: boolean
+  realtime: boolean
+  origin: string
+  group_ids: number[]
+  entry_count: number
+  poll_interval_minutes: number
+  next_poll_at: string | null
+  last_checked_at: string | null
+  last_success_at: string | null
+  last_entry_at: string | null
+  last_status: number
+  last_error: string
+  consecutive_failures: number
+  notes: string
+  health: FeedHealth
+  created_at: string | null
+}
+
+export interface FeedGroup {
+  id: number
+  slug: string
+  name: string
+  description: string
+  feed_count: number
+  created_at: string | null
+  feed_ids?: number[]
+}
+
+export interface Article {
+  id: number
+  feed_id: number
+  feed_name: string
+  url: string
+  title: string
+  author: string
+  summary: string
+  domain: string
+  tier: string
+  tags: string[]
+  language: string
+  published_at: string | null
+  fetched_at: string | null
+}
+
+export interface FeedProbeEntry {
+  title: string
+  url: string
+  published: string | null
+  summary: string
+}
+
+export interface FeedProbe {
+  ok: boolean
+  url: string
+  discovered_from?: string
+  title?: string
+  site_url?: string
+  language?: string
+  entry_count?: number
+  newest?: string | null
+  entries: FeedProbeEntry[]
+  error: string
+}
+
+export interface NewsSummary {
+  feeds: number
+  feeds_enabled: number
+  feeds_failing: number
+  feeds_realtime: number
+  groups: number
+  articles: number
+  articles_last_24h: number
+  ingest_interval_minutes: number
+  realtime_interval_minutes: number
+  // False means the polling cadence is holding Azure SQL awake around the clock.
+  db_can_autopause: boolean
+}
+
+export interface FeedCreateRequest {
+  url: string
+  name?: string
+  tier?: string
+  topics?: string[]
+  realtime?: boolean
+  group_ids?: number[]
+  notes?: string
+}
+
+export interface FeedPatchRequest {
+  name?: string
+  tier?: string
+  topics?: string[]
+  enabled?: boolean
+  realtime?: boolean
+  notes?: string
+  poll_interval_minutes?: number
+  group_ids?: number[]
+}
+
+export interface ArticleFilters {
+  group_id?: number
+  feed_id?: number
+  since?: string
+  q?: string
+  limit?: number
+}

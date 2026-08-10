@@ -1,4 +1,4 @@
-import type { RunStatus } from '../api/types'
+import type { FeedHealth, RunStatus } from '../api/types'
 
 // Tailwind classes per run status. One place so badges, rows and the run-detail
 // header all colour a status identically.
@@ -9,6 +9,16 @@ export const STATUS_STYLES: Record<RunStatus, string> = {
   failed: 'bg-rose-500/15 text-rose-300 ring-rose-500/40',
   cancelled: 'bg-amber-500/15 text-amber-300 ring-amber-500/40',
   interrupted: 'bg-orange-500/15 text-orange-300 ring-orange-500/40',
+}
+
+// Same idea for feed health. 'failing' and 'stale' are deliberately different
+// colours as well as different words: one is broken, the other is merely quiet,
+// and only the second is a judgement call for the operator.
+export const HEALTH_STYLES: Record<FeedHealth, string> = {
+  ok: 'bg-emerald-500/15 text-emerald-300',
+  stale: 'bg-slate-700/40 text-slate-300',
+  failing: 'bg-rose-500/15 text-rose-300',
+  disabled: 'bg-slate-800 text-slate-500',
 }
 
 // The server emits naive UTC timestamps (e.g. "2026-07-28T11:19:34.208040") with
