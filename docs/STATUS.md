@@ -316,6 +316,38 @@ resolving correctly across the Madrid offset.
 **Next:** phase 4 is delivery (ACS email, Telegram, WhatsApp) and phase 5 is feed
 auto-discovery.
 
+## News phases 4 and 5 — delivery and feed discovery (new)
+
+**Phase 4 — delivery.** Issues can reach people. Two of the three vendor channels
+are shaped by platform facts, not by choice:
+
+- **WhatsApp has no group API.** Meta's Cloud API messages individual numbers,
+  and a newsletter is business-initiated outside the 24-hour window, so it can
+  only be a **pre-approved template**, billed per conversation.
+- **Telegram covers the group case** — a group or channel is a chat id, and the
+  bot must be added first. Nothing here drives WhatsApp Web.
+- **Email is ACS, not SMTP**: Container Apps blocks outbound port 25, and mail
+  from its egress IPs without SPF/DKIM lands in spam whatever port it uses. The
+  Bicep provisions ACS with a *managed* domain, which sends with no DNS.
+- **Web push and "copy out by hand" need no configuration**, which is what makes
+  the feature usable before any vendor decision.
+- Rows are written `pending` before the first send; permanent failures are tried
+  once and park the recipient; retry touches only what failed; an unconfigured
+  channel is `skipped`, not `failed`.
+
+**Phase 5 — feed discovery.** A sweep asks a model where to look, then
+**fetches and parses every URL it names before the operator sees it**. Anything
+that is not a real feed with entries is discarded, so approving cannot mean
+adding a URL nobody checked. Refusals are remembered so a later sweep never
+re-offers them. The approval mirrors `reviews.py`, including the crash-safe
+ordering: create the feeds first, then close the review.
+
+The nav badges now come from a single `GET /api/news/pending` rather than one
+poll per badge — three polls would wake the serverless database three times as
+often for no more information.
+
+- **Tests**: 27 new (15 delivery, 12 discovery); suite is **234 passing**.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

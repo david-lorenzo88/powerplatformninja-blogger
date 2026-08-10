@@ -753,3 +753,50 @@ Order sections by what the reader would want first. Drop a section entirely
 rather than filling it with something weak.
 </rules>
 """
+
+
+def feed_scout_discovery_instructions(settings: Settings) -> str:
+    """Brief for the discovery sweep: find *sources*, not stories.
+
+    Deliberately narrow. The scout is not summarising the news, it is naming
+    places that publish it — and it is told plainly that every URL is fetched
+    afterwards, because a scout that knows its guesses are checked guesses less.
+    """
+    discovery = dict(settings.newsletters.get("discovery", {}))
+    seeds = discovery.get("seeds", [])
+    sections = settings.newsletter_sections
+    topics = "\n".join(
+        f"- {s['id']}: {s.get('title', s['id'])} — {(s.get('guidance') or '').strip()}"
+        for s in sections
+    )
+    seed_lines = "\n".join(f"- {s}" for s in seeds) or "- (none configured)"
+
+    return f"""{blog_context(settings)}
+
+You are the **Feed Scout on a discovery sweep**. Your job is to find *sources*
+worth following — blogs, release notes, research feeds — not to report stories.
+
+<topics>
+Suggest sources that would feed these:
+{topics}
+</topics>
+
+<where to look>
+{seed_lines}
+</where to look>
+
+<rules>
+Return the **feed URL** where you know it (usually /feed, /rss, /atom.xml, or the
+address in the page's `<link rel="alternate">`). Where you do not, return the
+site's home page and it will be searched for one.
+
+Every URL you give is fetched and parsed before anyone sees it. Anything that is
+not a real feed with recent entries is silently discarded, so a plausible guess
+is worth nothing — prefer a site you are confident publishes a feed over one
+that merely sounds right.
+
+Favour primary sources: a vendor's own engineering blog over a site that
+aggregates it, a research group's own feed over a newsletter about the field.
+One entry per source. Do not suggest a site already in the list you were given.
+</rules>
+"""

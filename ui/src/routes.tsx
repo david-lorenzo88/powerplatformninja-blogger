@@ -64,6 +64,12 @@ const NewsletterDetailScreen = lazy(() =>
 const IssueDetailScreen = lazy(() =>
   import('./screens/IssueDetailScreen').then((m) => ({ default: m.IssueDetailScreen })),
 )
+const FeedReviewScreen = lazy(() =>
+  import('./screens/FeedReviewScreen').then((m) => ({ default: m.FeedReviewScreen })),
+)
+const FeedReviewsScreen = lazy(() =>
+  import('./screens/FeedReviewScreen').then((m) => ({ default: m.FeedReviewsScreen })),
+)
 const RecipientsScreen = lazy(() =>
   import('./screens/RecipientsScreen').then((m) => ({ default: m.RecipientsScreen })),
 )
@@ -87,6 +93,8 @@ export const router = createBrowserRouter([
       { path: 'feeds', element: <FeedsScreen /> },
       { path: 'feeds/:id', element: <FeedDetailScreen /> },
       { path: 'feed-groups', element: <FeedGroupsScreen /> },
+      { path: 'feed-reviews', element: <FeedReviewsScreen /> },
+      { path: 'feed-reviews/:id', element: <FeedReviewScreen /> },
       { path: 'newsletters', element: <NewslettersScreen /> },
       // Before ':id', or "issues" is parsed as a newsletter id.
       { path: 'newsletters/issues', element: <IssuesScreen /> },

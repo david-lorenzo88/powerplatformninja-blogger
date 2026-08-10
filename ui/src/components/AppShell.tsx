@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { getHealth, listSourceReviews } from '../api/client'
+import { getHealth, getPending } from '../api/client'
 import type { Health } from '../api/types'
 import { useOnline } from '../hooks/useOnline'
 import { applyUpdate, registerSW } from '../lib/registerSW'
@@ -26,7 +26,8 @@ const NAV = [
     label: 'News',
     short: 'News',
     icon: '⌗',
-    paths: ['/articles', '/feeds', '/feed-groups'],
+    paths: ['/articles', '/feeds', '/feed-groups', '/feed-reviews'],
+    badge: 'feed-reviews' as const,
   },
   {
     to: '/newsletters',
@@ -141,12 +142,18 @@ export function AppShell() {
   })
   // A pending review is a paid-for run that has stopped until it is answered,
   // so it gets a count in the nav rather than waiting to be stumbled upon.
+  // One request for every badge rather than one per badge: the shell polls this
+  // every 15 seconds, and separate polls would wake the serverless database
+  // that many times more often for no more information.
   const { data: pending } = useQuery({
-    queryKey: ['source-reviews', 'pending'],
-    queryFn: () => listSourceReviews('pending'),
+    queryKey: ['pending'],
+    queryFn: getPending,
     refetchInterval: 15_000,
   })
-  const pendingCount = pending?.length ?? 0
+  const badges: Record<string, number> = {
+    'source-reviews': pending?.source_reviews ?? 0,
+    'feed-reviews': pending?.feed_reviews ?? 0,
+  }
   const { pathname } = useLocation()
   const [healthOpen, setHealthOpen] = useState(false)
   const [updateReady, setUpdateReady] = useState(false)
@@ -165,7 +172,7 @@ export function AppShell() {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
       void qc.invalidateQueries({ queryKey: ['health'] })
-      void qc.invalidateQueries({ queryKey: ['source-reviews', 'pending'] })
+      void qc.invalidateQueries({ queryKey: ['pending'] })
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
@@ -189,9 +196,9 @@ export function AppShell() {
             >
               <span className="text-accent/70">{item.icon}</span>
               {item.label}
-              {item.badge === 'source-reviews' && pendingCount > 0 && (
+              {item.badge && badges[item.badge] > 0 && (
                 <span className="ml-auto rounded-full bg-amber-500/20 px-2 text-xs font-semibold text-amber-300">
-                  {pendingCount}
+                  {badges[item.badge]}
                 </span>
               )}
             </NavLink>
@@ -279,9 +286,9 @@ export function AppShell() {
                 >
                   <span className="relative text-lg leading-none" aria-hidden="true">
                     {item.icon}
-                    {item.badge === 'source-reviews' && pendingCount > 0 && (
+                    {item.badge && badges[item.badge] > 0 && (
                       <span className="absolute -right-2.5 -top-1 min-w-4 rounded-full bg-amber-500 px-1 text-center text-[10px] font-bold leading-4 text-slate-950">
-                        {pendingCount}
+                        {badges[item.badge]}
                       </span>
                     )}
                   </span>

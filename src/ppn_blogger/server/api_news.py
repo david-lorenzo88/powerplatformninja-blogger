@@ -629,3 +629,85 @@ async def test_recipient(recipient_id: int, issue_id: int) -> dict[str, Any]:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Feed discovery
+# ---------------------------------------------------------------------------
+
+
+class FeedDecision(BaseModel):
+    url: str
+    approved: bool = False
+    name: str = ""
+    topics: list[str] = Field(default_factory=list)
+    group_ids: list[int] = Field(default_factory=list)
+    realtime: bool = False
+
+
+class DecideFeeds(BaseModel):
+    decisions: list[FeedDecision] = Field(default_factory=list)
+
+
+@router.post("/discover", status_code=202)
+async def start_discovery(instruction: str = "") -> dict[str, str]:
+    run_id = await manager().enqueue(
+        "discover", {"instruction": instruction}, "Feed discovery sweep"
+    )
+    return {"id": run_id, "run_id": run_id}
+
+
+@router.get("/feed-reviews")
+async def list_feed_reviews(status: str = "") -> list[dict[str, Any]]:
+    from . import discovery
+
+    return await discovery.list_reviews(status or None)
+
+
+@router.get("/feed-reviews/{review_id}")
+async def get_feed_review(review_id: int) -> dict[str, Any]:
+    from . import discovery
+
+    row = await discovery.get(review_id)
+    if row is None:
+        raise HTTPException(404, f"No feed review {review_id}")
+    return row
+
+
+@router.post("/feed-reviews/{review_id}/decide")
+async def decide_feed_review(review_id: int, body: DecideFeeds) -> dict[str, Any]:
+    from . import discovery
+
+    try:
+        result = await discovery.decide(
+            review_id, [d.model_dump() for d in body.decisions]
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await _reschedule()
+    return result
+
+
+@router.post("/feed-reviews/{review_id}/cancel")
+async def cancel_feed_review(review_id: int) -> dict[str, Any]:
+    from . import discovery
+
+    return {"cancelled": await discovery.cancel(review_id)}
+
+
+@router.get("/pending")
+async def pending_counts() -> dict[str, int]:
+    """Every nav badge in one request.
+
+    One endpoint rather than one poll per badge — the shell already polls this
+    every 15 seconds, and three separate polls would wake the serverless
+    database three times as often for no more information.
+    """
+    from . import discovery, reviews
+
+    return {
+        "source_reviews": await reviews.pending_count(),
+        "feed_reviews": await discovery.pending_count(),
+    }

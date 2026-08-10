@@ -16,6 +16,7 @@ export type RunKind =
   | 'ingest'
   | 'newsletter'
   | 'deliver'
+  | 'discover'
 
 export type RunStatus =
   | 'queued'
@@ -607,4 +608,55 @@ export interface DeliverySummary {
   pending: number
   skipped: number
   deliveries: DeliveryRow[]
+}
+
+
+// -- Feed discovery ----------------------------------------------------------
+
+export interface FeedCandidate {
+  url: string
+  name: string
+  title: string
+  site_url: string
+  domain: string
+  // Evidence, not the model's say-so: every candidate was fetched and parsed
+  // before it reached the review.
+  entry_count: number
+  newest: string | null
+  topics: string[]
+  reason: string
+  sample_titles: string[]
+  suggested_from: string
+}
+
+export interface FeedReviewSummary {
+  id: number
+  run_id: string | null
+  status: 'pending' | 'approved' | 'cancelled'
+  instruction: string
+  generated_on: string
+  candidate_count: number
+  approved_count: number
+  created_feed_ids: number[]
+  created_at: string | null
+  decided_at: string | null
+}
+
+export interface FeedReview extends FeedReviewSummary {
+  candidates: FeedCandidate[]
+  declined_urls: string[]
+}
+
+export interface FeedDecision {
+  url: string
+  approved: boolean
+  name?: string
+  topics?: string[]
+  group_ids?: number[]
+  realtime?: boolean
+}
+
+export interface PendingCounts {
+  source_reviews: number
+  feed_reviews: number
 }

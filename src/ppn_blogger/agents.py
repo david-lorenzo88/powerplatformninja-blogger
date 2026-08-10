@@ -16,6 +16,7 @@ from .clients import ClientBundle, hosted_web_search_tools
 from .models import (
     AuthorClaimSet,
     Draft,
+    FeedSuggestionSet,
     NewsletterIssueDraft,
     ResearchDossier,
     ScoutReport,
@@ -38,6 +39,7 @@ DESIGN_VALIDATOR = "design_validator"
 SOURCE_CHECKER = "source_checker"
 TRANSLATOR = "translator"
 NEWSLETTER_EDITOR = "newsletter_editor"
+FEED_DISCOVERY_SCOUT = "feed_discovery_scout"
 
 
 def _opts(response_format: type, temperature: float | None = None) -> dict:
@@ -231,4 +233,22 @@ def build_newsletter_editor(
         description="Curates harvested articles into one newsletter issue.",
         tools=[tools.today_tool],
         default_options=_opts(NewsletterIssueDraft, 0.4),
+    )
+
+
+def build_feed_discovery_scout(settings: Settings, clients: ClientBundle) -> Agent:
+    """Finds candidate sources. Its output is a list of guesses, and is treated as one.
+
+    On the fast tier: this is breadth, not judgement — every URL it returns is
+    fetched and parsed before the operator sees it, so the expensive model would
+    be paying for confidence the pipeline does not rely on.
+    """
+    return Agent(
+        clients.fast,
+        prompts.feed_scout_discovery_instructions(settings),
+        id=FEED_DISCOVERY_SCOUT,
+        name=FEED_DISCOVERY_SCOUT,
+        description="Sweeps for new feeds worth following.",
+        tools=_searchable([tools.web_search, tools.fetch_page, tools.today_tool], clients.fast),
+        default_options=_opts(FeedSuggestionSet),
     )
