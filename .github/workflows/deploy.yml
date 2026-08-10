@@ -81,19 +81,20 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # Same incantation as the Dockerfile, which is what the deployed image
-      # already uses to reach Azure SQL.
+      # Microsoft's own packages-microsoft-prod.deb, with the release derived
+      # from the runner rather than hardcoded: `ubuntu-latest` moves between LTS
+      # versions on GitHub's schedule, and a pinned codename would turn that into
+      # a deploy blocked on an apt 404 with no obvious cause.
       - name: Install ODBC Driver 18
         run: |
+          set -euo pipefail
+          . /etc/os-release
+          curl -fsSL -O "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb"
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            curl gnupg ca-certificates apt-transport-https unixodbc-dev
-          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" \
-            | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update -qq
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+          odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
 
       - name: Install
         run: pip install -e ".[dev]" aioodbc
