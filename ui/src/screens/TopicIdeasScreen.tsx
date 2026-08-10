@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { listTopicIdeas } from '../api/client'
 import type { TopicIdeaSummary } from '../api/types'
 import { ScorePill } from '../components/Pills'
+import { BlogSubNav } from '../components/SubNav'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { field, quietBtn, rowCard } from '../lib/ui'
 
@@ -66,6 +67,9 @@ export function TopicIdeasScreen() {
               Filters{activeFilters > 0 && ` · ${activeFilters}`} {filtersOpen ? '▴' : '▾'}
             </button>
           )}
+        </div>
+        <div className="mt-3">
+          <BlogSubNav />
         </div>
         <div
           className={`mt-3 grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-center ${

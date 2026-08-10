@@ -45,6 +45,21 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    """Make a datetime read back from the database safe to compare.
+
+    SQLite has no timezone type, so a ``DateTime(timezone=True)`` column returns
+    a *naive* datetime locally and in tests, while Azure SQL's DATETIMEOFFSET
+    returns an aware one. Comparing either against ``utcnow()`` without this
+    raises TypeError on one backend and silently works on the other — which is
+    the worst shape a bug can have here, since the tests run on the forgiving
+    one. Everything stored is UTC, so attaching the timezone is sound.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -120,7 +135,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # suggest | explore | shortlist | write | cover
+    # suggest | explore | shortlist | write | cover | ingest
     kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
@@ -284,6 +299,168 @@ class DraftVersion(Base):
 Index("ix_draft_versions_post_version", DraftVersion.post_id, DraftVersion.version.desc())
 
 
+# ---------------------------------------------------------------------------
+# News: feeds, groups, articles
+#
+# The crew reads the nine feeds in sources.yaml fresh on every agent call and
+# keeps nothing. That is fine for research and useless for a digest, which has to
+# answer "what is new since last time" — so the news subsystem keeps its own
+# state: conditional-GET validators, per-feed health, and one row per entry ever
+# seen. sources.yaml is left exactly as it is; these feeds are a second, larger
+# registry seeded from it (see server/ingest.py).
+#
+# Two shapes here are load-bearing and both come from Azure SQL. URLs are stored
+# as Text and indexed through a String(64) hash of their canonical form, because
+# article URLs routinely exceed the ~450 characters an indexable NVARCHAR holds
+# and NVARCHAR(max) cannot be indexed at all. And every column a later phase
+# needs is declared now — create_all is checkfirst-only and never ALTERs, so a
+# column added later means hand-run DDL against production.
+# ---------------------------------------------------------------------------
+
+
+class Feed(Base):
+    """One RSS/Atom source in the managed registry."""
+
+    __tablename__ = "feeds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    url: Mapped[str] = mapped_column(Text)
+    # sha256(news.canonical_url(url)) — the dedup key. Unique and non-clustered:
+    # the same trap as push_subscriptions.endpoint, for the same reason.
+    url_hash: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(200), default="")  # what the operator calls it
+    title: Mapped[str] = mapped_column(String(300), default="")  # what the feed calls itself
+    site_url: Mapped[str] = mapped_column(Text, default="")
+    home_domain: Mapped[str] = mapped_column(String(200), default="", index=True)
+    tier: Mapped[str] = mapped_column(String(40), default="unknown")  # trust_tiers ids
+    topics: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Phase 2: a realtime feed is polled on the short cadence and notifies.
+    realtime: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # Reserved: exposes this feed to tools.read_feeds once the crew reads the
+    # registry rather than sources.yaml. Not wired yet, deliberately.
+    used_by_crew: Mapped[bool] = mapped_column(Boolean, default=False)
+    origin: Mapped[str] = mapped_column(String(32), default="manual")  # manual|seed|discovered
+    # Conditional GET state — the thing that makes a short cadence affordable.
+    etag: Mapped[str] = mapped_column(String(200), default="")
+    last_modified: Mapped[str] = mapped_column(String(120), default="")
+    # Health. `last_status` is the HTTP code, or 0 when the request never
+    # completed at all — a distinction read_feeds throws away, which is why a
+    # feed can currently 403 for months without anyone noticing.
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_entry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(String(400), default="")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_poll_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=0)  # 0 = use the default
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index("ix_feeds_url_hash", Feed.url_hash, unique=True)
+Index("ix_feeds_enabled_realtime", Feed.enabled, Feed.realtime)
+
+
+class FeedGroup(Base):
+    """A named bundle of feeds — the unit a newsletter draws from."""
+
+    __tablename__ = "feed_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(120))
+    name: Mapped[str] = mapped_column(String(200), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+Index("ix_feed_groups_slug", FeedGroup.slug, unique=True)
+
+
+class FeedGroupMember(Base):
+    """Feed-to-group membership.
+
+    A mapped class rather than a bare association Table: there is no
+    relationship() anywhere in this codebase — every read is an explicit
+    select() — and a plain autoincrement PK sidesteps the clustered-key question
+    a composite primary key would raise on Azure SQL.
+    """
+
+    __tablename__ = "feed_group_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(Integer, ForeignKey("feed_groups.id"), index=True)
+    feed_id: Mapped[int] = mapped_column(Integer, ForeignKey("feeds.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_feed_group_member_pair", FeedGroupMember.group_id, FeedGroupMember.feed_id, unique=True)
+
+
+class Article(Base):
+    """One entry harvested from a feed.
+
+    The unique (feed_id, entry_key) index is not an optimisation — it is the
+    dedup guarantee the whole subsystem rests on. A feed republishing an entry
+    after an edit cannot create a second row, which is what makes "notify once"
+    structural rather than something the notify code has to remember.
+    """
+
+    __tablename__ = "articles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feed_id: Mapped[int] = mapped_column(Integer, ForeignKey("feeds.id"), index=True)
+    entry_key: Mapped[str] = mapped_column(String(64))
+    # Separate from entry_key: the same story syndicated by two feeds is two rows
+    # but one URL, and a digest must not show it twice.
+    url_hash: Mapped[str] = mapped_column(String(64), index=True)
+    url: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(String(400), default="")
+    author: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # Reserved and deliberately left empty: storing content:encoded for hundreds
+    # of feeds reaches gigabytes within a year on a tier billed by storage. The
+    # column exists now only because it could never be added later.
+    content: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    domain: Mapped[str] = mapped_column(String(200), default="", index=True)
+    tier: Mapped[str] = mapped_column(String(40), default="unknown")
+    language: Mapped[str] = mapped_column(String(16), default="")
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    # Phase 2: set before the push is sent, so a crash mid-send costs a missed
+    # notification rather than a duplicate one.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Phase 3: cheap "has any issue used this?" without joining issue items.
+    used_in_issue_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+Index("ix_articles_feed_entry", Article.feed_id, Article.entry_key, unique=True)
+Index("ix_articles_published", Article.published_at.desc())
+Index("ix_articles_fetched", Article.fetched_at.desc())
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -336,15 +513,20 @@ async def reset_engine() -> None:
 
 
 __all__ = [
+    "Article",
     "Base",
     "ConfigDocument",
     "DraftVersion",
+    "Feed",
+    "FeedGroup",
+    "FeedGroupMember",
     "Post",
     "PushSubscription",
     "Run",
     "RunEvent",
     "SourceReview",
     "TopicIdea",
+    "as_utc",
     "engine",
     "func",
     "init_db",

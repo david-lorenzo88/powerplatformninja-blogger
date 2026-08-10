@@ -35,6 +35,8 @@ wp_app = typer.Typer(help="WordPress operations.")
 app.add_typer(wp_app, name="wp")
 config_app = typer.Typer(help="Configuration store operations (server database).")
 app.add_typer(config_app, name="config")
+news_app = typer.Typer(help="News feeds: register sources and harvest them.")
+app.add_typer(news_app, name="news")
 console = Console()
 
 
@@ -1102,6 +1104,170 @@ def show_config() -> None:
         "feeds": len(settings.feeds),
     }
     console.print_json(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# News feeds
+#
+# These talk to the same database the server uses, so a feed added here shows up
+# in the UI and vice versa. They exist mainly so the subsystem can be exercised
+# without a browser — a real feed, twice, is the only way to see the conditional
+# GET actually working.
+# ---------------------------------------------------------------------------
+
+
+async def _news_ready() -> None:
+    from .server.db import init_db
+
+    await init_db()
+
+
+@news_app.command("list")
+def news_list() -> None:
+    """Show the registered feeds and their health."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server.news_store import list_feeds
+
+        feeds = await list_feeds()
+        if not feeds:
+            console.print("[yellow]No feeds registered. Add one with `ppn news add <url>`.[/]")
+            return
+        table = Table(title=f"{len(feeds)} feed(s)")
+        table.add_column("id", justify="right")
+        table.add_column("name")
+        table.add_column("items", justify="right")
+        table.add_column("latest")
+        table.add_column("health")
+        for feed in feeds:
+            colour = {"ok": "green", "failing": "red", "disabled": "dim", "stale": "yellow"}
+            table.add_row(
+                str(feed["id"]),
+                feed["name"] or feed["url"],
+                str(feed["entry_count"]),
+                (feed["last_entry_at"] or "—")[:10],
+                f"[{colour.get(feed['health'], 'white')}]{feed['health']}[/]",
+            )
+        console.print(table)
+
+    asyncio.run(run())
+
+
+@news_app.command("validate")
+def news_validate(url: str = typer.Argument(..., help="A feed URL, or any page on the site.")) -> None:
+    """Fetch a URL and report whether there is a feed there."""
+
+    async def run() -> None:
+        from . import news
+
+        result = await news.probe(url)
+        candidates = [url] if result.entries else await news.discover_feeds(url)
+        for candidate in candidates:
+            found = result if candidate == url and result.entries else await news.probe(candidate)
+            if found.entries:
+                console.print(f"[green]Feed found[/] {candidate}")
+                console.print(f"  {found.title or '(untitled)'} — {len(found.entries)} entries")
+                for entry in found.entries[:5]:
+                    date = entry.published.date().isoformat() if entry.published else "—"
+                    console.print(f"  · [dim]{date}[/] {entry.title}")
+                return
+        console.print(f"[red]No feed found[/] at {url}\n  {news.describe_failure(result)}")
+
+    asyncio.run(run())
+
+
+@news_app.command("add")
+def news_add(
+    url: str = typer.Argument(..., help="A feed URL, or any page on the site."),
+    name: str = typer.Option("", help="What to call it. Defaults to the feed's own title."),
+    tier: str = typer.Option("unknown", help="Trust tier id from sources.yaml."),
+    realtime: bool = typer.Option(False, "--realtime", help="Poll on the short cadence."),
+) -> None:
+    """Register a feed, after confirming it is one."""
+
+    async def run() -> None:
+        await _news_ready()
+        from . import news
+        from .server.news_store import create_feed
+
+        result = await news.probe(url)
+        target = url
+        if not result.entries:
+            for candidate in await news.discover_feeds(url):
+                found = await news.probe(candidate)
+                if found.entries:
+                    result, target = found, candidate
+                    break
+        if not result.entries:
+            console.print(f"[red]No feed at[/] {url}\n  {news.describe_failure(result)}")
+            raise typer.Exit(1)
+
+        try:
+            feed = await create_feed(
+                target,
+                name=name,
+                title=result.title,
+                site_url=result.site_url,
+                tier=tier,
+                realtime=realtime,
+            )
+        except ValueError as exc:
+            console.print(f"[yellow]{exc}[/]")
+            raise typer.Exit(1) from exc
+        console.print(f"[green]Added[/] #{feed['id']} {feed['name']} — {target}")
+
+    asyncio.run(run())
+
+
+@news_app.command("poll")
+def news_poll(
+    feed_id: int = typer.Option(0, "--id", help="One feed. Omit for every enabled feed."),
+    due_only: bool = typer.Option(False, "--due", help="Only feeds whose next poll is due."),
+) -> None:
+    """Fetch feeds and file anything new."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server.ingest import ingest
+
+        result = await ingest(feed_ids=[feed_id] if feed_id else None, only_due=due_only)
+        console.print(
+            f"[green]{result['new_articles']} new[/] from {result['feeds']} feed(s) — "
+            f"{result['not_modified']} unchanged, {result['errors']} error(s)"
+        )
+        for feed in result.get("per_feed", []):
+            if feed["error"]:
+                console.print(f"  [red]{feed['name']}[/]: {feed['error']}")
+            elif feed["not_modified"]:
+                console.print(f"  [dim]{feed['name']}: 304 not modified[/]")
+            elif feed["new"]:
+                console.print(f"  {feed['name']}: {feed['new']} new")
+
+    asyncio.run(run())
+
+
+@news_app.command("read")
+def news_read(
+    limit: int = typer.Option(20, help="How many articles to show."),
+    feed_id: int = typer.Option(0, "--id", help="Restrict to one feed."),
+) -> None:
+    """Show the most recent harvested articles."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server.news_store import list_articles
+
+        articles = await list_articles(feed_id=feed_id or None, limit=limit)
+        if not articles:
+            console.print("[yellow]Nothing harvested yet. Run `ppn news poll`.[/]")
+            return
+        for article in articles:
+            when = (article["published_at"] or article["fetched_at"] or "")[:10]
+            console.print(f"[dim]{when}[/] [cyan]{article['feed_name']}[/] {article['title']}")
+            console.print(f"        [dim]{article['url']}[/]")
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
