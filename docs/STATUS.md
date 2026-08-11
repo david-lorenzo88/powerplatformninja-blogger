@@ -348,6 +348,56 @@ often for no more information.
 
 - **Tests**: 27 new (15 delivery, 12 discovery); suite is **234 passing**.
 
+## Feed discovery, aimed by a brief (new)
+
+Phase 5 shipped the whole mechanism — sweep, verify, review, approve, remember
+the refusal — but the only way to start one was a **Find new** button that sent
+no instruction. `sweep(instruction)` and `FeedDiscoveryReview.instruction`
+existed and were never populated: dead wiring, which from the outside looks
+exactly like working wiring.
+
+- **The brief now exists in the UI.** *Find new* opens a dialog with a free-text
+  box, four example briefs that fill it, and a plain statement of what a sweep
+  costs. Empty is still valid and means a general sweep.
+- **A brief governs the prompt.** `feed_scout_discovery_instructions(settings,
+  brief)` puts it in the scout's *instructions* — a sweep is one long
+  tool-calling loop, and an aim in a user turn is competing with everything nine
+  searches returned since. Where the brief disagrees with the configured
+  sections, the brief wins and the sections drop to context.
+- **The scout is told how to research**, not just what to find: several distinct
+  angles in the vocabulary each community uses, open a promising site rather than
+  guessing its feed path, breadth over certainty — which is safe precisely
+  because `_verify` fetches every URL before the operator sees it.
+- **The review shows what was asked.** "You asked for: …" on the review screen
+  and under each row in the list; the brief also names the run. The `instruction`
+  column now holds the operator's words *only* — it used to fall back to the
+  scout's own notes, which would have made "you asked for" a guess. (Notes are
+  logged instead; giving them a column would need hand-run DDL, since
+  `create_all` never alters.)
+- **`ppn news discover "<brief>"`** — the CLI half, with per-feed approval in the
+  terminal, mirroring `suggest --explore`.
+
+**Two real bugs this turned up**, both invisible while the sweep was unreachable:
+
+- **`discovery._ask` imported `ChatMessage` from `agent_framework`**, which does
+  not exist in 1.12.1 (it is `Message`; `util.user_message` already wraps it). A
+  real sweep would have died with an `ImportError` on its first call. Every
+  existing discovery test drove `_verify` and `decide` directly, so the suite was
+  green.
+- **`StubChatClient` had no canned `FeedSuggestionSet`**, so a sweep could not be
+  run offline at all — which is *why* the above survived. It now returns two
+  suggestions, one of them a plausible address with nothing behind it, so every
+  dry run exercises the discard rather than the happy path.
+
+**Verified end to end offline**: `ppn news discover "…" --dry-run --yes` swept,
+discarded the dead URL, filed the review, and created the surviving feed;
+verification fetched a real feed (10 entries) as designed. Both dialogs and the
+review screen checked in the browser at desktop and 375×812.
+
+- **Tests**: 6 new (5 discovery, 1 API); suite is **240 passing**.
+- **Not yet run against real Azure** — the sweep has still never called a live
+  model, so how many usable feeds a real brief returns is unknown.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one

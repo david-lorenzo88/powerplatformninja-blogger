@@ -649,11 +649,25 @@ class DecideFeeds(BaseModel):
     decisions: list[FeedDecision] = Field(default_factory=list)
 
 
+class StartDiscovery(BaseModel):
+    instruction: str = ""
+
+
 @router.post("/discover", status_code=202)
-async def start_discovery(instruction: str = "") -> dict[str, str]:
-    run_id = await manager().enqueue(
-        "discover", {"instruction": instruction}, "Feed discovery sweep"
-    )
+async def start_discovery(
+    body: StartDiscovery | None = None, instruction: str = ""
+) -> dict[str, str]:
+    """Start a sweep, optionally aimed by a brief.
+
+    The brief comes in the body: it is prose the operator typed, and a
+    paragraph belongs in a body rather than a query string. The query parameter
+    stays because it was the original signature and a cached SPA still sends
+    it — an operator whose browser has yesterday's bundle should get a general
+    sweep, not a 422.
+    """
+    brief = (body.instruction if body else "") or instruction
+    label = f"Feed discovery — {brief[:60]}" if brief.strip() else "Feed discovery sweep"
+    run_id = await manager().enqueue("discover", {"instruction": brief}, label)
     return {"id": run_id, "run_id": run_id}
 
 

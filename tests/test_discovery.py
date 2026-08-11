@@ -242,3 +242,89 @@ async def test_pending_count_drives_the_nav_badge(store, monkeypatch) -> None:
     assert await discovery.pending_count() == 0
     # Cancelling twice is not an error, it just does nothing.
     assert await discovery.cancel(review_id) is False
+
+
+# ---------------------------------------------------------------------------
+# The brief
+#
+# A sweep with no aim returns the sites you already follow. These assert that
+# the operator's words actually reach the model and survive into the review —
+# the wiring existed before the box that fills it did, and dead wiring looks
+# exactly like working wiring from the outside.
+# ---------------------------------------------------------------------------
+
+
+BRIEF = "Power Platform ALM: pipelines, solution deployment, environment strategy"
+
+
+def test_a_brief_governs_the_prompt_and_the_sections_become_context() -> None:
+    from ppn_blogger import prompts
+    from ppn_blogger.settings import get_settings
+
+    settings = get_settings()
+    aimed = prompts.feed_scout_discovery_instructions(settings, BRIEF)
+
+    assert BRIEF in aimed
+    # Not merely present — stated as the thing that decides.
+    assert "This is the brief" in aimed
+    assert "follow the brief" in aimed
+    # The standing sections stay, demoted to context rather than a quota.
+    assert "for context" in aimed
+
+
+def test_without_a_brief_the_sections_are_the_aim() -> None:
+    from ppn_blogger import prompts
+    from ppn_blogger.settings import get_settings
+
+    general = prompts.feed_scout_discovery_instructions(get_settings(), "")
+
+    assert "<topics>" in general
+    assert "This is the brief" not in general
+
+
+async def test_the_brief_reaches_the_scout_and_is_stored_verbatim(store, monkeypatch) -> None:
+    """End to end through the real `sweep` and `_ask`, stubbed at the model itself.
+
+    Deliberately does *not* patch `_ask` — the wiring under test is the path
+    from the operator's words to the agent's instructions, so stubbing it out
+    would leave nothing worth asserting.
+    """
+    from ppn_blogger import agents, util
+    from ppn_blogger.models import FeedSuggestion, FeedSuggestionSet
+
+    seen: dict[str, str] = {}
+
+    class _Agent:
+        async def run(self, messages):
+            seen["message"] = messages[0].text
+            return "raw response"
+
+    def build(settings, clients, brief=""):
+        seen["brief"] = brief
+        return _Agent()
+
+    monkeypatch.setattr(agents, "build_feed_discovery_scout", build)
+    monkeypatch.setattr(
+        util,
+        "parse_model",
+        lambda response, model: FeedSuggestionSet(
+            suggestions=[
+                FeedSuggestion(url="https://alm.example/feed", name="ALM Weekly", reason="why")
+            ],
+            notes="a note nobody asked for",
+        ),
+    )
+    _probes(monkeypatch, {"https://alm.example/feed": _feed()})
+
+    result = await discovery.sweep(BRIEF)
+
+    # In the instructions, where it still governs at search number nine.
+    assert seen["brief"] == BRIEF
+    assert BRIEF in seen["message"]
+    assert result["candidate_count"] == 1
+
+    # Stored as the operator typed it — not the scout's commentary, which is
+    # what the review screen would otherwise show back as "you asked for".
+    review = await discovery.get(int(result["review_id"]))
+    assert review["instruction"] == BRIEF
+    assert "nobody asked for" not in review["instruction"]

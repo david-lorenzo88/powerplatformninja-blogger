@@ -755,12 +755,18 @@ rather than filling it with something weak.
 """
 
 
-def feed_scout_discovery_instructions(settings: Settings) -> str:
+def feed_scout_discovery_instructions(settings: Settings, brief: str = "") -> str:
     """Brief for the discovery sweep: find *sources*, not stories.
 
     Deliberately narrow. The scout is not summarising the news, it is naming
     places that publish it — and it is told plainly that every URL is fetched
     afterwards, because a scout that knows its guesses are checked guesses less.
+
+    ``brief`` is the operator's own words, and when there is one it **governs**:
+    the section taxonomy drops to context. Someone who types "Fabric and
+    Dataverse ALM" wants those sources, not a sweep that quietly re-aims itself
+    at the five standing sections and returns the same general-interest blogs a
+    sweep with no brief would have.
     """
     discovery = dict(settings.newsletters.get("discovery", {}))
     seeds = discovery.get("seeds", [])
@@ -770,20 +776,56 @@ def feed_scout_discovery_instructions(settings: Settings) -> str:
         for s in sections
     )
     seed_lines = "\n".join(f"- {s}" for s in seeds) or "- (none configured)"
+    brief = brief.strip()
+
+    aim = (
+        f"""<what you were asked for>
+The operator asked for this, in their own words:
+
+{brief}
+
+**This is the brief, and it decides what counts as a good source.** Where it
+disagrees with the standing sections below, follow the brief. The sections are
+context for the newsletter these feeds are for — not a quota to fill.
+</what you were asked for>
+
+<the standing sections, for context>
+{topics}
+</the standing sections, for context>"""
+        if brief
+        else f"""<topics>
+Suggest sources that would feed these:
+{topics}
+</topics>"""
+    )
 
     return f"""{blog_context(settings)}
 
 You are the **Feed Scout on a discovery sweep**. Your job is to find *sources*
 worth following — blogs, release notes, research feeds — not to report stories.
 
-<topics>
-Suggest sources that would feed these:
-{topics}
-</topics>
+{aim}
 
 <where to look>
 {seed_lines}
 </where to look>
+
+<how to work>
+Search before you answer, and search more than once. A single query returns the
+sites everyone already knows; the ones worth adding are usually a vocabulary
+shift away. Work through several distinct angles — the vendor's own engineering
+and release-notes pages, the practitioners and MVPs who write about it, the
+research or standards body behind it, the conferences and communities, the
+tooling built on top — and search each in the words that community actually
+uses.
+
+When a search turns up a promising site, **open it** and look for its feed link
+rather than guessing the path. Following one good site to the others it links to
+is usually worth more than another search.
+
+Aim for breadth: ten to twenty sources you have some reason to believe in beats
+three you are certain of. The verification step below is what makes that safe.
+</how to work>
 
 <rules>
 Return the **feed URL** where you know it (usually /feed, /rss, /atom.xml, or the
@@ -798,5 +840,10 @@ that merely sounds right.
 Favour primary sources: a vendor's own engineering blog over a site that
 aggregates it, a research group's own feed over a newsletter about the field.
 One entry per source. Do not suggest a site already in the list you were given.
+
+In `reason`, say what this source publishes and why it earns a place — for the
+brief where there is one. That sentence is what the operator reads when deciding,
+so "covers Power Platform" is worth nothing next to "the Dataverse team's own
+release notes; where breaking changes land first".
 </rules>
 """
