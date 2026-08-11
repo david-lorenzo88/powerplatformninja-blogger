@@ -428,10 +428,21 @@ with a spend view over time and prices kept in step with Azure.
   **Spend** screen (day/kind, priciest runs), and **Update from Azure** on the
   prices document.
 
-**Verified**: 290 tests passing, ruff clean; `ppn suggest --dry-run` reports a
+**Verified**: 292 tests passing, ruff clean; `ppn suggest --dry-run` reports a
 real tally; the bind and refresh flows exercised against the **live** retail API
 from both the CLI and the browser; the Runs list, breakdown and Spend screen
 checked in the browser against seeded data.
+
+**It broke `main` first, on the dialect seam.** The day rollup used
+`func.date()` — SQLite's spelling, and not a function at all on SQL Server, so
+CI went red immediately after the merge. Worth knowing *why* the usual guards
+missed it: `func.date` compiles cleanly against the mssql dialect and fails only
+on execution, so the compile-time checks in `test_sql_portability.py` had nothing
+to catch. Nor is there a portable spelling to switch to — `CAST(x AS DATE)` is
+accepted by SQLite and returns the **year**, silently bucketing a whole year
+together. Fixed with `usage_store.day_bucket()`, a dialect branch, plus a source
+grep for SQLite-only date functions so the next one fails in CI. Re-verified
+against a real SQL Server 2022 container, not just SQLite.
 
 **One bug caught in the browser that the tests had missed**: `by_agent` returned
 no `priced` field, so every row in the breakdown rendered "—" beside a real

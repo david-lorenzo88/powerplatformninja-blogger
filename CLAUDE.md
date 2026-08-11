@@ -264,6 +264,18 @@ through the entire suite. Three things guard this seam now, and all three matter
 Use `== true()` / `== false()` for boolean predicates, and `db.as_utc()` before
 comparing any stored timestamp in Python.
 
+**Date truncation has no portable spelling, and both wrong answers differ.** This
+one reached `main`: `func.date(x)` is SQLite's, and SQL Server has no such
+function — *'date' is not a recognized built-in function name*, statement dead.
+The obvious fix is worse. `CAST(x AS DATE)` does not fail on SQLite: "DATE"
+carries no affinity keyword, so it gets NUMERIC affinity and returns the **year
+as an integer**, collapsing every day of a year into one bucket with nothing
+raised anywhere. Use `usage_store.day_bucket()`, which branches on the dialect.
+Note that a compile check cannot catch this — `func.date` renders happily
+against the mssql dialect and only fails on execution — which is why the guard
+is a source grep for `func.date|time|datetime|julianday|strftime`, with an
+explicit `# sqlite-only:` marker for a deliberate use.
+
 **A polling cadence is a bill.** Azure SQL is serverless with
 `autoPauseDelay: 60`, so any server-side loop touching the database more often
 than hourly stops it ever pausing — on the order of $150-200/month at list price

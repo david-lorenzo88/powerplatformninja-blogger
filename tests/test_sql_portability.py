@@ -11,6 +11,13 @@ failed on the first real request:
 * SQLite ships with ``PRAGMA foreign_keys`` **off** — it stores the constraints
   and enforces none of them — so an orphan row is accepted in silence where
   Azure SQL rejects the INSERT outright.
+* ``func.date(x)`` is SQLite's date truncation and **is not a function at all**
+  on SQL Server, which answers *'date' is not a recognized built-in function
+  name* and dies. This one reached `main`. Its mirror image is worse: the
+  obvious "portable" fix, ``CAST(x AS DATE)``, is not an error on SQLite — the
+  name carries no affinity keyword, so it yields the *year as an integer* and
+  every day silently collapses into one bucket. Hence
+  ``usage_store.day_bucket``, and the guard below.
 
 Neither is catchable by running a query against SQLite, which is the only thing
 the rest of the suite does. These tests compile statements against the SQL Server
@@ -55,6 +62,61 @@ def test_no_module_uses_is_true_or_is_false() -> None:
         "sqlalchemy instead — both render as `= 1` / `= 0` on every dialect:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# SQLite's own date/time functions. None of these exist on SQL Server, and none
+# of them fail at *compile* time — the statement renders happily and dies on
+# execution, so only a source-level guard catches them before a deploy.
+SQLITE_ONLY_FUNCS = re.compile(r"\bfunc\.(date|time|datetime|julianday|strftime|unixepoch)\s*\(")
+
+# The one legitimate use is inside a dialect branch. Marking it is deliberate:
+# it makes writing a new one a conscious act rather than an accident.
+GUARDED = "# sqlite-only:"
+
+
+def test_no_module_calls_a_sqlite_only_date_function() -> None:
+    """`func.date()` compiles on SQL Server and then fails on execution.
+
+    That combination is why this is a grep and not a compile check — the
+    statement is valid SQLAlchemy and invalid SQL, so nothing short of running
+    it against a real server or reading the source will find it. It cost a
+    merge to `main` before this guard existed.
+    """
+    offenders: list[str] = []
+    for path in sorted(SERVER_DIR.rglob("*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            if SQLITE_ONLY_FUNCS.search(line) and GUARDED not in line:
+                offenders.append(f"{path.name}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "SQLite-only date functions do not exist on SQL Server, and the "
+        "statement compiles anyway — it fails only when it runs. Use "
+        "`usage_store.day_bucket()`, which branches per dialect, or mark a "
+        f"deliberate use with `{GUARDED}`:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_day_bucket_speaks_each_dialect() -> None:
+    """Both branches, because both directions are wrong on the other backend.
+
+    SQL Server rejects `date()` outright; SQLite accepts `CAST(x AS DATE)` and
+    returns the year, which is the failure that would never be noticed.
+    """
+    from sqlalchemy.dialects import sqlite
+
+    from ppn_blogger.server.db import RunUsage
+    from ppn_blogger.server.usage_store import day_bucket
+
+    on_sqlite = str(
+        select(day_bucket(RunUsage.created_at, "sqlite")).compile(dialect=sqlite.dialect())
+    )
+    assert "date(" in on_sqlite.lower()
+
+    on_mssql = str(
+        select(day_bucket(RunUsage.created_at, "mssql")).compile(dialect=mssql.dialect())
+    )
+    assert "CAST(" in on_mssql and "AS DATE" in on_mssql
+    assert "date(run_usage.created_at)" not in on_mssql.lower()
 
 
 @pytest.mark.parametrize(
