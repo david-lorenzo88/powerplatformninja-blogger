@@ -464,11 +464,13 @@ export const getDeliveries = (id: number) =>
 
 // -- Feed discovery ----------------------------------------------------------
 
+// The brief goes in the body: it is a paragraph the operator typed, and a
+// paragraph in a query string is a length limit waiting to be hit.
 export const startDiscovery = (instruction = '') =>
-  request<{ id: string; run_id: string }>(
-    `/news/discover${instruction ? `?instruction=${encodeURIComponent(instruction)}` : ''}`,
-    { method: 'POST' },
-  )
+  request<{ id: string; run_id: string }>('/news/discover', {
+    method: 'POST',
+    body: JSON.stringify({ instruction }),
+  })
 
 export const listFeedReviews = (status?: string) =>
   request<FeedReviewSummary[]>(`/news/feed-reviews${status ? `?status=${status}` : ''}`)

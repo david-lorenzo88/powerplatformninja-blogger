@@ -1222,6 +1222,120 @@ def news_add(
     asyncio.run(run())
 
 
+@news_app.command("discover")
+def news_discover(
+    brief: str = typer.Argument(
+        "",
+        help="What to look for, e.g. 'Power Platform ALM — release notes and practitioners'.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Follow every verified feed without prompting."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Use the offline stub client."),
+) -> None:
+    """Search the web for feeds matching a brief, then approve them one by one.
+
+    The server splits this across a run and a review because a worker cannot be
+    held open for a human. The CLI has one process and can simply ask — the same
+    shape as ``suggest --explore``.
+    """
+    setup_logging()
+
+    async def run() -> None:
+        await _news_ready()
+        from .server import discovery
+
+        console.print(
+            f"[dim]Searching for:[/] {brief.strip() or '(a general sweep)'}\n"
+            "[dim]Every address found is fetched and parsed before you see it.[/]"
+        )
+        result = await discovery.sweep(brief, clients=_clients(dry_run) if dry_run else None)
+        review_id = int(result["review_id"])
+        review = await discovery.get(review_id)
+        candidates = review["candidates"]
+
+        if not candidates:
+            console.print(
+                f"[yellow]Nothing new.[/] The scout named {result['suggested']} source(s); "
+                "each was already followed, already declined, or not a real feed."
+            )
+            return
+
+        decisions = _approve_feeds(candidates, approve_all=yes)
+        outcome = await discovery.decide(review_id, decisions)
+        console.print(
+            f"[green]{outcome['added']} feed(s) added[/], {outcome['declined']} declined "
+            "(a declined feed is never offered again)."
+        )
+
+    asyncio.run(run())
+
+
+def _approve_feeds(candidates: list[dict], *, approve_all: bool) -> list[dict]:
+    """Take the verdict, feed by feed.
+
+    Nothing starts approved. Approving one puts a URL into a poller that calls
+    it every six hours from then on, which is a higher bar than the source
+    review's — there, approval only widens what the crew may cite.
+    """
+    chosen = {c["url"]: approve_all for c in candidates}
+
+    def render() -> None:
+        table = Table(title=f"{len(candidates)} verified feed(s)")
+        table.add_column("#", width=3)
+        table.add_column("✓", width=2)
+        table.add_column("Feed", overflow="fold")
+        table.add_column("Why", overflow="fold")
+        table.add_column("Items", width=5, justify="right")
+        table.add_column("Newest", width=10)
+        for i, c in enumerate(candidates, 1):
+            table.add_row(
+                str(i),
+                "[green]✓[/]" if chosen[c["url"]] else " ",
+                f"{c['name']}\n[dim]{c['url']}[/]",
+                c.get("reason", ""),
+                str(c.get("entry_count", 0)),
+                (c.get("newest") or "—")[:10],
+            )
+        console.print(table)
+
+    render()
+    if not approve_all:
+        console.print(
+            "Type numbers to toggle (e.g. [bold]2 5[/]), [bold]a[/] for all, [bold]n[/] for "
+            "none, [bold]?N[/] to see what feed N published, or press Enter to accept.\n"
+            "[dim]Anything left unchecked is declined, and never offered again.[/]"
+        )
+        while True:
+            answer = typer.prompt("Toggle", default="", show_default=False).strip().lower()
+            if not answer:
+                break
+            if answer in {"a", "n"}:
+                chosen = dict.fromkeys(chosen, answer == "a")
+            elif answer.startswith("?") and answer[1:].strip().isdigit():
+                index = int(answer[1:].strip())
+                if 1 <= index <= len(candidates):
+                    for title in candidates[index - 1].get("sample_titles", []):
+                        console.print(f"  · {title}")
+                continue
+            else:
+                for token in answer.replace(",", " ").split():
+                    if token.isdigit() and 1 <= int(token) <= len(candidates):
+                        url = candidates[int(token) - 1]["url"]
+                        chosen[url] = not chosen[url]
+            render()
+
+    return [
+        {
+            "url": c["url"],
+            "approved": chosen[c["url"]],
+            "name": c["name"],
+            "topics": c.get("topics", []),
+        }
+        for c in candidates
+    ]
+
+
 @news_app.command("poll")
 def news_poll(
     feed_id: int = typer.Option(0, "--id", help="One feed. Omit for every enabled feed."),

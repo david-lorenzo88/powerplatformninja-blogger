@@ -26,6 +26,7 @@ from .models import (
     Citation,
     Claim,
     Draft,
+    FeedSuggestionSet,
     NewsletterIssueDraft,
     ResearchDossier,
     RuleFinding,
@@ -545,6 +546,39 @@ def _newsletter_issue(prompt: str) -> NewsletterIssueDraft:
     )
 
 
+def _feed_suggestions() -> FeedSuggestionSet:
+    """Candidate sources, one of which does not exist.
+
+    Same doctrine as `_newsletter_issue`: the stub walks the gate, not the happy
+    path. `discovery._verify` fetches every URL before the operator sees it, so
+    the canned set contains a plausible address with nothing behind it — a dry
+    run then proves the discard happens rather than proving a well-behaved model
+    would have been fine.
+
+    That this function did not exist is why the sweep could never be run
+    offline, and why an `ImportError` in `_ask` survived the whole test suite.
+    """
+    from .models import FeedSuggestion, FeedSuggestionSet
+
+    return FeedSuggestionSet(
+        suggestions=[
+            FeedSuggestion(
+                url="https://devblogs.microsoft.com/powerplatform/feed/",
+                name="Power Platform Dev Blog",
+                topics=["microsoft"],
+                reason="The product team's own engineering blog.",
+            ),
+            FeedSuggestion(
+                url="https://this-domain-does-not-exist.invalid/feed",
+                name="A source that is not there",
+                topics=["ai"],
+                reason="Plausible, and nothing behind it. Must never reach the review.",
+            ),
+        ],
+        notes="Two suggested; one of them is not real.",
+    )
+
+
 class StubChatClient(BaseChatClient):
     """Returns schema-valid canned responses. No network, no credentials."""
 
@@ -588,6 +622,8 @@ class StubChatClient(BaseChatClient):
             return _draft(revision=self._bump("draft"))
         if model is NewsletterIssueDraft:
             return _newsletter_issue(full)
+        if model is FeedSuggestionSet:
+            return _feed_suggestions()
         if model in (ValidationReport, ValidationReportDraft):
             n = self._bump("validation")
             validator = "design" if "Structure & Design" in full or n % 2 == 0 else "content"

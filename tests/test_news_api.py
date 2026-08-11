@@ -292,3 +292,51 @@ async def test_a_trailing_slash_404s_and_never_redirects(api) -> None:
     ):
         assert (await api.get(path)).status_code == 200
         assert (await api.get(path + "/")).status_code == 404
+
+
+async def test_a_discovery_brief_travels_in_the_body(api, monkeypatch) -> None:
+    """The brief is prose the operator typed, so it goes in the body.
+
+    The query parameter is kept because it was the original signature and a
+    cached SPA still sends it — an operator on yesterday's bundle should get a
+    general sweep, not a 422.
+    """
+    from ppn_blogger.server import discovery
+
+    # The queue dispatches for real, and a real sweep calls a model. What is
+    # under test is the parameter's journey to the run row, not the sweep.
+    # Every run started here is then waited on: leaving one in flight hangs the
+    # teardown rather than failing, which reads as a broken test file.
+    swept: list[str] = []
+
+    async def no_sweep(instruction="", **kw):
+        swept.append(instruction)
+        return {"review_id": 0, "candidate_count": 0, "suggested": 0}
+
+    monkeypatch.setattr(discovery, "sweep", no_sweep)
+
+    brief = "Power Platform ALM — release notes, and the practitioners worth reading"
+
+    response = await api.post("/api/news/discover", json={"instruction": brief})
+    assert response.status_code == 202
+
+    run = (await api.get(f"/api/runs/{response.json()['id']}")).json()
+    assert run["params"]["instruction"] == brief
+    # The brief names the run, so the Runs list distinguishes one sweep from another.
+    assert brief[:40] in run["label"]
+    await _wait_for(api, response.json()["id"])
+
+    legacy = await api.post("/api/news/discover?instruction=older+client")
+    assert legacy.status_code == 202
+    assert (await api.get(f"/api/runs/{legacy.json()['id']}")).json()["params"][
+        "instruction"
+    ] == "older client"
+    await _wait_for(api, legacy.json()["id"])
+
+    # And with nothing at all: a general sweep, not a validation error.
+    bare = await api.post("/api/news/discover")
+    assert bare.status_code == 202
+    await _wait_for(api, bare.json()["id"])
+
+    # The brief reached the sweep itself, not just the run row.
+    assert swept == [brief, "older client", ""]

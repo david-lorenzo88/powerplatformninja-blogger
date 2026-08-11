@@ -56,7 +56,7 @@ src/ppn_blogger/
                     newsletters (newsletters.py, newsletter_runs.py), delivery
                     (channels.py, delivery.py) and feed discovery (discovery.py)
 config/             editorial policy — the thing you actually tune
-tests/              234 tests, offline; conftest.py picks the DB backend
+tests/              240 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -69,7 +69,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 234 tests, ~35s, no network, no credentials
+pytest                      # 240 tests, ~35s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -79,6 +79,7 @@ ppn suggest --explore --dry-run --yes   # wide sweep + source approval, offline
 ppn write --index 1 --dry-run
 ppn news validate <url>     # is there a feed there? (no model, no writes)
 ppn news add <url>          # register a feed, after confirming it is one
+ppn news discover "<brief>" # search the web for feeds matching a brief, then approve
 ppn news poll               # fetch every enabled feed; run twice to see the 304s
 ppn news list | ppn news read
 ppn newsletter list|preview|generate   # preview calls no model
@@ -125,6 +126,15 @@ discarded before the review row is written. Approving therefore cannot mean
 adding a URL nobody checked — which matters more than the source review did,
 because an approved feed goes into a poller that calls it forever. A refusal is
 remembered in `declined_feeds` so a later sweep never re-offers it.
+
+**The sweep's brief is the operator's, and it governs.** `sweep(instruction)`
+puts the brief in the scout's *instructions*, not in a user turn — a sweep is one
+long tool-calling loop, and an aim stated in the system prompt still holds at
+search number nine. Where the brief disagrees with the configured newsletter
+sections, the brief wins and the sections drop to context; without one the
+sections are the aim. `FeedDiscoveryReview.instruction` stores the brief
+**verbatim and only the brief**, because the review screen shows it back as "you
+asked for this" and a verdict is only meaningful against the actual question.
 
 **Delivery must never raise, and never destroy an issue.** Every `Channel.send`
 returns a `DeliveryResult` rather than throwing; every `deliveries` row is

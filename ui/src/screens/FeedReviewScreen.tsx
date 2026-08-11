@@ -83,6 +83,15 @@ export function FeedReviewScreen() {
             {r.candidate_count} candidate{r.candidate_count === 1 ? '' : 's'}
           </span>
         </div>
+        {/* What was asked for. A verdict only means something against the
+            question — "is this a good feed?" is unanswerable, "is this what I
+            asked for?" is not. */}
+        {r.instruction.trim() && (
+          <p className="mt-2 max-w-3xl border-l-2 border-slate-700 pl-3 text-sm text-slate-300">
+            <span className="text-slate-500">You asked for: </span>
+            {r.instruction}
+          </p>
+        )}
         <p className="mt-2 max-w-3xl text-xs text-slate-500">
           Every one of these was fetched and parsed before it got here — a suggestion that did
           not resolve to a real feed with entries was discarded, so nothing below is a guess.
@@ -275,6 +284,11 @@ export function FeedReviewsScreen() {
                     <StatusChip status={r.status} />
                     <span className="ml-auto text-xs text-slate-500">{r.generated_on}</span>
                   </div>
+                  {/* The brief is what distinguishes one sweep from another;
+                      without it every row reads "12 candidates". */}
+                  <p className="mt-1 line-clamp-2 text-xs text-slate-500">
+                    {r.instruction.trim() || 'A general sweep across your usual sections.'}
+                  </p>
                 </button>
               </li>
             ))}

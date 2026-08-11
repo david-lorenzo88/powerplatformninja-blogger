@@ -236,16 +236,23 @@ def build_newsletter_editor(
     )
 
 
-def build_feed_discovery_scout(settings: Settings, clients: ClientBundle) -> Agent:
+def build_feed_discovery_scout(
+    settings: Settings, clients: ClientBundle, brief: str = ""
+) -> Agent:
     """Finds candidate sources. Its output is a list of guesses, and is treated as one.
 
     On the fast tier: this is breadth, not judgement — every URL it returns is
     fetched and parsed before the operator sees it, so the expensive model would
     be paying for confidence the pipeline does not rely on.
+
+    ``brief`` goes into the *instructions* rather than arriving as a user turn.
+    A sweep is one long tool-calling loop, and an aim stated in the system
+    prompt still governs at search number nine; one stated in a user message is
+    competing with everything the searches returned since.
     """
     return Agent(
         clients.fast,
-        prompts.feed_scout_discovery_instructions(settings),
+        prompts.feed_scout_discovery_instructions(settings, brief),
         id=FEED_DISCOVERY_SCOUT,
         name=FEED_DISCOVERY_SCOUT,
         description="Sweeps for new feeds worth following.",

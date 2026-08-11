@@ -30,6 +30,7 @@ export function FeedsScreen() {
   const [q, setQ] = useState('')
   const [health, setHealth] = useState<'all' | FeedHealth>('all')
   const [adding, setAdding] = useState(false)
+  const [finding, setFinding] = useState(false)
 
   const feeds = useQuery({ queryKey: ['feeds'], queryFn: () => listFeeds() })
   const groups = useQuery({ queryKey: ['feed-groups'], queryFn: listFeedGroups })
@@ -40,14 +41,6 @@ export function FeedsScreen() {
     queryKey: ['feed-reviews', 'pending'],
     queryFn: () => listFeedReviews('pending'),
     refetchInterval: 15_000,
-  })
-
-  const discover = useMutation({
-    mutationFn: () => startDiscovery(),
-    onSuccess: (run) => {
-      qc.invalidateQueries({ queryKey: ['runs'] })
-      navigate(`/runs/${run.id}`)
-    },
   })
 
   const refresh = useMutation({
@@ -134,11 +127,11 @@ export function FeedsScreen() {
             </button>
             <button
               className={ghostBtn}
-              disabled={!online || discover.isPending}
-              onClick={() => discover.mutate()}
-              title="Sweep for new sources. Every suggestion is fetched and checked before you see it."
+              disabled={!online}
+              onClick={() => setFinding(true)}
+              title="Search the web for new sources. Every suggestion is fetched and checked before you see it."
             >
-              {discover.isPending ? 'Starting…' : 'Find new'}
+              Find new
             </button>
             <button className={primaryBtn} disabled={!online} onClick={() => setAdding(true)}>
               Add feed
@@ -216,7 +209,89 @@ export function FeedsScreen() {
       </div>
 
       {adding && <AddFeedDialog onClose={() => setAdding(false)} />}
+      {finding && <FindFeedsDialog onClose={() => setFinding(false)} />}
     </div>
+  )
+}
+
+// A few briefs that are shaped like a good one — narrow, and in the vocabulary
+// the sources themselves use. They fill the box rather than submitting, because
+// the useful move is almost always to edit one.
+const EXAMPLE_BRIEFS = [
+  'Power Platform ALM: pipelines, solution deployment, environment strategy',
+  'Dataverse and Fabric — the vendor teams’ own release notes, not coverage of them',
+  'People building agents with LLMs: evals, tool use, what actually shipped',
+  'Microsoft 365 Copilot extensibility, from Microsoft and from practitioners',
+]
+
+// The brief is the whole feature: a sweep with no aim returns the sites you
+// already follow, and that is exactly what the button used to do.
+function FindFeedsDialog({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [brief, setBrief] = useState('')
+
+  const discover = useMutation({
+    mutationFn: () => startDiscovery(brief.trim()),
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: ['runs'] })
+      navigate(`/runs/${run.id}`)
+    },
+  })
+
+  return (
+    <Modal title="Find new feeds" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div>
+          <span className={label}>What are you looking for?</span>
+          <textarea
+            className={`${field} min-h-24 resize-y`}
+            placeholder="Sources covering Power Platform ALM — release notes, the teams’ own blogs, and the practitioners worth reading."
+            value={brief}
+            autoFocus
+            onChange={(e) => setBrief(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            Say it the way you would to a colleague. The narrower the brief, the better the
+            sweep — leave it empty for a general one across your usual sections.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          {EXAMPLE_BRIEFS.map((example) => (
+            <button
+              key={example}
+              className="rounded-lg border border-slate-700 px-2 py-1 text-left text-xs text-slate-400 hover:border-slate-600 hover:text-slate-300"
+              onClick={() => setBrief(example)}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+
+        <p className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-500">
+          This searches the web, so it takes a few minutes and costs a little. Every address it
+          comes back with is fetched and parsed first — anything that is not a real feed with
+          recent entries never reaches you. Nothing is followed until you say so.
+        </p>
+
+        {discover.error && (
+          <p className="text-xs text-rose-400">
+            {discover.error instanceof ApiError
+              ? discover.error.message
+              : String(discover.error)}
+          </p>
+        )}
+
+        <button
+          className={primaryBtn}
+          disabled={discover.isPending}
+          onClick={() => discover.mutate()}
+        >
+          {discover.isPending ? 'Starting…' : brief.trim() ? 'Search for these' : 'Sweep broadly'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 

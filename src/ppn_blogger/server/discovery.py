@@ -39,8 +39,13 @@ PENDING, APPROVED, CANCELLED = "pending", "approved", "cancelled"
 MIN_ENTRIES = 1
 
 
-async def sweep(instruction: str = "", *, on_event: Any = None) -> dict[str, Any]:
+async def sweep(
+    instruction: str = "", *, clients: Any = None, on_event: Any = None
+) -> dict[str, Any]:
     """Ask for candidate sources, verify every one, and file a review.
+
+    ``instruction`` is the operator's brief and aims the whole sweep; empty
+    means a general one across the configured sections.
 
     Returns a thin result — counts and a review id. The candidate list lives in
     the row, exactly as an exploration sweep does, because that is what the
@@ -49,7 +54,7 @@ async def sweep(instruction: str = "", *, on_event: Any = None) -> dict[str, Any
     from ..models import FeedSuggestionSet
 
     settings = get_settings()
-    suggested = await _ask(instruction, settings, on_event=on_event)
+    suggested = await _ask(instruction, settings, clients=clients, on_event=on_event)
     logger.info("scout suggested %d source(s)", len(suggested.suggestions))
 
     known, declined = await _already_seen()
@@ -61,28 +66,34 @@ async def sweep(instruction: str = "", *, on_event: Any = None) -> dict[str, Any
     if not isinstance(suggested, FeedSuggestionSet):  # pragma: no cover - defensive
         raise TypeError("discovery returned an unexpected shape")
 
-    review_id = await create(None, instruction, candidates, notes=suggested.notes)
+    if suggested.notes:
+        logger.info("scout notes: %s", suggested.notes)
+
+    review_id = await create(None, instruction, candidates)
     return {
         "awaiting_feed_approval": True,
         "review_id": review_id,
+        "instruction": instruction,
         "suggested": len(suggested.suggestions),
         "candidate_count": len(candidates),
     }
 
 
-async def _ask(instruction: str, settings: Any, *, on_event: Any = None) -> Any:
-    from agent_framework import ChatMessage, Role
-
+async def _ask(
+    instruction: str, settings: Any, *, clients: Any = None, on_event: Any = None
+) -> Any:
     from .. import agents as A
     from ..clients import default_clients
+    from ..util import user_message
 
-    clients = default_clients()
-    agent = A.build_feed_discovery_scout(settings, clients)
+    clients = clients or default_clients()
+    agent = A.build_feed_discovery_scout(settings, clients, instruction)
     prompt = (
-        instruction.strip()
-        or "Find sources worth following for the topics above. Return feed URLs where you can."
+        f"Find sources matching this brief: {instruction.strip()}"
+        if instruction.strip()
+        else "Find sources worth following for the topics above. Return feed URLs where you can."
     )
-    response = await agent.run([ChatMessage(role=Role.USER, text=prompt)])
+    response = await agent.run([user_message(prompt)])
 
     from ..models import FeedSuggestionSet
     from ..util import parse_model
@@ -177,16 +188,22 @@ async def _resolve(raw: str, timeout: float) -> tuple[news.FeedFetch | None, str
 # ---------------------------------------------------------------------------
 
 
-async def create(
-    run_id: str | None, instruction: str, candidates: list[dict[str, Any]], *, notes: str = ""
-) -> int:
+async def create(run_id: str | None, instruction: str, candidates: list[dict[str, Any]]) -> int:
+    """File the review.
+
+    ``instruction`` is **the operator's own brief, verbatim** — never the
+    scout's commentary about the sweep. The review screen shows it back as
+    "you asked for this", and a verdict is only meaningful against what was
+    actually asked; a model's summary standing in for the question makes the
+    one thing the screen exists to answer a guess.
+    """
     from datetime import date
 
     async with session() as s:
         row = FeedDiscoveryReview(
             run_id=run_id,
             status=PENDING,
-            instruction=(instruction or notes)[:4000],
+            instruction=instruction[:4000],
             generated_on=date.today().isoformat(),
             candidates=candidates,
         )
