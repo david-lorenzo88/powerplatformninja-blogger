@@ -12,8 +12,9 @@ import {
 import { CodeEditor } from '../components/CodeEditor'
 import { NotificationsCard } from '../components/NotificationsCard'
 import { Modal } from '../components/Modal'
+import { PriceRefreshDialog } from '../components/PriceRefreshDialog'
 import { formatTime } from '../lib/format'
-import { field, primaryBtn } from '../lib/ui'
+import { field, ghostBtn, primaryBtn } from '../lib/ui'
 
 // Notifications are a per-device setting rather than a config document, so they
 // share this screen but not the document list.
@@ -109,6 +110,7 @@ function ConfigEditor({ name }: { name: string }) {
   const qc = useQueryClient()
   const doc = useQuery({ queryKey: ['config', name], queryFn: () => getConfig(name) })
 
+  const [pricesOpen, setPricesOpen] = useState(false)
   const [content, setContent] = useState('')
   const [note, setNote] = useState('')
   const [dirty, setDirty] = useState(false)
@@ -158,6 +160,13 @@ function ConfigEditor({ name }: { name: string }) {
           </span>
         )}
         <div className="flex w-full items-center gap-2 lg:ml-auto lg:w-auto">
+          {/* Only on the prices document: nothing else has an upstream to
+              reconcile against. */}
+          {name === 'model_prices' && (
+            <button onClick={() => setPricesOpen(true)} className={`${ghostBtn} shrink-0`}>
+              Update from Azure
+            </button>
+          )}
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -169,6 +178,8 @@ function ConfigEditor({ name }: { name: string }) {
           </button>
         </div>
       </div>
+
+      {pricesOpen && <PriceRefreshDialog onClose={() => setPricesOpen(false)} />}
 
       {parseError && (
         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-5 py-2 font-mono text-xs text-rose-300">

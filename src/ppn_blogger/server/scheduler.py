@@ -45,13 +45,19 @@ from .db import SchedulerJob, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.scheduler")
 
-FETCH, WATCH, PRUNE, LETTERS, RETRIES = (
+FETCH, WATCH, PRUNE, LETTERS, RETRIES, PRICES = (
     "fetch",
     "watch",
     "prune",
     "newsletters",
     "retry_deliveries",
+    "prices",
 )
+
+# Azure list prices move a few times a year. Weekly is already far more often
+# than the data changes; anything shorter would be a database wake-up bought for
+# nothing.
+PRICE_REFRESH_MINUTES = 7 * 24 * 60
 
 
 @dataclass(slots=True)
@@ -190,6 +196,76 @@ async def _any_watched_feeds() -> bool:
     return bool(count)
 
 
+async def _run_prices() -> str:
+    """Re-read every bound price meter, and save any that moved.
+
+    Applied without asking, which is safe for one specific reason: `run_usage`
+    stores `cost_micros` at the time of the run, so a price change moves future
+    figures and never rewrites history. The write is an ordinary config version,
+    so it is visible in the document's history and can be rolled back like any
+    other edit.
+
+    Only ever moves numbers. Meter *names* are bound by a human and this cannot
+    change them, so the worst an unattended run can do is track Azure.
+    """
+    import yaml
+
+    from ..settings import get_settings as _settings
+    from . import config_store, prices
+
+    document = _settings().model_prices
+    changes = await prices.refresh(document)
+    moved = [c for c in changes if c["changed"]]
+    missing = [c["meter"] for c in changes if not c["found"]]
+
+    if not moved:
+        detail = f"{len(changes)} meter(s) checked, all current"
+        return detail + (f"; {len(missing)} not found" if missing else "")
+
+    updated = prices.apply(document, changes)
+    updated["updated_from_azure"] = utcnow().isoformat()
+    row = await config_store.save_document(
+        "model_prices",
+        yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
+        note=f"Weekly Azure price refresh: {len(moved)} change(s)",
+    )
+
+    summary = ", ".join(
+        f"{c['model']} {c['direction']} {c['old']}→{c['new']}" for c in moved[:4]
+    )
+    await _notify_price_change(moved, row.version)
+    return f"saved v{row.version}: {summary}" + (" …" if len(moved) > 4 else "")
+
+
+async def _notify_price_change(moved: list[dict], version: int) -> None:
+    """Tell the operator their cost baseline moved. Never raises."""
+    try:
+        from . import push
+
+        await push.notify(
+            title="Model prices changed",
+            body=f"{len(moved)} price(s) updated from Azure (model_prices v{version}).",
+            url="/config",
+        )
+    except Exception:  # noqa: BLE001 - a missed notification is not a failed job
+        logger.exception("could not notify about the price refresh")
+
+
+async def _any_bound_meters() -> bool:
+    """False until a human has bound at least one meter.
+
+    The refresh has nothing to read before that, and a job row that exists only
+    to wake the database and find nothing to do is precisely the cost this
+    scheduler is shaped to avoid.
+    """
+    from ..settings import get_settings as _settings
+
+    models = _settings().model_prices.get("models") or {}
+    return any(
+        isinstance(entry, dict) and entry.get("meters") for entry in models.values()
+    )
+
+
 async def _always() -> bool:
     return True
 
@@ -223,6 +299,13 @@ def _jobs() -> list[Job]:
             _any_pending_deliveries,
         ),
         Job(PRUNE, "Prune old articles", lambda: news.prune_interval_hours * 60, _run_prune, _always),
+        Job(
+            PRICES,
+            "Refresh model prices from Azure",
+            lambda: PRICE_REFRESH_MINUTES,
+            _run_prices,
+            _any_bound_meters,
+        ),
     ]
 
 

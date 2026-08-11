@@ -216,6 +216,56 @@ ppn serve
 ppn serve --host 0.0.0.0 --port 8000 --reload
 ```
 
+### What it cost
+
+Every run prints its own accounting when it finishes — model calls, tokens (with
+the cached share broken out), searches, images, and the money those come to:
+
+```
+12 model call(s) · 604,331 tokens (487,002 in / 117,329 out, 121,750 cached) · 23 search(es)
+→ ~3.39 USD (list price)
+```
+
+That figure is `counted units × configured rate`. The counts are exact; the rate is
+list price, so treat the total as an estimate and Azure Cost Management as the bill.
+A run that failed or timed out still prints one — the tokens were spent either way,
+and that is the run you most want a number for.
+
+#### `ppn cost`
+
+```bash
+ppn cost                        # spend by day, last 30 days
+ppn cost --by kind --since 168  # by run kind, last week
+```
+
+Reads the rows the **server** stored, so only runs launched through `ppn serve` or
+the UI appear. A CLI run prints its figure and keeps nothing — if a week looks
+empty, that is usually why rather than a quiet week.
+
+#### `ppn cost prices`
+
+```bash
+ppn cost prices --bind gpt-5    # list the meters that could price this model
+ppn cost prices --refresh       # compare bound prices against Azure
+ppn cost prices --refresh --apply
+```
+
+Binding is manual and happens once per model, because Azure's meter names cannot
+be matched to a deployment without guessing and a wrong guess is undetectable —
+see [CONFIGURATION.md](CONFIGURATION.md) Part 6. `--bind` prints a `meters:` block
+to paste into `config/model_prices.yaml`; the Config screen's **Update from Azure**
+button does the same thing with a diff you approve.
+
+After that a weekly scheduler job re-reads those exact meter names and saves any
+that moved as a new config version. Safe to leave unattended: it can only change a
+number, never a binding, and a run's cost is stored when the run happens, so a new
+price never rewrites history.
+
+> **On a live server, the prices document needs one import.** `config/` is seeded
+> into the database only on the very first start, so an existing deployment will
+> not have `model_prices` until you run `ppn config reload` (or `POST
+> /api/config/reload`). Until then runs report tokens and withhold the money.
+
 ---
 
 ## A normal week
@@ -228,6 +278,7 @@ ppn write --index 3               # pick one. 20-60 minutes.
                                   # edit the draft in WordPress
                                   # press Publish yourself
 ppn translate drafts/<file>.md --push   # if the post warrants it
+ppn cost --since 168              # Friday. What did the week cost?
 ```
 
 The review report is the part worth reading properly. It lists both validators' findings

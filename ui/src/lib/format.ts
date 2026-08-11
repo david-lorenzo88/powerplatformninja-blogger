@@ -67,6 +67,29 @@ export function duration(startIso: string | null, endIso: string | null, now = D
 }
 
 
+// Money is carried as integer micros so it survives the trip through SQL Server
+// and a month of summing without drift. One place converts it, so no screen
+// invents its own rounding.
+//
+// Sub-cent runs are real and common — a scout pass can land at 0.004 — and
+// rendering those as "0.00" makes the cheap path look free. Below a cent the
+// figure keeps three decimals instead.
+export function formatCost(micros: number, currency: string): string {
+  const amount = micros / 1_000_000
+  const digits = amount > 0 && amount < 0.01 ? 3 : 2
+  const value = amount.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  return currency ? `${value} ${currency}` : value
+}
+
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`
+  return `${(n / 1_000_000).toFixed(1)}M`
+}
+
 // relativeTime only looks backwards. A schedule is about the future, so the
 // feeds and newsletters screens both need this — hence here rather than in one
 // of them.

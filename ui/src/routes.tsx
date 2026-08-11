@@ -73,6 +73,9 @@ const FeedReviewsScreen = lazy(() =>
 const RecipientsScreen = lazy(() =>
   import('./screens/RecipientsScreen').then((m) => ({ default: m.RecipientsScreen })),
 )
+const SpendScreen = lazy(() =>
+  import('./screens/SpendScreen').then((m) => ({ default: m.SpendScreen })),
+)
 
 export const router = createBrowserRouter([
   {
@@ -82,6 +85,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/runs" replace /> },
       { path: 'runs', element: <RunsScreen /> },
       { path: 'runs/:id', element: <RunDetailScreen /> },
+      { path: 'spend', element: <SpendScreen /> },
       { path: 'topic-ideas', element: <TopicIdeasScreen /> },
       { path: 'topic-ideas/:id', element: <TopicIdeaDetailScreen /> },
       { path: 'source-reviews', element: <SourceReviewsScreen /> },

@@ -24,11 +24,15 @@ import type {
   NewsSummary,
   Post,
   PostSummary,
+  PriceCandidates,
+  PriceRefresh,
   RegenerateRequest,
   Run,
   RunDetail,
   RunEvent,
   RunStatus,
+  RunUsageDetail,
+  UsageRollup,
   NewsletterIssue,
   NewsletterIssueSummary,
   NewsletterPreview,
@@ -168,6 +172,29 @@ export const cancelRun = (id: string) =>
 // SSE URL for EventSource. Replays from `after`, then follows live.
 export const runEventsUrl = (id: string, after = 0) =>
   `${API_BASE}/runs/${id}/events?after=${after}`
+
+// -- Cost -------------------------------------------------------------------
+
+export const getRunUsage = (id: string) => request<RunUsageDetail>(`/runs/${id}/usage`)
+
+export const getUsageRollup = (params?: { since?: string; group_by?: 'day' | 'kind' }) => {
+  const q = new URLSearchParams()
+  // URLSearchParams encodes the `+` in a `+00:00` offset; interpolating the
+  // value into the query string by hand does not, and it arrives as a space.
+  if (params?.since) q.set('since', params.since)
+  if (params?.group_by) q.set('group_by', params.group_by)
+  const qs = q.toString()
+  return request<UsageRollup>(`/usage${qs ? `?${qs}` : ''}`)
+}
+
+export const getPriceCandidates = (model: string) =>
+  request<PriceCandidates>(`/prices/candidates?model=${encodeURIComponent(model)}`)
+
+export const refreshPrices = (apply: boolean) =>
+  request<PriceRefresh>('/prices/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ apply }),
+  })
 
 // -- Source reviews ---------------------------------------------------------
 

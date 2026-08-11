@@ -21,6 +21,7 @@ import { ChunkErrorBoundary } from './ChunkErrorBoundary'
 // to. `badge` replaces what used to be two hardcoded `item.to === ...` branches.
 const NAV = [
   { to: '/runs', label: 'Runs', short: 'Runs', icon: '▷', paths: ['/runs'] },
+  { to: '/spend', label: 'Spend', short: 'Spend', icon: '⛁', paths: ['/spend'] },
   {
     to: '/articles',
     label: 'News',

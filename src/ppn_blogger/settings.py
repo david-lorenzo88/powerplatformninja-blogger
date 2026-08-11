@@ -269,6 +269,11 @@ class RunSettings:
     research_dir: Path = field(default_factory=lambda: ROOT / _env("PPN_RESEARCH_DIR", "research"))
     topics_dir: Path = field(default_factory=lambda: ROOT / _env("PPN_TOPICS_DIR", "topics"))
     log_level: str = field(default_factory=lambda: _env("PPN_LOG_LEVEL", "INFO").upper())
+    # Token/cost accounting. On by default: it costs one middleware per agent and
+    # nothing at the service, and a run whose cost went unrecorded cannot be
+    # costed later — the usage figures only exist in the response that carried
+    # them. A kill switch, not a feature flag.
+    usage_tracking: bool = field(default_factory=lambda: _env_bool("PPN_USAGE_TRACKING", True))
 
 
 @dataclass(slots=True)
@@ -578,6 +583,18 @@ class Settings:
         document the operator can edit without a deploy.
         """
         return self._document("newsletters")
+
+    @property
+    def model_prices(self) -> dict[str, Any]:
+        """Token, image and search rates used to cost a run.
+
+        A document rather than env vars so a price change is an edit with history
+        and a rollback, and so the Update-from-Azure refresh has somewhere to
+        write. Empty is a valid state: runs then report tokens and withhold the
+        money, which is what an unseeded database looks like until
+        ``reimport_from_yaml`` has run once.
+        """
+        return self._document("model_prices")
 
     @property
     def newsletter_sections(self) -> list[dict[str, Any]]:

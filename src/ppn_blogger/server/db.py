@@ -196,6 +196,53 @@ class RunEvent(Base):
 Index("ix_run_events_run_seq", RunEvent.run_id, RunEvent.seq)
 
 
+class RunUsage(Base):
+    """What one agent invocation, or one generated image, consumed.
+
+    A **table** rather than columns on ``runs``, for two reasons. The mechanical
+    one: ``create_all`` is checkfirst-only and never ALTERs, so a column added
+    here would need hand-run DDL against Azure SQL while a new table simply
+    appears on the next boot. The useful one: per-agent rows are what answer
+    "which stage is expensive", and a run total is a ``SUM`` over them — the
+    other way round, the breakdown is gone for good.
+
+    Rows are written as the run proceeds rather than at the end, so a run that
+    fails or is cancelled still accounts for what it had already spent. Those are
+    the runs most worth costing.
+    """
+
+    __tablename__ = "run_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("runs.id"), index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), default="")
+    # As reported by the service, which is not always what was configured: a
+    # deployment called gpt-5 answers as gpt-5-2025-08-07.
+    model: Mapped[str] = mapped_column(String(120), default="")
+    kind: Mapped[str] = mapped_column(String(16), default="model")  # model | image
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    searches: Mapped[int] = mapped_column(Integer, default=0)
+    images: Mapped[int] = mapped_column(Integer, default=0)
+    # Integer micros of `currency`, never a Float. These get summed across
+    # thousands of rows to answer "what did last month cost", and binary
+    # floating point is not the thing to accumulate money in — the repo has
+    # already been bitten once by trusting the forgiving dialect.
+    cost_micros: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="")
+    # False when no rate was configured for this model. The tokens above are
+    # still real; only the money is unknown, and the UI must say so rather than
+    # render a confident zero.
+    priced: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_run_usage_created", RunUsage.created_at)
+
+
 class SourceReview(Base):
     """One wide-web sweep, paused for the operator's verdict on its sources.
 
