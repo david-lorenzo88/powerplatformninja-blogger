@@ -18,10 +18,10 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import case, false, func, select, true
+from sqlalchemy import Date, case, cast, false, func, select, true
 
 from ..usage import Ledger, UsageRecord, price_record
-from .db import Run, RunUsage, as_utc, session, utcnow
+from .db import Run, RunUsage, as_utc, engine, session, utcnow
 
 logger = logging.getLogger("ppn.server.usage")
 
@@ -210,6 +210,29 @@ async def by_agent(run_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def day_bucket(column: Any, dialect: str = "") -> Any:
+    """Truncate a timestamp to a calendar day, in each dialect's own spelling.
+
+    There is no portable spelling, and getting it wrong fails differently on
+    each side — which is why this is a branch rather than one clever expression:
+
+    * SQL Server has **no `DATE()` function** and rejects the whole statement:
+      *'date' is not a recognized built-in function name*. Loud, and it took a
+      merge to `main` to find, because the local suite runs on SQLite.
+    * SQLite is worse. `CAST(x AS DATE)` is not an error there — "DATE" carries
+      no type-affinity keyword, so it gets NUMERIC affinity and the cast yields
+      the **year as an integer**. Every day of a year would collapse into one
+      bucket, silently, with no failure anywhere.
+
+    ``dialect`` is injectable so both branches can be compiled in a test without
+    a live database.
+    """
+    name = dialect or engine().dialect.name
+    if name == "sqlite":
+        return func.date(column)  # sqlite-only: the whole point of this branch
+    return cast(column, Date)
+
+
 async def rollup(
     since: datetime | None = None,
     until: datetime | None = None,
@@ -225,9 +248,7 @@ async def rollup(
             key: Any = Run.kind
             stmt = select(key, *_TOTALS).join(Run, Run.id == RunUsage.run_id)
         else:
-            # DATE() is understood by SQLite and SQL Server alike; func.date
-            # renders to each dialect's own spelling.
-            key = func.date(RunUsage.created_at)
+            key = day_bucket(RunUsage.created_at)
             stmt = select(key, *_TOTALS)
 
         if since is not None:
