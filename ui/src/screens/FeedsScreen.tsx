@@ -7,8 +7,10 @@ import {
   getNewsSummary,
   getSchedule,
   listFeedGroups,
+  listFeedReviews,
   listFeeds,
   refreshAllFeeds,
+  startDiscovery,
   validateFeed,
 } from '../api/client'
 import type { Feed, FeedHealth, FeedProbe } from '../api/types'
@@ -31,6 +33,22 @@ export function FeedsScreen() {
 
   const feeds = useQuery({ queryKey: ['feeds'], queryFn: () => listFeeds() })
   const groups = useQuery({ queryKey: ['feed-groups'], queryFn: listFeedGroups })
+
+  // A sweep that has stopped for a verdict is a paid-for run waiting on you, so
+  // it gets a banner rather than waiting to be stumbled upon.
+  const reviews = useQuery({
+    queryKey: ['feed-reviews', 'pending'],
+    queryFn: () => listFeedReviews('pending'),
+    refetchInterval: 15_000,
+  })
+
+  const discover = useMutation({
+    mutationFn: () => startDiscovery(),
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: ['runs'] })
+      navigate(`/runs/${run.id}`)
+    },
+  })
 
   const refresh = useMutation({
     mutationFn: refreshAllFeeds,
@@ -70,6 +88,16 @@ export function FeedsScreen() {
 
         <ScheduleBar />
 
+        {(reviews.data ?? []).length > 0 && (
+          <button
+            className="mt-3 block w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-300"
+            onClick={() => navigate(`/feed-reviews/${reviews.data![0].id}`)}
+          >
+            {reviews.data![0].candidate_count} verified feed
+            {reviews.data![0].candidate_count === 1 ? '' : 's'} are waiting for your verdict.
+          </button>
+        )}
+
         {failing > 0 && (
           // A feed that has quietly started failing is the whole reason this
           // subsystem records HTTP status at all; it should not need looking for.
@@ -103,6 +131,14 @@ export function FeedsScreen() {
               onClick={() => refresh.mutate()}
             >
               {refresh.isPending ? 'Starting…' : 'Fetch now'}
+            </button>
+            <button
+              className={ghostBtn}
+              disabled={!online || discover.isPending}
+              onClick={() => discover.mutate()}
+              title="Sweep for new sources. Every suggestion is fetched and checked before you see it."
+            >
+              {discover.isPending ? 'Starting…' : 'Find new'}
             </button>
             <button className={primaryBtn} disabled={!online} onClick={() => setAdding(true)}>
               Add feed

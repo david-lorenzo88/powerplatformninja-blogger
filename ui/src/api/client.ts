@@ -34,6 +34,10 @@ import type {
   NewsletterPreview,
   ChannelInfo,
   DeliverySummary,
+  FeedDecision,
+  FeedReview,
+  FeedReviewSummary,
+  PendingCounts,
   NewsletterSummary,
   Recipient,
   Schedule,
@@ -457,6 +461,29 @@ export const retryIssue = (id: number) =>
 
 export const getDeliveries = (id: number) =>
   request<DeliverySummary>(`/news/issues/${id}/deliveries`)
+
+// -- Feed discovery ----------------------------------------------------------
+
+export const startDiscovery = (instruction = '') =>
+  request<{ id: string; run_id: string }>(
+    `/news/discover${instruction ? `?instruction=${encodeURIComponent(instruction)}` : ''}`,
+    { method: 'POST' },
+  )
+
+export const listFeedReviews = (status?: string) =>
+  request<FeedReviewSummary[]>(`/news/feed-reviews${status ? `?status=${status}` : ''}`)
+
+export const getFeedReview = (id: number) => request<FeedReview>(`/news/feed-reviews/${id}`)
+
+export const decideFeedReview = (id: number, body: { decisions: FeedDecision[] }) =>
+  request<{ review_id: number; added: number; declined: number }>(
+    `/news/feed-reviews/${id}/decide`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+
+// Every nav badge in one request — three separate polls would wake the
+// serverless database three times as often for no more information.
+export const getPending = () => request<PendingCounts>('/news/pending')
 
 export const testRecipient = (recipientId: number, issueId: number) =>
   request<{ ok: boolean; error: string; detail: string }>(

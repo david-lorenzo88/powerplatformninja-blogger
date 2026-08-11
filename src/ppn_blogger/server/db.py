@@ -164,6 +164,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     # suggest | explore | shortlist | write | cover | ingest | newsletter | deliver
+    #   | discover
     kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
@@ -768,6 +769,65 @@ Index("ix_deliveries_issue_recipient", Delivery.issue_id, Delivery.recipient_id)
 Index("ix_deliveries_retry", Delivery.status, Delivery.next_retry_at)
 
 
+class FeedDiscoveryReview(Base):
+    """Feeds a discovery run proposes, paused for the operator's verdict.
+
+    Shaped like ``SourceReview`` on purpose: the same UI and the same mental
+    model, because it is the same decision — a model has suggested where to look,
+    and a human decides whether it may.
+
+    The candidates are stored **already validated**. A discovery run fetches and
+    parses every URL the scout named before writing this row, so what the
+    operator sees is a list of feeds that demonstrably exist, not a list of
+    guesses. That is the ``sources.py`` rule — the review is code, never
+    judgement — carried over intact.
+    """
+
+    __tablename__ = "feed_discovery_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runs.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    generated_on: Mapped[str] = mapped_column(String(32), default="")
+    # Verbatim, and already probed: {url, title, site_url, entry_count, newest,
+    # sample_titles, suggested_topics, reason, known}
+    candidates: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    decisions: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # Feeds actually created, so the review is traceable to what it caused.
+    created_feed_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    approved_count: Mapped[int] = mapped_column(Integer, default=0)
+    # URLs the operator turned down, so a later sweep never offers them again.
+    declined_urls: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index("ix_feed_reviews_status", FeedDiscoveryReview.status, FeedDiscoveryReview.created_at.desc())
+
+
+class DeclinedFeed(Base):
+    """A feed the operator said no to. Never offered again.
+
+    A separate table rather than a flag on ``feeds``: a declined URL was never
+    registered as a feed, and inventing a disabled row for it would put things
+    in the Feeds screen that the operator explicitly rejected.
+    """
+
+    __tablename__ = "declined_feeds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_declined_feeds_hash", DeclinedFeed.url_hash, unique=True)
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -857,10 +917,12 @@ __all__ = [
     "Article",
     "Base",
     "ConfigDocument",
+    "DeclinedFeed",
     "Delivery",
     "DraftVersion",
     "Feed",
     "FeedGroup",
+    "FeedDiscoveryReview",
     "FeedGroupMember",
     "Newsletter",
     "NewsletterGroup",

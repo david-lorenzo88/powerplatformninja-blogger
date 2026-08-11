@@ -389,3 +389,25 @@ class NewsletterIssueDraft(BaseModel):
         default_factory=list,
         description="Candidate ids deliberately left out, so the choice is auditable",
     )
+
+
+class FeedSuggestion(BaseModel):
+    """One place a scout thinks is worth following.
+
+    A *suggestion*, not a feed. Every one of these is fetched and parsed before
+    the operator ever sees it, and anything that does not resolve to a real feed
+    with recent entries is discarded — so a hallucinated URL cannot reach the
+    review. The model is being asked where to look, not what is true.
+    """
+
+    url: str = Field(..., description="The feed URL, or the site's home page")
+    name: str = Field(..., description="What to call it")
+    topics: list[str] = Field(
+        default_factory=list, description="Which watch topics it covers"
+    )
+    reason: str = Field(..., description="One sentence: why this is worth following")
+
+
+class FeedSuggestionSet(BaseModel):
+    suggestions: list[FeedSuggestion] = Field(default_factory=list)
+    notes: str = Field("", description="Anything the operator should know about the sweep")

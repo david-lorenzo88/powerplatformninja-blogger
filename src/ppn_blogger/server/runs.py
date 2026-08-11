@@ -642,6 +642,18 @@ class RunManager:
             cover = await build_cover(draft, settings)
             return cover.model_dump(mode="json")
 
+        if kind == "discover":
+            # A sweep costs model calls and web fetches, then stops for a human
+            # — exactly the shape of `explore`. The candidate list lives in the
+            # review row, not the run result, because that is what the operator
+            # acts on and a restart must not throw it away.
+            from .discovery import sweep
+
+            return await asyncio.wait_for(
+                sweep(params.get("instruction", ""), on_event=self._on_event(run_id)),
+                timeout=settings.news.ingest_timeout_minutes * 60,
+            )
+
         if kind == "deliver":
             from .delivery import deliver_issue, retry_issue
 

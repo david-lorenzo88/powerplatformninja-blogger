@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { NavLink } from 'react-router-dom'
-import { listSourceReviews } from '../api/client'
+import { getPending } from '../api/client'
 
 // Second-level navigation, rendered by a section screen rather than by the shell.
 //
@@ -61,8 +61,8 @@ export function BlogSubNav() {
   // The same 15-second poll the shell runs, so TanStack serves both from one
   // request rather than two.
   const { data } = useQuery({
-    queryKey: ['source-reviews', 'pending'],
-    queryFn: () => listSourceReviews('pending'),
+    queryKey: ['pending'],
+    queryFn: getPending,
     refetchInterval: 15_000,
   })
   return (
@@ -70,7 +70,7 @@ export function BlogSubNav() {
       items={[
         { to: '/topic-ideas', label: 'Ideas' },
         { to: '/drafts', label: 'Drafts' },
-        { to: '/source-reviews', label: 'Sources', badge: data?.length ?? 0 },
+        { to: '/source-reviews', label: 'Sources', badge: data?.source_reviews ?? 0 },
       ]}
     />
   )

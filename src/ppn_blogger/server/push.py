@@ -204,6 +204,14 @@ def _describe(kind: str, status: str, label: str, result: dict[str, Any] | None)
     result = result or {}
     name = label or kind
 
+    if result.get("awaiting_feed_approval"):
+        n = result.get("candidate_count", 0)
+        return (
+            "Feeds awaiting your verdict",
+            f"{n} verified feed{'' if n == 1 else 's'} found. Nothing is followed until you say so.",
+            f"/feed-reviews/{result.get('review_id', '')}".rstrip("/"),
+        )
+
     if result.get("awaiting_source_approval"):
         new = result.get("new_count", 0)
         total = result.get("candidate_count", 0)

@@ -53,9 +53,10 @@ src/ppn_blogger/
                     source reviews (server/reviews.py), news feeds
                     (server/api_news.py, news_store.py, ingest.py), the
                     scheduler (scheduler.py), watch notifications (watch.py) and
-                    newsletters (newsletters.py, newsletter_runs.py)
+                    newsletters (newsletters.py, newsletter_runs.py), delivery
+                    (channels.py, delivery.py) and feed discovery (discovery.py)
 config/             editorial policy — the thing you actually tune
-tests/              190 tests, offline; conftest.py picks the DB backend
+tests/              234 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -68,7 +69,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 190 tests, ~31s, no network, no credentials
+pytest                      # 234 tests, ~35s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -116,6 +117,20 @@ counters in the system, each with exactly one bound
 (`PPN_MAX_SOURCE_ROUNDS`, `PPN_MAX_REVISION_ROUNDS`). Exhausting a budget
 finalises the run anyway — producing nothing after 40 minutes is worse than
 producing a draft marked NOT APPROVED.
+
+**A discovered feed is proved before it is offered.** A discovery sweep asks a
+model where to look; `discovery._verify` then fetches and parses **every** URL it
+named, and anything that does not resolve to a real feed with entries is
+discarded before the review row is written. Approving therefore cannot mean
+adding a URL nobody checked — which matters more than the source review did,
+because an approved feed goes into a poller that calls it forever. A refusal is
+remembered in `declined_feeds` so a later sweep never re-offers it.
+
+**Delivery must never raise, and never destroy an issue.** Every `Channel.send`
+returns a `DeliveryResult` rather than throwing; every `deliveries` row is
+written `pending` before the first send; a *permanent* failure (bad address,
+unapproved template) is tried once and parks the recipient rather than being
+retried. Same doctrine as `build_cover` and the WordPress push.
 
 **A newsletter's links are code, never judgement.** The editor is handed a
 numbered candidate list and returns *ids*; it is never given a URL and cannot
