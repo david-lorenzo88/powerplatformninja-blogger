@@ -184,6 +184,106 @@ researches afresh; either way the `instructions` reach the writer's first-draft
 prompt as an `<editor_instructions>` block. Each save claims its own filename
 (`<date>-<slug>[-N].md`), so a version's markdown is never overwritten by the next.
 
+### News — feeds, articles, groups
+
+A second router, `server/api_news.py`, prefix **`/api/news`**. It is separate
+because `api.py` is a different domain and was already 700 lines; the service
+layer had been split that way from the start.
+
+The registry is deliberately *not* the crew's nine feeds in `config/sources.yaml`
+— that list is a prompt contract three scouts depend on. These are copied in on
+first boot (`ingest.seed_feeds`, idempotent by `url_hash`) and diverge from there.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/news/feeds?enabled=&realtime=&group_id=&q=` | health is derived: `ok · stale · failing · disabled` |
+| `POST` | `/news/feeds` | **probes before saving** — a URL that is not a feed is a 422, never a row |
+| `GET·PATCH·DELETE` | `/news/feeds/{id}` | delete is soft; `?purge=true` also removes its articles |
+| `POST` | `/news/feeds/validate` | `{url}` → the feed behind it plus a five-entry preview. No write. |
+| `POST` | `/news/feeds/{id}/refresh` · `/news/refresh` | **202** — an `ingest` run |
+| `GET·POST` | `/news/feed-groups` · `GET·PATCH·DELETE /news/feed-groups/{id}` | |
+| `PUT` | `/news/feed-groups/{id}/feeds` | `{feed_ids}` replaces membership in one call |
+| `GET` | `/news/articles?group_id=&feed_id=&since=&q=&limit=` | `since` takes ISO or a bare hour count |
+| `GET` | `/news/articles/{id}` | one article, with its stored content |
+| `GET` | `/news/summary` | counts **plus `db_can_autopause`** |
+
+Ingestion (`server/ingest.py`) is conditional-GET: a 304 costs one round trip and
+no parsing. Dedup is a unique index on `(feed_id, entry_key)` — structural, so
+"notify once" needs no bookkeeping. Failures are *recorded*, unlike
+`tools.read_feeds`, which turns any error into an empty list.
+
+### Scheduler and watch
+
+`server/scheduler.py` is the only periodic work in the codebase. It **sleeps
+until the next due time** rather than ticking: a one-minute loop would query the
+database 1,440 times a day and stop Azure SQL ever auto-pausing. Ticks are
+claimed with a compare-and-swap on `next_due_at`, because a Container Apps
+revision swap briefly runs two schedulers.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/news/schedule` | jobs, next due, and **`db_can_autopause`** |
+| `POST` | `/news/schedule/{key}/run` | force one job — `fetch · watch · newsletters · retry_deliveries · prune` |
+| `GET` | `/news/pending` | every nav badge in one request, so the shell polls once not three times |
+
+### Newsletters and issues
+
+One agent between two code gates: `IssueBuilder → newsletter_editor →
+IssuePublisher`. The editor is handed a numbered candidate list and returns
+**ids**; it is never given a URL and cannot produce one. `IssuePublisher`
+resolves each id back to the article it came from and drops anything that was not
+offered, along with any section outside `config/newsletters.yaml`. Below
+`min_items` the run ends at the builder and **no model is called**.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET·POST` | `/news/newsletters` · `GET·PATCH·DELETE /news/newsletters/{id}` | `manual · interval · weekly · monthly`; response carries `upcoming` fire times |
+| `GET` | `/news/newsletters/{id}/preview` | exactly what the next issue would draw from — **no model call** |
+| `POST` | `/news/newsletters/{id}/generate` | **202** — a `newsletter` run |
+| `GET` | `/news/newsletters/{id}/issues` · `/news/issues` | |
+| `GET·PATCH` | `/news/issues/{id}` | 409 once `sending`/`sent` |
+| `GET` | `/news/issues/{id}/html` | the rendered email, for the sandboxed preview frame |
+
+### Delivery
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/news/channels` | `webpush · manual · email · telegram · whatsapp`, each with `configured` |
+| `GET·POST` | `/news/recipients` · `PATCH·DELETE /news/recipients/{id}` | addresses normalised, so the same person cannot be added twice |
+| `POST` | `/news/recipients/{id}/test?issue_id=` | one send, no delivery row — what you use before trusting a channel |
+| `POST` | `/news/issues/{id}/send` · `/news/issues/{id}/retry` | **202** — a `deliver` run; retry touches only failed rows |
+| `GET` | `/news/issues/{id}/deliveries` | per-recipient outcome with the provider's own error text |
+
+Every `deliveries` row is written `pending` **before** the first send — intent
+durable before side effect. No `Channel.send` may raise. A *permanent* failure
+(bad address, unapproved template) is tried once and parks the recipient; only
+transient ones are retried, with a 2/10/60-minute backoff. An unconfigured
+channel is `skipped`, not `failed`.
+
+### Feed discovery
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/news/discover?instruction=` | **202** — a `discover` run |
+| `GET` | `/news/feed-reviews?status=` · `/news/feed-reviews/{id}` | |
+| `POST` | `/news/feed-reviews/{id}/decide` · `/news/feed-reviews/{id}/cancel` | decide once; a URL not in the review is a 409 |
+
+A sweep asks a model where to look, then **fetches and parses every URL it names
+before the review row is written**. Anything that does not resolve to a real feed
+with entries is discarded, so approving cannot mean adding a URL nobody checked.
+Refusals are remembered in `declined_feeds` and never offered again. The verdict
+follows `reviews.decide`'s ordering: create the feeds, *then* close the review.
+
+## Run kinds
+
+`suggest · explore · shortlist · write · cover · ingest · newsletter · deliver · discover`
+
+Adding one touches six places: `runs.py:_dispatch`, a 202 endpoint,
+`catalog.record_run_result`, `push._describe`, `api.workflows()`, and the
+`Run.kind` comment. `_dispatch` wraps nothing, so **a new kind must apply its own
+`asyncio.wait_for`** — the existing `suggest`/`write` ceilings are read only by
+`cli.py`.
+
 ## Running it
 
 ```bash
@@ -201,7 +301,9 @@ Screens: **Runs** (queue, history, launch), **Run detail** (canvas + per-node
 output), **Topic Ideas** (filterable backlog → idea detail with a "write a draft"
 action), **Drafts** (filterable posts → post detail with version history, links to
 the source idea and WordPress, publish, and a regenerate-with-instructions dialog),
-**Config** (editor, history, rollback). Build/run notes: [ui/README.md](../ui/README.md).
+**Config** (editor, history, rollback), plus the news subsystem: **News**
+(article stream, feeds, groups, feed reviews) and **Letters** (newsletters,
+issues, recipients). Build/run notes: [ui/README.md](../ui/README.md).
 
 The canvas parses the Mermaid from `/api/workflows` into React Flow nodes once
 (`ui/src/lib/parseMermaid.ts` + dagre layout), then colours nodes from the folded
