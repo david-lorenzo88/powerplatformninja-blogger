@@ -68,7 +68,8 @@ Base: `/api`
 | `POST` | `/runs/write` | `{topic, push, cover, translate, label}` → `202 {id}` |
 | `POST` | `/runs/cover` | `{path, concept}` → `202 {id}` |
 | `GET` | `/runs?status=&limit=` | newest first |
-| `GET` | `/runs/{id}` | run + `nodes` (derived per-executor status) |
+| `GET` | `/runs/{id}` | run + `nodes` (derived per-executor status) + `usage` |
+| `GET` | `/runs/{id}/usage` | `{total, agents[]}` — the per-agent cost breakdown |
 | `POST` | `/runs/{id}/cancel` | works on queued *and* running |
 | `GET` | `/runs/{id}/events?after=N` | **SSE** |
 
@@ -78,6 +79,28 @@ Statuses: `queued · running · succeeded · failed · cancelled · interrupted`
 Kinds: `suggest · explore · shortlist · write · cover`. Each has its own graph in
 `GET /workflows`, which is why exploration is a separate kind rather than a flag —
 the canvas is keyed by kind.
+
+### Cost
+
+Every run carries a `usage` object — `null` when it called no model, which is
+deliberately not the same as costing zero. Counts (`total_tokens`, `searches`,
+`images`, `records`) are exact; `cost_micros` is those counts times a rate from the
+`model_prices` document, so it is an **estimate at list price**. `priced: false`
+means some model in the run had no configured rate: the tokens are still real and
+the money is unknown, and the UI must not render that as zero.
+
+Money is integer **micros** of `currency` end to end — never a float. These get
+summed across thousands of rows to answer "what did last month cost".
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/usage?since=&until=&group_by=day\|kind&limit=` | rollup + `top_runs`. `since`/`until` take an ISO timestamp or a bare number of hours. An unreadable bound is a **422**, not a silently widened window — a spend figure over the wrong period looks like an answer. |
+| `GET` | `/prices/candidates?model=` | the handful of retail meters that could price a model, for binding |
+| `POST` | `/prices/refresh` | `{apply}` → the diff; with `apply: true`, saves a new `model_prices` version |
+
+Prices are bound to exact meter names by a human once, then refreshed verbatim —
+see [CONFIGURATION.md](CONFIGURATION.md) Part 6 for why matching them
+automatically is not safe.
 
 ### Source reviews
 

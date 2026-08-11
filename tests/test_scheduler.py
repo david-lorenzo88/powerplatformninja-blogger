@@ -38,6 +38,14 @@ async def sched(database_url, monkeypatch):
 
     monkeypatch.setattr(news, "fetch_many", no_fetch)
 
+    # The price job is `applies()`-true as soon as config/model_prices.yaml has
+    # bound meters, which it ships with — so without this every tick in this
+    # file would call prices.azure.com for real.
+    async def no_price_lookup(document):
+        return []
+
+    monkeypatch.setattr("ppn_blogger.server.prices.refresh", no_price_lookup)
+
     yield sched_mod.scheduler()
     await sched_mod.reset_scheduler()
 
@@ -180,7 +188,8 @@ async def test_a_failing_job_records_why_and_does_not_stop_the_others(sched, mon
     await _set_due("prune", datetime.now(UTC) - timedelta(minutes=1))
 
     result = await sched.tick_once()
-    assert set(result["fired"]) == {"fetch", "prune"}
+    # `prices` is due on its first sync like every other job.
+    assert set(result["fired"]) == {"fetch", "prune", "prices"}
 
     failed = await _job("fetch")
     assert failed.last_status == "error" and "exploded" in failed.last_error
@@ -393,3 +402,120 @@ async def test_a_broken_push_service_never_stops_the_tick(sched, monkeypatch) ->
 
     monkeypatch.setattr(push, "notify", boom)
     assert await notify_new_articles() == 0  # swallowed, not raised
+
+
+# ---------------------------------------------------------------------------
+# The weekly price refresh
+# ---------------------------------------------------------------------------
+
+
+async def test_price_job_lies_dormant_until_a_meter_is_bound(sched, monkeypatch) -> None:
+    """Nothing to read before a human has bound a meter, so nothing is scheduled.
+
+    Same shape as the watch job: the row exists, but disabled and with no due
+    time, so it never wakes the database.
+    """
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(
+        type(get_settings()),
+        "model_prices",
+        property(lambda self: {"models": {"gpt-5": {"input": 1.0}}}),  # no `meters`
+    )
+    await sched.sync_jobs()
+
+    row = await _job("prices")
+    assert row is not None and row.enabled is False and row.next_due_at is None
+
+
+async def test_price_job_wakes_once_meters_are_bound(sched) -> None:
+    """The shipped config has bindings, so the job is live out of the box."""
+    await sched.sync_jobs()
+    row = await _job("prices")
+    assert row.enabled is True and row.next_due_at is not None
+
+
+async def test_price_refresh_saves_a_new_config_version_when_a_price_moves(
+    sched, monkeypatch
+) -> None:
+    from ppn_blogger.server import config_store
+    from ppn_blogger.server import scheduler as sched_mod
+
+    await config_store.seed_from_yaml_if_empty()
+    before = (await config_store.latest_versions())["model_prices"].version
+
+    async def moved(document):
+        return [
+            {
+                "model": "gpt-5",
+                "direction": "input",
+                "meter": "5 pp inp Gl 1M Tokens",
+                "old": 2.5,
+                "new": 3.75,
+                "found": True,
+                "changed": True,
+            }
+        ]
+
+    monkeypatch.setattr("ppn_blogger.server.prices.refresh", moved)
+
+    detail = await sched_mod._run_prices()
+    assert "3.75" in detail
+
+    after = (await config_store.latest_versions())["model_prices"].version
+    assert after == before + 1
+
+    from ppn_blogger.settings import get_settings
+
+    document = get_settings().model_prices
+    assert document["models"]["gpt-5"]["input"] == 3.75
+    assert document["updated_from_azure"]
+    # Meter bindings are a human's decision; an unattended job may move numbers
+    # and nothing else.
+    assert document["models"]["gpt-5"]["meters"]["input"] == "5 pp inp Gl 1M Tokens"
+
+
+async def test_price_refresh_writes_nothing_when_everything_is_current(
+    sched, monkeypatch
+) -> None:
+    from ppn_blogger.server import config_store
+    from ppn_blogger.server import scheduler as sched_mod
+
+    await config_store.seed_from_yaml_if_empty()
+    before = (await config_store.latest_versions())["model_prices"].version
+
+    async def unchanged(document):
+        return [
+            {
+                "model": "gpt-5",
+                "direction": "input",
+                "meter": "5 pp inp Gl 1M Tokens",
+                "old": 2.5,
+                "new": 2.5,
+                "found": True,
+                "changed": False,
+            }
+        ]
+
+    monkeypatch.setattr("ppn_blogger.server.prices.refresh", unchanged)
+
+    assert "all current" in await sched_mod._run_prices()
+    assert (await config_store.latest_versions())["model_prices"].version == before
+
+
+async def test_an_unreachable_price_feed_leaves_the_prices_alone(sched, monkeypatch) -> None:
+    """Microsoft being down must not fail a tick or blank a price."""
+    from ppn_blogger.server import config_store
+    from ppn_blogger.server import scheduler as sched_mod
+
+    await config_store.seed_from_yaml_if_empty()
+    before = (await config_store.latest_versions())["model_prices"].version
+
+    async def nothing(document):
+        return []  # what prices.refresh returns when the API is unreachable
+
+    monkeypatch.setattr("ppn_blogger.server.prices.refresh", nothing)
+
+    detail = await sched_mod._run_prices()
+    assert "0 meter(s) checked" in detail
+    assert (await config_store.latest_versions())["model_prices"].version == before

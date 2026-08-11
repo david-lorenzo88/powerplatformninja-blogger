@@ -125,6 +125,7 @@ what it used.
 | `PPN_RESEARCH_DIR` | `research` | Relative to the repo root. |
 | `PPN_TOPICS_DIR` | `topics` | Relative to the repo root. |
 | `PPN_LOG_LEVEL` | `INFO` | `DEBUG` also un-silences the `agent_framework` logger. |
+| `PPN_USAGE_TRACKING` | `true` | Count tokens, images and searches per run. A kill switch, not a feature flag — the usage figures exist only in the response that carried them, so a run that went unmetered can never be costed later. |
 
 > The timeouts are deliberately generous. They exist to break a genuine hang, not
 > to cut short honest work — topic discovery really does take 10–20 minutes, and a
@@ -443,7 +444,54 @@ run.
 
 ---
 
-## Part 6 — `config/style_guide.md`
+## Part 6 — `config/model_prices.yaml`
+
+What a run cost. Token, image and search counts are measured exactly — the service
+reports them — and this document is what turns those counts into money. Everything
+derived from it is therefore an **estimate at list price**: no PTU, no reservation,
+no negotiated discount. Azure Cost Management remains the source of truth for the
+bill.
+
+A model with no entry here is not free, it is *unpriced*: its tokens are still
+recorded and reported, with the money withheld rather than shown as zero.
+
+| Key | What it does |
+|---|---|
+| `currency` | Passed to the retail API as `currencyCode`, and shown beside every figure. |
+| `region` | `armRegionName`. The feed prices every region separately and cannot infer yours. |
+| `deployment_tier` | `Gl` (Global), `Dz` (Data Zone) or `regnl`. Global and Data Zone differ by about 10%, so guessing is a silent error. |
+| `models.<name>.input` / `.cached_input` / `.output` | Price per 1M tokens. Matched by longest prefix, so `gpt-5` also prices the dated `gpt-5-2025-08-07` the service actually reports. |
+| `models.<name>.meters` | The exact retail meter names each price came from. See below. |
+| `images.<model>.per_image` | Cover art is billed per image, not per token. |
+| `tools.web_search.per_call` | Hosted searches are *counted* exactly; this rate is yours to set. Leave it unset and searches go uncosted rather than free. |
+
+### Binding a model to its meters
+
+Azure's meter names cannot be matched to a deployment automatically. One region
+carries 400+ GPT rows with names like `5.4 Batch cd inp Dz 1M Tokens`, units mixing
+`1K` and `1M`, and no regular relationship to the model name — gpt-5 is `5 pp`
+while gpt-5.4 is plain `5.4`. A wrong guess prices you against the wrong meter,
+which reads exactly like a right answer.
+
+So the binding is made once, by a person, and reused verbatim afterwards:
+
+```bash
+ppn cost prices --bind gpt-5
+```
+
+That runs a *targeted* query — six rows for gpt-5, not four hundred — and prints
+the `meters:` block to paste in. The Config screen has the same flow behind
+**Update from Azure**. From then on `ppn cost prices --refresh` (and the weekly
+scheduler job) read those exact names back: a refresh can move a number, never
+repoint it at a different meter.
+
+`images` and `tools` are never touched by a refresh. The feed has no per-image
+meter for the MAI image models and no matchable per-call meter for the hosted
+search tool, so those two stay hand-set.
+
+---
+
+## Part 7 — `config/style_guide.md`
 
 Injected verbatim into the Writer and both Validators. Editing it changes the
 crew's voice with no code change at all.
@@ -486,7 +534,7 @@ feature list with no opinion. Not padded to hit a word count.
 
 ---
 
-## Part 7 — author notes
+## Part 8 — author notes
 
 The one input the crew cannot research is what the author personally did. Notes live
 at `input/notes/<slug>.md` (copy `config/author_notes.template.md`), or anywhere you
@@ -515,9 +563,9 @@ needs no reload.
 
 ## How configuration reaches the agents
 
-`Settings` reads the five documents through a swappable `ConfigSource`:
+`Settings` reads the configuration documents through a swappable `ConfigSource`:
 
-- **CLI** → `YamlConfigSource(config/)`. Version token is the five files' mtimes.
+- **CLI** → `YamlConfigSource(config/)`. Version token is the files' mtimes.
 - **Server** → a database-backed source. Version token is `name:version|…`.
 
 `Settings` caches parsed documents and drops the whole cache when the token

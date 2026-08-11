@@ -17,7 +17,14 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date
 from typing import Any
 
-from agent_framework import BaseChatClient, ChatResponse, ChatResponseUpdate, Content, Message
+from agent_framework import (
+    BaseChatClient,
+    ChatResponse,
+    ChatResponseUpdate,
+    Content,
+    Message,
+    UsageDetails,
+)
 from pydantic import BaseModel
 
 from .models import (
@@ -582,9 +589,12 @@ def _feed_suggestions() -> FeedSuggestionSet:
 class StubChatClient(BaseChatClient):
     """Returns schema-valid canned responses. No network, no credentials."""
 
-    def __init__(self, *, exercise_loops: bool = True, **kwargs: Any) -> None:
+    def __init__(
+        self, *, exercise_loops: bool = True, searches: int = 2, **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self._exercise_loops = exercise_loops
+        self._searches = searches
         self._counts: dict[str, int] = {}
         # The stub deliberately does not implement tool calling — it returns the
         # canned result the tools would have led to. The framework warns once per
@@ -631,6 +641,42 @@ class StubChatClient(BaseChatClient):
             return _validation(validator, strict)
         raise NotImplementedError(f"StubChatClient has no canned response for {model.__name__}")
 
+    def _usage(self) -> UsageDetails:
+        """The token counts a real service reports.
+
+        Without these the whole cost path — the meter, the ledger, the per-agent
+        rows, the unpriced-model branch — would be dead code offline, and the
+        first thing to exercise it would be a live run against Foundry.
+        """
+        return UsageDetails(
+            input_token_count=1200,
+            output_token_count=300,
+            total_token_count=1500,
+            cache_read_input_token_count=200,
+            reasoning_output_token_count=80,
+        )
+
+    def _search_contents(self) -> list[Content]:
+        """Hosted web searches, in the shape the service actually reports them.
+
+        The hosted tool emits a *call* and a *result* content per search, both
+        carrying the same ``call_id``. Reproducing that faithfully is what keeps
+        the de-duplication in ``usage.count_searches`` honest — a stub that
+        emitted one content per search would let a double-count through.
+        """
+        contents: list[Content] = []
+        for i in range(self._searches):
+            call_id = f"stub-search-{self._bump('search')}-{i}"
+            contents.append(
+                Content.from_search_tool_call(call_id=call_id, tool_name="web_search")
+            )
+            contents.append(
+                Content.from_search_tool_result(
+                    call_id=call_id, tool_name="web_search", result={}
+                )
+            )
+        return contents
+
     def _inner_get_response(  # type: ignore[override]
         self, *, messages: Sequence[Message], stream: bool, options: Mapping[str, Any], **kwargs: Any
     ):
@@ -640,6 +686,12 @@ class StubChatClient(BaseChatClient):
         # deliberate first-round failures, so calling it twice would skip a loop.
         value = self._payload(response_format, messages) if structured else None
         text = value.model_dump_json() if value is not None else "(stub)"
+        # Note the meter does not read this `model="stub"`: `AgentResponse`
+        # carries no model, so `UsageMeter` is told the *configured* deployment
+        # at construction. A dry run therefore costs itself against the model a
+        # real run would have used, which is the more useful answer — you can
+        # estimate a post before paying for one.
+        searches = self._search_contents()
 
         if stream:
             # The CLI runs workflows with stream=True so it can show live progress.
@@ -653,6 +705,11 @@ class StubChatClient(BaseChatClient):
                         contents=[Content("text", text=chunk)],
                         model="stub",
                     )
+                yield ChatResponseUpdate(
+                    role="assistant",
+                    contents=[Content.from_usage(usage_details=self._usage()), *searches],
+                    model="stub",
+                )
 
             return self._build_response_stream(
                 _updates(), response_format=response_format if structured else None
@@ -660,10 +717,11 @@ class StubChatClient(BaseChatClient):
 
         async def _complete() -> ChatResponse:
             return ChatResponse(
-                messages=Message(role="assistant", contents=[text]),
+                messages=Message(role="assistant", contents=[text, *searches]),
                 value=value,
                 response_format=response_format if structured else None,
                 model="stub",
+                usage_details=self._usage(),
             )
 
         return _complete()

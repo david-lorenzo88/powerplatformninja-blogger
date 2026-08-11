@@ -45,6 +45,33 @@ export interface Health {
   push: { configured: boolean; public_key: string }
 }
 
+// What a run consumed. Counts are exact — the service reports them. `cost_micros`
+// is those counts times a rate from the model_prices document, so it is an
+// estimate at list price and every screen showing it must say so.
+//
+// `priced` is false when some model in the run has no configured rate: the
+// tokens are still real, and the money must read as unknown rather than as zero.
+export interface RunUsage {
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  searches: number
+  images: number
+  cost_micros: number
+  records: number
+  currency: string
+  priced: boolean
+  unpriced_models?: string[]
+}
+
+export interface AgentUsage extends RunUsage {
+  agent_id: string
+  model: string
+  kind: 'model' | 'image'
+}
+
 export interface Run {
   id: string
   kind: RunKind
@@ -57,6 +84,69 @@ export interface Run {
   queued_at: string | null
   started_at: string | null
   finished_at: string | null
+  // null when the run called no model — which is not the same as costing zero.
+  usage?: RunUsage | null
+}
+
+export interface RunUsageDetail {
+  total: RunUsage | null
+  agents: AgentUsage[]
+}
+
+export interface UsageBucket extends Omit<RunUsage, 'currency' | 'priced'> {
+  key: string
+}
+
+export interface ExpensiveRun {
+  run_id: string
+  kind: RunKind
+  label: string
+  finished_at: string | null
+  cost_micros: number
+  total_tokens: number
+}
+
+export interface UsageRollup {
+  group_by: 'day' | 'kind'
+  currency: string
+  buckets: UsageBucket[]
+  top_runs: ExpensiveRun[]
+}
+
+// One retail meter the operator can bind a model's price to.
+export interface PriceCandidate {
+  meter: string
+  direction: 'input' | 'cached_input' | 'output' | null
+  price_per_million: number
+  currency: string
+  unit: string
+  product: string
+}
+
+export interface PriceCandidates {
+  model: string
+  region: string
+  tier: string
+  currency: string
+  candidates: PriceCandidate[]
+  suggested: Record<string, string>
+}
+
+export interface PriceChange {
+  model: string
+  direction: string
+  meter: string
+  old: number | null
+  new: number | null
+  found: boolean
+  changed: boolean
+}
+
+export interface PriceRefresh {
+  checked: number
+  changes: PriceChange[]
+  applied: boolean
+  version: number | null
 }
 
 // Per-executor status the server derives from the event log (derive_nodes).

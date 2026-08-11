@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-08-05. The React management UI (Stage 2) is **built, verified
+Last updated: 2026-08-11. The React management UI (Stage 2) is **built, verified
 and merged into `main`** (PR #1). Read this before starting anything.
 
 ---
@@ -398,6 +398,55 @@ review screen checked in the browser at desktop and 375×812.
 - **Not yet run against real Azure** — the sweep has still never called a live
   model, so how many usable feeds a real brief returns is unknown.
 
+## Run cost accounting (new)
+
+Every run now reports what it consumed and what that cost, per run and per agent,
+with a spend view over time and prices kept in step with Azure.
+
+- **One seam: `usage.UsageMeter`, an `AgentMiddleware`** attached by every factory
+  in `agents.py`. Chat middleware was the obvious choice and is the wrong one —
+  `StubChatClient` extends the raw `BaseChatClient`, which carries no
+  `ChatMiddlewareLayer`, so a chat-level meter fires against Foundry and *never*
+  offline. Proved with a probe before a line of the feature was written; the two
+  paths are now pinned by `test_meter_records_on_the_*_path`.
+- **Counted, not estimated**: tokens (including the cached and reasoning splits),
+  cover images, and hosted web searches — the last of those turned out to be
+  countable after all, since `web_search_call` items surface as `search_tool_call`
+  contents with a `call_id` on both response paths.
+- **Priced from `config/model_prices.yaml`**, a new versioned config document, so
+  a rate change is an edit with history and a rollback. Unknown model → tokens
+  reported, money withheld, never a confident zero.
+- **`run_usage` table**, one row per agent invocation, written as the run proceeds
+  so a cancelled or failed run still accounts for what it spent. A new table
+  rather than columns on `runs`, because `create_all` never alters.
+- **Prices track Azure.** `ppn cost prices --bind <model>` runs a targeted retail
+  query (six rows for gpt-5, not the four hundred a broad one returns) and a human
+  picks; refreshes then read those exact meter names back. A weekly scheduler job
+  applies moves unattended — safe because it can only change a number, and because
+  costs are stored at run time so history is never rewritten.
+- **UI**: cost on the Runs list, a per-agent breakdown on run detail, a new
+  **Spend** screen (day/kind, priciest runs), and **Update from Azure** on the
+  prices document.
+
+**Verified**: 290 tests passing, ruff clean; `ppn suggest --dry-run` reports a
+real tally; the bind and refresh flows exercised against the **live** retail API
+from both the CLI and the browser; the Runs list, breakdown and Spend screen
+checked in the browser against seeded data.
+
+**One bug caught in the browser that the tests had missed**: `by_agent` returned
+no `priced` field, so every row in the breakdown rendered "—" beside a real
+number while the run total was correct. `test_usage_is_broken_down_per_agent` now
+asserts the per-agent costs sum to the total.
+
+**Not yet run against real Azure** — no metered run has called a live model, so
+the figures have never been cross-checked against an actual bill. That is the
+next thing worth doing, and it needs nothing but one ordinary run.
+
+> **Deploy step**: `config/` is seeded into the database only on first start, so
+> the live server needs one `ppn config reload` (or `POST /api/config/reload`)
+> before `model_prices` exists there. Until then runs report tokens and withhold
+> the money.
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one
@@ -405,6 +454,8 @@ review screen checked in the browser at desktop and 375×812.
 - **The Translator** — wired, unit-tested against the stub, never run for real.
 - **`ppn write --dossier` (resume)** — unit-tested, never used to rescue a real run.
 - **`ppn preflight`** — never run against the deployment.
+- **Cost figures against a real bill** — the accounting has never metered a live
+  model call, so it has not been reconciled with Azure Cost Management.
 
 ---
 

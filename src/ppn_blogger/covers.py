@@ -30,6 +30,7 @@ import base64
 import logging
 from typing import Any
 
+from . import usage
 from .models import CoverImage, Draft
 from .settings import Settings, get_settings
 
@@ -337,4 +338,8 @@ async def build_cover(draft: Draft, settings: Settings | None = None) -> CoverIm
     cover.path = str(path)
     cover.width, cover.height = _dimensions(art)
     logger.info("cover written to %s (%sx%s)", path, cover.width, cover.height)
+    # Only on success, and only after the bytes are on disk: an image that was
+    # never produced was never billed. Images are priced per image rather than
+    # per token, so this is the one cost the token meter cannot see.
+    usage.record_image(settings.cover.model)
     return cover

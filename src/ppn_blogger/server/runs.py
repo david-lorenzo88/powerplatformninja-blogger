@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import select, update
 
 from ..settings import get_settings
+from ..usage import current_ledger
 from .db import Run, RunEvent, session, utcnow
 
 logger = logging.getLogger("ppn.server.runs")
@@ -436,6 +437,7 @@ class RunManager:
 
         self.emit(run_id, kind="status", message="Running", data={"status": RUNNING})
         token = current_run_id.set(run_id)
+        ledger_token = current_ledger.set(self._ledger(run_id))
         try:
             result = await self._dispatch(run_id, kind, params)
             # Index the artefacts (topic ideas / posts / versions). Bookkeeping
@@ -453,7 +455,39 @@ class RunManager:
             await self.flush()
             await self._finish(run_id, SUCCEEDED, result=result)
         finally:
+            # Before the row can be read as terminal, and on the failure path
+            # too: a run that died halfway still spent what it spent, and that
+            # is the run most worth having a figure for.
+            await self._drain_usage(run_id)
+            current_ledger.reset(ledger_token)
             current_run_id.reset(token)
+
+    def _ledger(self, run_id: str):
+        """Cost accounting for this run, or a ledger that files nothing.
+
+        Metering is never allowed to be the reason a run does not start, so a
+        failure to read the price document degrades to counting without costing
+        rather than raising.
+        """
+        from ..settings import get_settings
+
+        if not get_settings().run.usage_tracking:
+            return None
+        try:
+            from . import usage_store
+
+            return usage_store.ledger_for(run_id, get_settings().model_prices)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not open a usage ledger for run %s", run_id)
+            return None
+
+    async def _drain_usage(self, run_id: str) -> None:
+        try:
+            from . import usage_store
+
+            await usage_store.drain()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not flush usage for run %s", run_id)
 
     def _on_event(self, run_id: str) -> Callable[[Any], None]:
         """Bridge workflow events into the run's event stream.

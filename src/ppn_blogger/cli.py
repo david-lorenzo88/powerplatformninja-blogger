@@ -19,6 +19,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -118,10 +119,77 @@ class LiveProgress:
             self.label = PHASE_LABELS[executor_id]
 
 
+# Every ledger opened by this CLI invocation. A command can run more than one
+# pipeline — `suggest --explore` runs a sweep and then a shortlist — and the
+# operator paid for a command, not for a stage, so the figures are combined.
+_ledgers: list[Any] = []
+_cost_hook_registered = False
+
+
+def _register_cost_report() -> None:
+    """Print the accounting last, once, however the command ends.
+
+    At exit rather than at the end of the run, for two reasons: the results
+    table is printed *after* the pipeline returns, so reporting inline would put
+    the cost above the thing it describes; and this way a run that raised or
+    timed out still reports what it spent on the way down. Typer 0.27 has no
+    result callback, hence `atexit`.
+    """
+    global _cost_hook_registered
+    if _cost_hook_registered:
+        return
+    import atexit
+
+    atexit.register(_cost_report)
+    _cost_hook_registered = True
+
+
+def _cost_report() -> None:
+    records = [r for ledger in _ledgers if ledger is not None for r in ledger.records]
+    if not records:
+        return
+
+    from . import usage as usage_mod
+
+    counts = usage_mod.totals(records)
+    cost = usage_mod.price(records, get_settings().model_prices)
+
+    tokens = (
+        f"{counts['total_tokens']:,} tokens "
+        f"({counts['input_tokens']:,} in / {counts['output_tokens']:,} out"
+    )
+    if counts["cached_input_tokens"]:
+        tokens += f", {counts['cached_input_tokens']:,} cached"
+    tokens += ")"
+
+    extras = []
+    if counts["searches"]:
+        extras.append(f"{counts['searches']} search(es)")
+    if counts["images"]:
+        extras.append(f"{counts['images']} image(s)")
+    detail = f" · {', '.join(extras)}" if extras else ""
+
+    if cost.priced:
+        money = f"[bold]~{cost.amount:,.2f} {cost.currency}[/] (list price)"
+    else:
+        money = f"[yellow]cost unknown[/] — no price for {', '.join(cost.unpriced_models)}"
+
+    console.print(
+        f"[dim]{counts['calls']} model call(s) · {tokens}{detail}[/] → {money}"
+    )
+
+
 def _run_with_progress(make_coro, *, timeout_minutes: int, what: str):
     """Run a pipeline coroutine under a spinner and a wall-clock ceiling."""
+    from .usage import Ledger, current_ledger
+
+    ledger = Ledger() if get_settings().run.usage_tracking else None
+    if ledger is not None:
+        _ledgers.append(ledger)
+        _register_cost_report()
 
     async def runner():
+        token = current_ledger.set(ledger)
         async with LiveProgress() as progress:
             try:
                 return await asyncio.wait_for(
@@ -141,6 +209,8 @@ def _run_with_progress(make_coro, *, timeout_minutes: int, what: str):
                     "  • Run with [bold]PPN_LOG_LEVEL=DEBUG[/] to see the framework's own trace."
                 )
                 raise typer.Exit(1) from None
+            finally:
+                current_ledger.reset(token)
 
     return asyncio.run(runner())
 
@@ -1086,6 +1156,209 @@ def config_reload() -> None:
     for name, version in results:
         table.add_row(name, f"v{version}")
     console.print(table)
+
+
+cost_app = typer.Typer(help="What the crew has spent.")
+app.add_typer(cost_app, name="cost")
+
+
+def _money(micros: int, currency: str) -> str:
+    return f"{micros / 1_000_000:,.2f} {currency or ''}".strip()
+
+
+@cost_app.callback(invoke_without_command=True)
+def cost(
+    ctx: typer.Context,
+    since: str = typer.Option("", "--since", help="ISO timestamp, or a number of hours ('168')."),
+    by: str = typer.Option("day", "--by", help="Group by 'day' or 'kind'."),
+    limit: int = typer.Option(10, "--limit", help="How many of the priciest runs to list."),
+) -> None:
+    """Spend over a window, from the runs the server recorded.
+
+    Reads the same aggregation the UI does, so the two can never disagree about
+    what a month cost. Runs driven from the CLI print their own figure and are
+    not stored — only server runs have a row to sum.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    setup_logging()
+
+    if by not in {"day", "kind"}:
+        console.print("[red]--by must be 'day' or 'kind'.[/]")
+        raise typer.Exit(1)
+
+    async def run():
+        from .server import news_store, usage_store
+        from .server.db import init_db
+
+        await init_db()
+        start = news_store.parse_since(since)
+        if since.strip() and start is None:
+            console.print(f"[red]Could not read --since {since!r}[/] as a time or hours.")
+            raise typer.Exit(1)
+        return (
+            await usage_store.rollup(start, None, by),
+            await usage_store.most_expensive(limit, start),
+        )
+
+    buckets, top = asyncio.run(run())
+    if not buckets:
+        console.print("[yellow]No recorded usage in that window.[/] "
+                      "Only runs driven through `ppn serve` are stored.")
+        return
+
+    currency = get_settings().model_prices.get("currency", "")
+    table = Table(title=f"Spend by {by}" + (f" since {since}" if since else ""))
+    table.add_column("day" if by == "day" else "kind")
+    table.add_column("Runs' calls", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Cost", justify="right")
+    for bucket in buckets:
+        table.add_row(
+            bucket["key"],
+            f"{bucket['records']:,}",
+            f"{bucket['total_tokens']:,}",
+            _money(bucket["cost_micros"], currency),
+        )
+    total = sum(b["cost_micros"] for b in buckets)
+    table.add_section()
+    table.add_row(
+        "[bold]total[/]",
+        f"{sum(b['records'] for b in buckets):,}",
+        f"{sum(b['total_tokens'] for b in buckets):,}",
+        f"[bold]{_money(total, currency)}[/]",
+    )
+    console.print(table)
+    console.print("[dim]An estimate at list price — no reservation or discount applied.[/]")
+
+    if top:
+        worst = Table(title="Priciest runs")
+        worst.add_column("Cost", justify="right")
+        worst.add_column("Kind", width=10)
+        worst.add_column("Label", overflow="fold")
+        for row in top:
+            worst.add_row(_money(row["cost_micros"], currency), row["kind"], row["label"] or "—")
+        console.print(worst)
+
+
+@cost_app.command("prices")
+def cost_prices(
+    bind: str = typer.Option(
+        "", "--bind", help="Model to bind meters for, e.g. 'gpt-5'. Lists candidates."
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-read every bound meter."),
+    apply_changes: bool = typer.Option(
+        False, "--apply", help="With --refresh, save the moved prices as a new config version."
+    ),
+) -> None:
+    """Bind price meters to your models, then keep them current.
+
+    Binding is manual and happens once per model: Azure's meter names cannot be
+    matched to a deployment without guessing, and a wrong guess prices you
+    against the wrong meter — which looks exactly like a right answer. After
+    that, refreshes read the bound names back verbatim.
+    """
+    setup_logging()
+    from .server import prices as price_client
+
+    document = get_settings().model_prices
+    region = str(document.get("region") or "")
+    tier = str(document.get("deployment_tier") or "Gl")
+    currency = str(document.get("currency") or "USD")
+
+    if not region:
+        console.print("[red]Set `region` in config/model_prices.yaml first[/] "
+                      "— the retail feed prices every region separately.")
+        raise typer.Exit(1)
+
+    if bind:
+        rows = asyncio.run(price_client.candidates(bind, region, currency, tier))
+        if not rows:
+            console.print(
+                f"[yellow]No meters found for {bind!r} in {region}.[/] "
+                "Check the model name, or widen the search by hand at "
+                "https://prices.azure.com/api/retail/prices"
+            )
+            raise typer.Exit(1)
+
+        table = Table(title=f"Meters for {bind} · {region} · tier {tier}")
+        table.add_column("Direction", width=13)
+        table.add_column("Per 1M", justify="right", width=10)
+        table.add_column("Meter", overflow="fold")
+        for row in rows:
+            direction = row["direction"] or "[dim]—[/]"
+            table.add_row(direction, f"{row['price_per_million']:,.4f}", row["meter"])
+        console.print(table)
+
+        suggested = asyncio.run(price_client.suggest_binding(bind, region, currency, tier))
+        if suggested:
+            console.print("\nUnambiguous for this tier — copy into `meters:` "
+                          f"under [bold]{bind}[/] in config/model_prices.yaml:\n")
+            for direction, meter in suggested.items():
+                console.print(f"  {direction}: \"{meter}\"")
+        else:
+            console.print("\n[yellow]Nothing bound automatically[/] — more than one "
+                          "candidate per direction, so pick by hand.")
+        return
+
+    if not refresh:
+        console.print("Nothing to do. Use [bold]--bind <model>[/] or [bold]--refresh[/].")
+        return
+
+    changes = asyncio.run(price_client.refresh(document))
+    if not changes:
+        console.print("[yellow]No bound meters.[/] Run "
+                      "[bold]ppn cost prices --bind <model>[/] first.")
+        return
+
+    table = Table(title=f"Prices checked against Azure · {region} · {currency}")
+    table.add_column("Model", width=16)
+    table.add_column("Direction", width=13)
+    table.add_column("Stored", justify="right", width=10)
+    table.add_column("Azure", justify="right", width=10)
+    table.add_column("", width=3)
+    for change in changes:
+        if not change["found"]:
+            mark, new = "[red]?[/]", "[dim]gone[/]"
+        elif change["changed"]:
+            mark, new = "[yellow]→[/]", f"{change['new']:,.4f}"
+        else:
+            mark, new = "[green]=[/]", f"{change['new']:,.4f}"
+        old = "—" if change["old"] is None else f"{change['old']:,.4f}"
+        table.add_row(change["model"], change["direction"], old, new, mark)
+    console.print(table)
+
+    moved = [c for c in changes if c["changed"]]
+    if not moved:
+        console.print("[green]Everything current.[/]")
+        return
+    if not apply_changes:
+        console.print(f"\n{len(moved)} price(s) moved. Re-run with [bold]--apply[/] to save.")
+        return
+
+    async def save() -> int:
+        import yaml
+
+        from .server import config_store
+        from .server.db import init_db
+
+        await init_db()
+        updated = price_client.apply(document, changes)
+        updated["updated_from_azure"] = _now_iso()
+        row = await config_store.save_document(
+            "model_prices",
+            yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
+            note=f"Refreshed {len(moved)} price(s) from Azure",
+        )
+        return row.version
+
+    console.print(f"[green]Saved[/] as model_prices v{asyncio.run(save())}.")
+
+
+def _now_iso() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()
 
 
 @app.command("show-config")

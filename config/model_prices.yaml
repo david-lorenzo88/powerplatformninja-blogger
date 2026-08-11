@@ -1,0 +1,67 @@
+# What a run costs.
+#
+# Token, image and search counts are measured exactly — the service reports them.
+# The numbers in this file turn those counts into money, so everything derived
+# from it is an *estimate at list price*: no PTU, no reservation, no negotiated
+# discount. Azure Cost Management remains the source of truth for the bill.
+#
+# A model with no entry here is not free — it is unpriced. Its tokens are still
+# recorded and the run reports them, with the money withheld rather than shown
+# as zero.
+
+currency: USD
+
+# Where to look prices up. Neither can be inferred: the retail feed prices every
+# region separately, and Global vs Data Zone deployments of the same model differ
+# by about 10% (`5 pp inp Gl` 2.50 against `5 pp inp Dz` 2.75). Getting the tier
+# wrong is a silent error, never a failure, which is why it is stated here.
+region: eastus            # verified: these figures are eastus Global, 2026-08-11
+deployment_tier: Gl        # Gl (Global) | Dz (Data Zone) | regnl (Regional)
+
+# Set by `ppn cost prices --refresh`, or the Update from Azure button.
+updated_from_azure: ""
+
+# Per 1M tokens.
+#
+# `meters` binds a model to the exact retail meter names it is priced from. The
+# binding is made once, by a human, because the feed's naming is not regular
+# enough to match blind — gpt-5 is "5 pp", gpt-5.4 is plain "5.4", and one region
+# carries 400+ gpt rows. Once bound, refreshes read those names back verbatim, so
+# an unattended update can only ever move a number, never repoint it at the wrong
+# meter.
+#
+# A model key matches by longest prefix, so `gpt-5` also prices the dated
+# deployment name `gpt-5-2025-08-07` that the service actually reports.
+models:
+  gpt-5:
+    input: 2.50
+    cached_input: 0.25
+    output: 20.00
+    meters:
+      input: "5 pp inp Gl 1M Tokens"
+      cached_input: "5 pp cd inp Gl 1M Tokens"
+      output: "5 pp opt Gl 1M Tokens"
+
+  gpt-5-mini:
+    input: 0.45
+    cached_input: 0.045
+    output: 3.60
+    meters:
+      input: "5 mini pp Inp Gl 1M Tokens"
+      cached_input: "5 mini pp cd Inp Gl 1M Tokens"
+      output: "5 mini pp Opt Gl 1M Tokens"
+
+# Per generated image. Hand-set and never touched by the refresh: the retail feed
+# has no per-image meter for the MAI image models, only token meters for other
+# families and opaque codename rows that cannot be tied to a deployment name.
+images:
+  MAI-Image-2.5-Pro:
+    per_image: 0.07
+
+# Per web search. Also hand-set, for the same reason — the hosted search tool runs
+# inside the service and Azure publishes no per-call meter for it that can be
+# matched. The *count* is exact; only this rate is yours to set. Leave it unset
+# and searches go uncounted in the money rather than being treated as free.
+tools:
+  web_search:
+    per_call: 0.035

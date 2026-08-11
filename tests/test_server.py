@@ -111,6 +111,7 @@ async def test_health_and_config_seeded_from_yaml(api):
         "sources",
         "validation_rules",
         "newsletters",
+        "model_prices",
         "style_guide",
     }
     # The move to the database must not lose anything — v1 is the YAML import.
@@ -1012,3 +1013,179 @@ async def test_a_pem_vapid_key_is_usable_by_pywebpush():
 
     # A key already in the base64url DER form pywebpush understands is left alone.
     assert _vapid_key("abc123") == "abc123"
+
+
+# ---------------------------------------------------------------------------
+# Cost accounting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_run_records_what_it_cost(api):
+    """The whole chain, offline: meter → ledger → run_usage → API."""
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    finished = await _wait_for(api, run_id)
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    usage = finished["usage"]
+    assert usage is not None, "a finished run must carry its usage"
+    # Four agents in the discovery graph: three scouts and the editor.
+    assert usage["records"] >= 4
+    assert usage["input_tokens"] > 0
+    assert usage["output_tokens"] > 0
+    assert usage["searches"] > 0
+    # Priced against the configured model — the meter records the deployment the
+    # run would really have used, not what the stub answered as, so a dry run
+    # gives a realistic estimate rather than an empty one.
+    assert usage["priced"] is True
+    assert usage["cost_micros"] > 0
+    assert usage["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_usage_is_broken_down_per_agent(api):
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, run_id)
+
+    body = (await api.get(f"/api/runs/{run_id}/usage")).json()
+    agents = {row["agent_id"] for row in body["agents"]}
+    assert {"news_scout", "feed_scout", "docs_scout", "topic_editor"} <= agents
+    assert body["total"]["total_tokens"] == sum(r["total_tokens"] for r in body["agents"])
+    # The breakdown has to carry `priced` as well as the tokens, or the UI reads
+    # every row as uncosted and renders a dash beside a real number. The totals
+    # query got this right and the per-agent one did not, which is exactly the
+    # asymmetry worth pinning down.
+    assert body["total"]["cost_micros"] == sum(r["cost_micros"] for r in body["agents"])
+    assert all(row["priced"] for row in body["agents"])
+
+
+@pytest.mark.asyncio
+async def test_usage_appears_on_the_runs_list(api):
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, run_id)
+
+    listing = (await api.get("/api/runs")).json()
+    row = next(r for r in listing if r["id"] == run_id)
+    assert row["usage"]["total_tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_never_metered_run_reports_no_usage_rather_than_zero(api, controllable_dispatch):
+    """A run that called no model has no cost — which is not the same as £0.00."""
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    controllable_dispatch.release.set()
+    await _wait_for(api, run_id)
+
+    assert (await api.get(f"/api/runs/{run_id}")).json()["usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_rollup_groups_by_day_and_by_kind(api):
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, run_id)
+
+    by_day = (await api.get("/api/usage")).json()
+    assert len(by_day["buckets"]) == 1
+    assert by_day["buckets"][0]["total_tokens"] > 0
+
+    by_kind = (await api.get("/api/usage?group_by=kind")).json()
+    assert [b["key"] for b in by_kind["buckets"]] == ["suggest"]
+    assert by_kind["top_runs"][0]["run_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_rollup_window_excludes_older_runs(api):
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, run_id)
+
+    # A window that starts in the future can contain nothing. Passed through
+    # `params` so the `+00:00` offset is encoded — inlined in the query string
+    # the `+` arrives as a space and the bound is silently unreadable.
+    from datetime import timedelta
+
+    from ppn_blogger.server.db import utcnow
+
+    future = (utcnow() + timedelta(hours=1)).isoformat()
+    body = (await api.get("/api/usage", params={"since": future})).json()
+    assert body["buckets"] == []
+    assert body["top_runs"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_window_is_refused_rather_than_widened(api):
+    """A cost figure over the wrong period looks like an answer. It must not."""
+    response = await api.get("/api/usage?since=last+tuesday")
+    assert response.status_code == 422
+    assert "since" in response.json()["detail"]
+
+
+@pytest.fixture
+def recorded_prices(monkeypatch):
+    """The retail API, served from the recorded payload used by test_prices."""
+    import pathlib
+
+    import httpx
+
+    payload = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "azure_retail_prices.json").read_text()
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        expr = dict(request.url.params).get("$filter", "")
+        rows = payload["Items"]
+        if "contains(meterName, '" in expr:
+            fragment = expr.split("contains(meterName, '")[1].split("')")[0]
+            rows = [r for r in rows if fragment.lower() in r["meterName"].lower()]
+        return httpx.Response(200, json={"Items": rows, "NextPageLink": None})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda *a, **kw: original(*a, **{**kw, "transport": transport})
+    )
+
+
+@pytest.mark.asyncio
+async def test_price_candidates_are_offered_for_binding(api, recorded_prices):
+    body = (await api.get("/api/prices/candidates", params={"model": "gpt-5"})).json()
+    assert body["region"] == "eastus"
+    assert body["suggested"] == {
+        "input": "5 pp inp Gl 1M Tokens",
+        "cached_input": "5 pp cd inp Gl 1M Tokens",
+        "output": "5 pp opt Gl 1M Tokens",
+    }
+
+
+@pytest.mark.asyncio
+async def test_refresh_reports_before_it_writes(api, recorded_prices):
+    """The manual path must never save without being asked."""
+    before = (await api.get("/api/config/model_prices")).json()["version"]
+
+    reported = (await api.post("/api/prices/refresh", json={"apply": False})).json()
+    assert reported["checked"] > 0
+    assert reported["applied"] is False
+    assert (await api.get("/api/config/model_prices")).json()["version"] == before
+
+
+@pytest.mark.asyncio
+async def test_applying_a_refresh_saves_a_new_config_version(api, recorded_prices):
+    # Make one price stale so there is something to move.
+    document = (await api.get("/api/config/model_prices")).json()["content"]
+    await api.put(
+        "/api/config/model_prices",
+        json={"content": document.replace("input: 2.50", "input: 1.11")},
+    )
+    version = (await api.get("/api/config/model_prices")).json()["version"]
+
+    applied = (await api.post("/api/prices/refresh", json={"apply": True})).json()
+    assert applied["applied"] is True
+    assert applied["version"] == version + 1
+
+    from ppn_blogger.settings import get_settings
+
+    prices_now = get_settings().model_prices
+    assert prices_now["models"]["gpt-5"]["input"] == 2.5
+    # The hand-set figures Azure cannot price must survive the rewrite.
+    assert prices_now["images"]["MAI-Image-2.5-Pro"]["per_image"] == 0.07
+    assert prices_now["tools"]["web_search"]["per_call"] == 0.035
+    assert prices_now["updated_from_azure"]

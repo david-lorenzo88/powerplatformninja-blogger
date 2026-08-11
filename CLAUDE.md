@@ -42,6 +42,7 @@ src/ppn_blogger/
   executors.py      gates: parsing, routing, loop conditions, artefact writing
   workflows.py      the Agent Framework graphs + the entry-point functions
   covers.py         neon cover art (MAI / OpenAI-compatible / OpenAI-direct)
+  usage.py          token metering (agent middleware) + pure pricing arithmetic
   wordpress.py      REST client + Markdown → Gutenberg block conversion
   sources.py        harvest sites from a wide sweep; file the operator's verdict
   news.py           news feeds, pure: canonicalise, conditional GET, parse, discover
@@ -54,9 +55,10 @@ src/ppn_blogger/
                     (server/api_news.py, news_store.py, ingest.py), the
                     scheduler (scheduler.py), watch notifications (watch.py) and
                     newsletters (newsletters.py, newsletter_runs.py), delivery
-                    (channels.py, delivery.py) and feed discovery (discovery.py)
+                    (channels.py, delivery.py), feed discovery (discovery.py)
+                    and cost (usage_store.py, prices.py)
 config/             editorial policy — the thing you actually tune
-tests/              240 tests, offline; conftest.py picks the DB backend
+tests/              290 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -69,7 +71,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 240 tests, ~35s, no network, no credentials
+pytest                      # 290 tests, ~40s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -83,6 +85,9 @@ ppn news discover "<brief>" # search the web for feeds matching a brief, then ap
 ppn news poll               # fetch every enabled feed; run twice to see the 304s
 ppn news list | ppn news read
 ppn newsletter list|preview|generate   # preview calls no model
+ppn cost                    # what the server-side runs have spent
+ppn cost prices --bind gpt-5   # find the retail meters that price a model
+ppn cost prices --refresh      # compare bound prices against Azure
 ```
 
 `pip install -e ".[dev]"` gives you the CLI, the server extras and pytest.
@@ -161,6 +166,35 @@ invariant and becomes a hope.
 dossier to `research/` before sending it on, which is what makes
 `ppn write --dossier` possible. Preserve that property.
 
+**The cost meter is agent middleware, and that is not an accident.** Agent
+Framework offers chat middleware too, which looks like the better seam — it sees
+the model name and fires per round trip. It is the wrong one: `StubChatClient`
+extends `BaseChatClient`, the *raw* base, and `ChatMiddlewareLayer` is a mixin
+only concrete clients carry. A meter written there works against Foundry and
+fires **never** against the stub — invisible to `pytest` and to every dry run.
+`AgentMiddleware` is installed by the `Agent` itself, so it fires either way; the
+price is that `AgentResponse` carries no model name, which is why `_meter()` in
+`agents.py` is told its tier. Counting once per invocation loses nothing, because
+`FunctionInvocationLayer` already aggregates the whole tool loop.
+
+**A price is bound by a human once, then refreshed verbatim.** Azure's retail feed
+carries every token meter and no usable name — 400+ GPT rows in one region, called
+things like `5.4 Batch cd inp Dz 1M Tokens`, and gpt-5 is `5 pp` while gpt-5.4 is
+plain `5.4`. Matching that automatically is guesswork, and a wrong guess prices you
+against the wrong meter, which reads exactly like a right answer. So
+`prices.candidates()` offers a shortlist, a person picks, and the meter *names* go
+in the config; `prices.refresh()` then reads those names back. An unattended weekly
+refresh can move a number and can never repoint a binding. Cover images and hosted
+search have no matchable meter and stay hand-set — `prices.apply()` must keep
+leaving them alone.
+
+**Counting is exact; costing is an estimate.** Everything above `usage.price` is
+what the service reported. Below it, a number from config is applied, so every
+figure the UI shows says "list price" and `priced: false` means the money is
+*unknown*, never zero. A run that called no model reports `usage: null` rather than
+a confident 0.00. Money is integer micros end to end — never a float across the
+SQLite/SQL Server seam.
+
 **Failures that must never raise:** cover generation (`build_cover` funnels
 everything into `CoverImage.error`), the WordPress push in `Finalizer`, and
 translation parsing in `TranslationGate`. Losing a finished draft to a transient
@@ -168,6 +202,10 @@ outage is the failure mode being designed out.
 
 **Tools never raise either.** Every `@tool` in `tools.py` returns
 `{"error": ..., "message": ...}` so the agent can reason about the failure.
+
+Metering is on that list: `UsageMeter` swallows and logs, `Ledger.add` swallows a
+failing sink, and `prices` returns `[]` rather than raising. Losing a forty-minute
+run to a bookkeeping bug is the failure being designed out.
 
 ## Testing
 

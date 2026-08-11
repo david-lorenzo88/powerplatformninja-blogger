@@ -1,0 +1,79 @@
+{
+ "BillingCurrency": "USD",
+ "Count": 8,
+ "Items": [
+  {
+   "meterName": "5 pp inp Gl 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 2.5,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp inp Dz 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 2.75,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp opt Dz 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 22.0,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp cd inp Gl 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 0.25,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp opt Gl 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 20.0,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp cd inp Dz 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 0.275,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "gpt 4.1 Inp regnl Tokens",
+   "unitOfMeasure": "1K",
+   "retailPrice": 0.0022,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  },
+  {
+   "meterName": "5 pp Batch inp Gl 1M Tokens",
+   "unitOfMeasure": "1M",
+   "retailPrice": 1.25,
+   "currencyCode": "USD",
+   "productName": "Azure OpenAI GPT5",
+   "armRegionName": "eastus",
+   "serviceName": "Foundry Models"
+  }
+ ],
+ "NextPageLink": null
+}

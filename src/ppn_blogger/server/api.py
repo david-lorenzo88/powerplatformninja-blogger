@@ -28,8 +28,8 @@ from sqlalchemy import desc, select
 
 from ..models import SourceDecision
 from ..settings import get_settings
-from . import catalog, config_store, drafts, push, reviews
-from .db import Run, session
+from . import catalog, config_store, drafts, prices, push, reviews, usage_store
+from .db import Run, session, utcnow
 from .runs import TERMINAL, manager
 
 router = APIRouter(prefix="/api")
@@ -311,7 +311,10 @@ async def list_runs(
         stmt = select(Run).order_by(desc(Run.queued_at)).limit(limit)
         if status:
             stmt = stmt.where(Run.status == status)
-        return [_run_dict(r) for r in (await s.execute(stmt)).scalars()]
+        runs = list((await s.execute(stmt)).scalars())
+
+    costs = await usage_store.for_runs([r.id for r in runs])
+    return [{**_run_dict(r), "usage": costs.get(r.id)} for r in runs]
 
 
 @router.get("/runs/{run_id}")
@@ -321,7 +324,123 @@ async def get_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(404, "No such run")
     events = await manager().replay(run_id)
-    return {**_run_dict(run), "nodes": derive_nodes(events), "event_count": len(events)}
+    return {
+        **_run_dict(run),
+        "nodes": derive_nodes(events),
+        "event_count": len(events),
+        "usage": await usage_store.for_run(run_id),
+    }
+
+
+@router.get("/runs/{run_id}/usage")
+async def run_usage(run_id: str) -> dict[str, Any]:
+    """Per-agent breakdown: which stage of this run cost what."""
+    async with session() as s:
+        run = await s.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, "No such run")
+    return {
+        "total": await usage_store.for_run(run_id),
+        "agents": await usage_store.by_agent(run_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Prices
+# ---------------------------------------------------------------------------
+
+
+class PriceRefreshRequest(BaseModel):
+    apply: bool = False
+
+
+@router.get("/prices/candidates")
+async def price_candidates(model: str) -> dict[str, Any]:
+    """Meters that could price a model, for the operator to bind one to.
+
+    A bind step exists because the retail feed's meter names cannot be matched
+    to a deployment automatically without guessing, and a wrong guess produces a
+    plausible number against the wrong meter — the least detectable kind of
+    error. Choosing is a human's job, once.
+    """
+    document = get_settings().model_prices
+    region = str(document.get("region") or "")
+    if not region:
+        raise HTTPException(422, "Set `region` in the model_prices document first.")
+
+    tier = str(document.get("deployment_tier") or "Gl")
+    currency = str(document.get("currency") or "USD")
+    return {
+        "model": model,
+        "region": region,
+        "tier": tier,
+        "currency": currency,
+        "candidates": await prices.candidates(model, region, currency, tier),
+        "suggested": await prices.suggest_binding(model, region, currency, tier),
+    }
+
+
+@router.post("/prices/refresh")
+async def price_refresh(body: PriceRefreshRequest) -> dict[str, Any]:
+    """Re-read every bound meter. Reports the diff; writes only when asked."""
+    import yaml
+
+    document = get_settings().model_prices
+    changes = await prices.refresh(document)
+    moved = [c for c in changes if c["changed"]]
+
+    saved_version = None
+    if body.apply and moved:
+        updated = prices.apply(document, changes)
+        updated["updated_from_azure"] = utcnow().isoformat()
+        row = await config_store.save_document(
+            "model_prices",
+            yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
+            note=f"Refreshed {len(moved)} price(s) from Azure",
+        )
+        saved_version = row.version
+
+    return {
+        "checked": len(changes),
+        "changes": changes,
+        "applied": saved_version is not None,
+        "version": saved_version,
+    }
+
+
+@router.get("/usage")
+async def usage_rollup(
+    since: str = "",
+    until: str = "",
+    group_by: str = Query("day", pattern="^(day|kind)$"),
+    limit: int = Query(10, le=50),
+) -> dict[str, Any]:
+    """Spend over a window, plus the runs that dominated it.
+
+    ``since``/``until`` take an ISO timestamp or a bare number of hours, the same
+    shape the news endpoints already accept.
+    """
+    from . import news_store
+
+    start = news_store.parse_since(since)
+    end = news_store.parse_since(until)
+    # An unparseable bound would silently widen the window, and a spend figure
+    # over the wrong period is worse than an error — it looks like an answer.
+    # (The usual cause is an un-encoded `+00:00`, where the `+` arrives as a
+    # space.) The news endpoints can afford to shrug this off; money cannot.
+    for raw, parsed, name in ((since, start, "since"), (until, end, "until")):
+        if raw.strip() and parsed is None:
+            raise HTTPException(422, f"Could not read {name}={raw!r} as a time or a number of hours")
+
+    return {
+        "group_by": group_by,
+        # From the current document rather than the stored rows: a rollup spans
+        # many runs and a mixed-currency total would be meaningless anyway, so
+        # there is one currency and it is the configured one.
+        "currency": str(get_settings().model_prices.get("currency") or "USD"),
+        "buckets": await usage_store.rollup(start, end, group_by),
+        "top_runs": await usage_store.most_expensive(limit, start),
+    }
 
 
 @router.post("/runs/{run_id}/cancel")

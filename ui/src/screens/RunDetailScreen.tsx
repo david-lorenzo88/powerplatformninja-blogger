@@ -14,6 +14,7 @@ import { isStreamChunk } from '../lib/runEvents'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { useRunStream } from '../hooks/useRunStream'
 import { duration } from '../lib/format'
+import { RunCost } from '../components/RunCost'
 import { RunResult } from '../components/RunResult'
 
 // React Flow and dagre are ~400KB and only the desktop layout renders them, so
@@ -27,8 +28,8 @@ const WorkflowCanvas = lazy(() =>
 export function RunDetailScreen() {
   const { id } = useParams<{ id: string }>()
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [tab, setTab] = useState<'node' | 'log'>('log')
-  const [mobileTab, setMobileTab] = useState<'steps' | 'log'>('steps')
+  const [tab, setTab] = useState<'node' | 'log' | 'cost'>('log')
+  const [mobileTab, setMobileTab] = useState<'steps' | 'log' | 'cost'>('steps')
   const isDesktop = useIsDesktop()
 
   const { events, streamStatus, terminalStatus } = useRunStream(id)
@@ -124,9 +125,14 @@ export function RunDetailScreen() {
               <TabButton active={tab === 'log'} onClick={() => setTab('log')}>
                 Log ({events.length})
               </TabButton>
+              <TabButton active={tab === 'cost'} onClick={() => setTab('cost')}>
+                Cost
+              </TabButton>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
-              {tab === 'node' ? (
+              {tab === 'cost' ? (
+                <div className="p-4">{run.data && <RunCost run={run.data} />}</div>
+              ) : tab === 'node' ? (
                 selectedId ? (
                   <NodePanel executorId={selectedId} events={selectedEvents} />
                 ) : (
@@ -150,12 +156,17 @@ export function RunDetailScreen() {
               Steps ({Object.keys(nodeStates).length}/
               {graph?.nodes.filter((n) => !n.isFanIn).length ?? 0})
             </TabButton>
+            <TabButton active={mobileTab === 'cost'} onClick={() => setMobileTab('cost')}>
+              Cost
+            </TabButton>
             <TabButton active={mobileTab === 'log'} onClick={() => setMobileTab('log')}>
               Log ({events.length})
             </TabButton>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            {mobileTab === 'steps' ? (
+            {mobileTab === 'cost' ? (
+              <div className="p-4">{run.data && <RunCost run={run.data} />}</div>
+            ) : mobileTab === 'steps' ? (
               graph ? (
                 <RunStepList
                   graph={graph}

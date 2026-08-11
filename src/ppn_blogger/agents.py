@@ -57,6 +57,24 @@ def _opts(response_format: type, temperature: float | None = None) -> dict:
     return options
 
 
+def _meter(agent_id: str, *, fast: bool = False) -> list[Any]:
+    """Token accounting for one agent.
+
+    Agent middleware rather than chat middleware, deliberately — see the module
+    docstring in ``usage.py``. The model is passed in because ``AgentResponse``
+    does not carry one, and ``fast`` mirrors the client the caller already
+    picked, so the two can never disagree about which tier was billed.
+    """
+    from .settings import get_settings
+    from .usage import UsageMeter
+
+    settings = get_settings()
+    if not settings.run.usage_tracking:
+        return []
+    model = (settings.foundry.fast_model or settings.foundry.model) if fast else settings.foundry.model
+    return [UsageMeter(agent_id, model)]
+
+
 def _searchable(base: list[Any], client: Any) -> list[Any]:
     """Resolve the web-search tool for an agent according to SEARCH_PROVIDER.
 
@@ -88,6 +106,7 @@ def build_news_scout(settings: Settings, clients: ClientBundle, *, explore: bool
         description="Scans the open web for recent, substantive Power Platform news.",
         tools=_searchable(tools.SCOUT_NEWS_TOOLS, clients.fast),
         default_options=_opts(ScoutReport),
+        middleware=_meter(NEWS_SCOUT, fast=True),
     )
 
 
@@ -100,6 +119,7 @@ def build_feed_scout(settings: Settings, clients: ClientBundle) -> Agent:
         description="Reads the curated first-party and MVP feeds for concrete changes.",
         tools=_searchable(tools.SCOUT_FEED_TOOLS, clients.fast),
         default_options=_opts(ScoutReport),
+        middleware=_meter(FEED_SCOUT, fast=True),
     )
 
 
@@ -112,6 +132,7 @@ def build_docs_scout(settings: Settings, clients: ClientBundle) -> Agent:
         description="Mines learn.microsoft.com for documented limits, licensing and preview status.",
         tools=_searchable(tools.SCOUT_DOCS_TOOLS, clients.fast),
         default_options=_opts(ScoutReport),
+        middleware=_meter(DOCS_SCOUT, fast=True),
     )
 
 
@@ -124,6 +145,7 @@ def build_topic_editor(settings: Settings, clients: ClientBundle) -> Agent:
         description="Turns raw scout signals into a ranked, de-duplicated shortlist of post ideas.",
         tools=[tools.search_existing_posts, tools.today_tool],
         default_options=_opts(TopicSuggestionSet),
+        middleware=_meter(TOPIC_EDITOR),
     )
 
 
@@ -143,6 +165,7 @@ def build_notes_normalizer(settings: Settings, clients: ClientBundle) -> Agent:
         description="Turns raw author notes into typed, id'd author claims. Invents nothing.",
         tools=[tools.today_tool],
         default_options=_opts(AuthorClaimSet),
+        middleware=_meter(NOTES_NORMALIZER, fast=True),
     )
 
 
@@ -155,6 +178,7 @@ def build_researcher(settings: Settings, clients: ClientBundle) -> Agent:
         description="Builds an evidence-backed dossier for one topic.",
         tools=_searchable(tools.RESEARCHER_TOOLS, clients.reasoning),
         default_options=_opts(ResearchDossier),
+        middleware=_meter(RESEARCHER),
     )
 
 
@@ -167,6 +191,7 @@ def build_source_checker(settings: Settings, clients: ClientBundle) -> Agent:
         description="Adversarially verifies every citation and critical claim in the dossier.",
         tools=_searchable(tools.SOURCE_CHECKER_TOOLS, clients.reasoning),
         default_options=_opts(SourceVerdict),
+        middleware=_meter(SOURCE_CHECKER),
     )
 
 
@@ -179,6 +204,7 @@ def build_writer(settings: Settings, clients: ClientBundle) -> Agent:
         description="Writes and revises the post draft from the dossier and validator feedback.",
         tools=tools.WRITER_TOOLS,
         default_options=_opts(Draft, temperature=0.7),
+        middleware=_meter(WRITER),
     )
 
 
@@ -190,6 +216,7 @@ def build_content_validator(settings: Settings, clients: ClientBundle) -> Agent:
         name=CONTENT_VALIDATOR,
         description="Editorial gate: substance, accuracy, voice, traceability to the dossier.",
         default_options=_opts(ValidationReportDraft, temperature=0.2),
+        middleware=_meter(CONTENT_VALIDATOR),
     )
 
 
@@ -201,6 +228,7 @@ def build_design_validator(settings: Settings, clients: ClientBundle) -> Agent:
         name=DESIGN_VALIDATOR,
         description="Formatting, structure, readability and SEO gate.",
         default_options=_opts(ValidationReportDraft, temperature=0.2),
+        middleware=_meter(DESIGN_VALIDATOR),
     )
 
 
@@ -212,6 +240,7 @@ def build_translator(settings: Settings, clients: ClientBundle) -> Agent:
         name=TRANSLATOR,
         description="Localises an approved English draft, preserving structure and code.",
         default_options=_opts(Draft, temperature=0.3),
+        middleware=_meter(TRANSLATOR),
     )
 
 
@@ -233,6 +262,7 @@ def build_newsletter_editor(
         description="Curates harvested articles into one newsletter issue.",
         tools=[tools.today_tool],
         default_options=_opts(NewsletterIssueDraft, 0.4),
+        middleware=_meter(NEWSLETTER_EDITOR),
     )
 
 
@@ -258,4 +288,5 @@ def build_feed_discovery_scout(
         description="Sweeps for new feeds worth following.",
         tools=_searchable([tools.web_search, tools.fetch_page, tools.today_tool], clients.fast),
         default_options=_opts(FeedSuggestionSet),
+        middleware=_meter(FEED_DISCOVERY_SCOUT, fast=True),
     )

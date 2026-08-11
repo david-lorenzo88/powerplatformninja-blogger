@@ -2,13 +2,13 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { cancelRun, getHealth, listRuns } from '../api/client'
-import type { Run } from '../api/types'
+import type { Run, RunUsage } from '../api/types'
 import { isTerminal } from '../api/types'
 import { StatusBadge } from '../components/StatusBadge'
 import { StartRunDialog } from '../components/StartRunDialog'
 import { useIsDesktop } from '../hooks/useMediaQuery'
 import { useOnline } from '../hooks/useOnline'
-import { duration, relativeTime } from '../lib/format'
+import { duration, formatCost, formatTokens, relativeTime } from '../lib/format'
 import { ghostBtn, primaryBtn, rowCard } from '../lib/ui'
 
 export function RunsScreen() {
@@ -82,6 +82,7 @@ export function RunsScreen() {
                   <th className="px-4 py-2.5 font-medium">Kind</th>
                   <th className="px-4 py-2.5 font-medium">Label</th>
                   <th className="px-4 py-2.5 font-medium">When</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Cost</th>
                   <th className="px-4 py-2.5 font-medium"></th>
                 </tr>
               </thead>
@@ -152,8 +153,13 @@ function RunCard({
           <span className="ml-auto font-mono text-[11px] text-slate-500">{run.kind}</span>
         </div>
         <div className="mt-2 truncate font-medium text-slate-200">{run.label || '—'}</div>
-        <div className="mt-1 text-xs text-slate-400">
+        <div className="mt-1 flex items-baseline gap-2 text-xs text-slate-400">
           <WhenCell run={run} position={position} />
+          {run.usage && (
+            <span className="ml-auto shrink-0">
+              <CostCell usage={run.usage} />
+            </span>
+          )}
         </div>
       </button>
       {cancellable && (
@@ -193,6 +199,9 @@ function RunRow({
       <td className="px-4 py-3 text-xs text-slate-400">
         <WhenCell run={run} position={position} />
       </td>
+      <td className="px-4 py-3 text-right text-xs">
+        <CostCell usage={run.usage} />
+      </td>
       <td className="px-4 py-3 text-right">
         {cancellable && (
           <button
@@ -208,6 +217,28 @@ function RunRow({
         )}
       </td>
     </tr>
+  )
+}
+
+// A run that called no model has no cost, which is not the same as costing
+// nothing — hence a dash rather than a zero. `priced: false` means some model in
+// the run has no configured rate, so the figure is a floor, not a total.
+function CostCell({ usage }: { usage?: RunUsage | null }) {
+  if (!usage) return <span className="text-slate-600">—</span>
+  if (!usage.priced) {
+    return (
+      <span
+        className="text-amber-300/80"
+        title={`No price configured for ${usage.unpriced_models?.join(', ') || 'this model'}`}
+      >
+        {formatTokens(usage.total_tokens)} tok
+      </span>
+    )
+  }
+  return (
+    <span className="text-slate-300" title={`${formatTokens(usage.total_tokens)} tokens`}>
+      {formatCost(usage.cost_micros, usage.currency)}
+    </span>
   )
 }
 
