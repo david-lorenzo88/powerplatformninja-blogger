@@ -410,6 +410,9 @@ export interface Topic {
 
 export interface WriteRequest {
   topic: Topic
+  // Steers the draft. Reaches the Outliner, where it outranks the topic's own
+  // angle, so it decides scope rather than only prose.
+  instructions?: string
   push?: boolean | null
   cover?: boolean | null
   translate?: boolean | null

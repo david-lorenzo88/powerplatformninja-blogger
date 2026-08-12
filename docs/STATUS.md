@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-08-11. The React management UI (Stage 2) is **built, verified
+Last updated: 2026-08-13. The React management UI (Stage 2) is **built, verified
 and merged into `main`** (PR #1). Read this before starting anything.
 
 ---
@@ -458,6 +458,61 @@ next thing worth doing, and it needs nothing but one ordinary run.
 > before `model_prices` exists there. Until then runs report tokens and withhold
 > the money.
 
+## Draft focus: the diagnosis and the fix (new, 2026-08-13)
+
+**The complaint:** drafts mix topics and wander off the subject they were
+commissioned to write.
+
+**The evidence.** Three real drafts pulled from WordPress (post ids `1258`, `1259`,
+`1261`). Draft 1261, *"Copilot Studio orchestration: generative vs classic"*, has
+11 content sections of 96 to 229 words, of which **four (705 words, 40% of the
+body) are about Business Central** — not the subject, and not in the blog's own
+category list. Its second opening paragraph is a five-item enumeration of what the
+post "covers": a table of contents in prose, not a thesis. Drafts 1258 and 1259
+were generated a day apart on the same subject with near-identical section plans.
+
+**Why nothing caught it.** Six causes, all verified in code:
+
+1. **No stage decided what the post was about.** `source_gate -> writer` directly.
+   `ResearchDossier.suggested_outline` existed, was produced by the Researcher, and
+   was read by nobody.
+2. **The thesis was never carried.** `TopicSuggestion.angle` had nowhere to live
+   downstream, and the revision prompt sent findings plus dossier and **no topic
+   block at all**, so three rewrites happened with no statement of the argument.
+   `catalog._topic_from_post` rebuilt topics with `angle=""`.
+3. **The config specified thin sections.** 12 sections against a 0.8-scaled 2000
+   word band is 133 words each.
+4. **No rule asked whether the post was about one thing.** The content family had
+   four rules, none of them coherence.
+5. **Twelve rules were enforced by nobody** — `auto: true` with no detector meant
+   the code skipped them and the validator was told to skip them. S02 (section
+   count) and C04 (word count) were among them.
+6. **The crew was blind to its own output.** `search_existing_posts` queried
+   `status: "publish"`, and everything this crew produces is a *draft*. That is the
+   mechanical reason 1258 and 1259 both exist.
+
+**What changed.** A new **Outliner** agent and **`OutlineGate`** between the source
+gate and the Writer, producing a `PostOutline` (thesis, reader promise,
+`out_of_scope`, sections with dossier claim ids) that is checked in code, repaired
+deterministically and persisted to `research/<date>-<slug>.outline.json`. The
+thesis now rides the whole run, including every revision turn. Sections went 8-12
+→ 5-7 with a 250-450 word floor per section. A new **F (focus)** rule family, three
+of whose rules are code-decided against the outline. `COMPUTED_RULES` closes the
+`auto` hole, with a test that fails the build if it reopens. The search tool now
+sees drafts, minors reach the Writer, and the write launch dialog takes free-text
+instructions that steer the *scope* via the Outliner.
+
+Verified offline: 313 tests, ruff clean, `npm run build` and `tsc --noEmit` clean.
+Verified against the real artefacts: S02, F03, F04 and F05 all fire on draft 1261,
+and the search tool now returns the two duplicate drafts it used to miss.
+
+**Not yet done** (deliberately held back until a live run shows the effect of the
+above): scoring derived from `scoring.deductions` instead of the validator's
+self-reported integer, cross-run duplicate detection wired to
+`duplicate_similarity_threshold`, and deleting the dead `loop.*` config.
+
+---
+
 ## Still open / not yet exercised
 
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one
@@ -467,6 +522,9 @@ next thing worth doing, and it needs nothing but one ordinary run.
 - **`ppn preflight`** — never run against the deployment.
 - **Cost figures against a real bill** — the accounting has never metered a live
   model call, so it has not been reconciled with Azure Cost Management.
+- **The Outliner against a real model** — the whole outline stage is exercised
+  offline only. The natural regression case is re-running draft 1261's topic: we
+  know exactly what it did wrong, so the before/after is unambiguous.
 
 ---
 

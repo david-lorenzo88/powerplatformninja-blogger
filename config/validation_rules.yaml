@@ -9,8 +9,21 @@
 #   E = SEO
 #
 # `detector` holds a regex the Validator MUST run literally before forming an opinion.
-# Rules with `auto: true` are decided by the regex. Rules with `auto: false` need
-# judgement, and the Validator must quote the offending text verbatim in `location`.
+# Rules with `auto: false` need judgement, and the Validator must quote the offending
+# text verbatim in `location`.
+#
+# `auto: true` is a statement about the CODE, not about the rule. It means one of two
+# things actually decides this rule before any model is called: a `detector` regex, or
+# an entry in `detectors.COMPUTED_RULES`. It does not mean "mechanically checkable in
+# principle".
+#
+# Getting that wrong is silent and total. `rules_text` stamps `[auto]` on the rule and
+# the validator prompt says to add findings only for rules without that tag, while
+# `run_detectors` skips any rule carrying no detector. A rule marked `auto` with
+# nothing behind it is therefore checked by NOBODY — which is exactly how a draft with
+# eleven thin sections passed S02 and C04 and still scored 93.5. If you mark a rule
+# `auto`, give it a detector or add it to COMPUTED_RULES in the same edit; the test
+# suite fails you if you do not.
 
 meta:
   version: 2
@@ -240,7 +253,7 @@ voice_rules:
       words in every H2 section. At least one sentence over thirty words in the post. At
       least two single-sentence paragraphs. No paragraph over five sentences.
     severity: major
-    auto: true
+    auto: false
     check_hint: >-
       Compute per section. Report the failing sections by name with their measured
       averages, not a general complaint.
@@ -250,7 +263,7 @@ voice_rules:
       Section lengths differ. Four or more consecutive H2 sections within 15 percent of
       the same word count means the post was generated to a template.
     severity: minor
-    auto: true
+    auto: false
 
   - id: V12
     rule: >-
@@ -330,6 +343,91 @@ content_rules:
     auto: true
 
 # ---------------------------------------------------------------------------
+# F (focus). Whether the post argues ONE thing.
+#
+# This family exists because a draft can satisfy every other rule in this file and
+# still be four posts stapled together. One real draft scored 93.5 and APPROVED
+# with forty percent of its body on a product that was not its subject: honesty
+# passed, voice passed, structure passed, and nothing here was asking the
+# question.
+#
+# Checked against the approved outline, never against taste. F03, F04 and F05 are
+# decidable in code only because the outline exists — that is the whole argument
+# for having an outline stage, and it turns three judgements into three
+# comparisons. F01, F02 and F06 are irreducibly semantic and stay with the editor.
+# ---------------------------------------------------------------------------
+focus_rules:
+  - id: F01
+    rule: >-
+      The post states one thesis in the second opening paragraph, as a claim someone
+      could disagree with. An enumeration of what the post "covers" is a table of
+      contents in prose, not a thesis.
+    severity: blocker
+    auto: false
+    # Deliberately loose. F01 is auto:false, so these hits land in the validator's
+    # hints and never become findings on their own — a false positive costs a
+    # glance, a miss costs the whole rule. The real draft that prompted this rule
+    # opened "It covers how each orchestrator ...", so a pattern anchored on
+    # "this post" alone would have sailed past it.
+    detector: '(?i)\b(?:this (?:post|article)|it|we|here|below|what follows)\b[^.\n]{0,90}?\b(covers|cover|walks you through|walks through|looks at|explores|breaks down|goes through|takes you through|dives into)\b'
+    check_hint: >-
+      Read the second opening paragraph alone, then read the <thesis> block. Do they say
+      the same thing? A paragraph listing what follows fails, and three or more "how to
+      X, what Y, and Z" clauses in one sentence is that list. The detector hits are
+      candidates, not verdicts.
+    fix_hint: >-
+      Replace the enumeration with the thesis from the approved outline, then one
+      sentence on why it matters now.
+
+  - id: F02
+    rule: >-
+      Every H2 content section advances the thesis. A section whose point could be
+      lifted into an unrelated post is out of scope however good the material is.
+    severity: blocker
+    auto: false
+    check_hint: >-
+      For each H2, complete the sentence "this section matters because <thesis>". Quote
+      the heading of every section where you cannot, in `location`.
+    fix_hint: >-
+      Delete the section. Do not shorten it and do not merge it into a neighbour: it is
+      the next post, not a paragraph of this one.
+
+  - id: F03
+    rule: >-
+      Nothing the approved outline declared out of scope is given a heading. An excluded
+      subject may be named once, in a clause, and not discussed.
+    severity: major
+    auto: true
+
+  - id: F04
+    rule: >-
+      Every content section carries enough to make its point: between min_section_words
+      and max_section_words (see structure in blog_profile.yaml). A section under the
+      floor is a bullet pretending to be a section.
+    severity: major
+    auto: true
+    fix_hint: >-
+      Merge the thin section into the one it supports, or cut it. Do not pad it.
+
+  - id: F05
+    rule: >-
+      The draft's H2 content sections match the approved outline: same titles, same
+      order, nothing added. A section that was not outlined was not argued for.
+    severity: major
+    auto: true
+    fix_hint: >-
+      Restore the outlined sections. If the outline was wrong, say so in `changelog`
+      rather than silently re-outlining mid-draft.
+
+  - id: F06
+    rule: >-
+      The title, the thesis and the closing section make the same argument. A "My take"
+      recommending something the title never promised means one of the three is wrong.
+    severity: major
+    auto: false
+    check_hint: Read the H1, the <thesis> block and the closing section, in that order, and nothing else.
+
+# ---------------------------------------------------------------------------
 # S (structure)
 # ---------------------------------------------------------------------------
 structure_rules:
@@ -340,7 +438,9 @@ structure_rules:
     detector: '^#{3,}\s'
 
   - id: S02
-    rule: Between 8 and 12 H2 sections, excluding "Contents" and "Sources".
+    rule: >-
+      The H2 count sits between min_sections and max_sections (see structure in
+      blog_profile.yaml), excluding "Contents" and "Sources".
     severity: major
     auto: true
 
@@ -350,7 +450,7 @@ structure_rules:
       anchor link per following H2, in the same order, listing neither itself nor
       "Sources".
     severity: blocker
-    auto: true
+    auto: false
     check_hint: Compare index entries against actual H2 headings one by one, including anchor slugs.
 
   - id: S04
@@ -367,7 +467,7 @@ structure_rules:
       Section titles vary in grammatical shape. Six or more titles opening with the same
       word means the outline was generated, not written.
     severity: minor
-    auto: true
+    auto: false
 
   - id: S06
     rule: >-
@@ -379,7 +479,7 @@ structure_rules:
   - id: S07
     rule: The last content section is "My take" (or "Conclusion" for pure news posts).
     severity: major
-    auto: true
+    auto: false
 
   - id: S08
     rule: >-
@@ -401,7 +501,7 @@ structure_rules:
       No section runs beyond roughly 350 words without a list, table, code block or
       callout.
     severity: major
-    auto: true
+    auto: false
 
   - id: S11
     rule: >-
@@ -437,19 +537,19 @@ seo_rules:
   - id: E01
     rule: Title is 45 to 65 characters, contains the primary keyword, and carries no dash character.
     severity: major
-    auto: true
+    auto: false
 
   - id: E02
     rule: >-
       Meta description is 140 to 158 characters, contains the primary keyword, reads as a
       sentence, and carries no dash character.
     severity: major
-    auto: true
+    auto: false
 
   - id: E03
     rule: The primary keyword appears in the first 100 words and in at least one H2.
     severity: minor
-    auto: true
+    auto: false
 
   - id: E04
     rule: Slug is lowercase, hyphenated, 60 characters or fewer, no stop words.
@@ -465,7 +565,7 @@ seo_rules:
   - id: E06
     rule: One category from the blog_profile.yaml taxonomy, and four to six tags.
     severity: minor
-    auto: true
+    auto: false
 
   - id: E07
     rule: >-

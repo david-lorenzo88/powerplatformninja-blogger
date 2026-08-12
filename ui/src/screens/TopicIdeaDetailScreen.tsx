@@ -126,13 +126,21 @@ function IdeaDetail({ idea }: { idea: TopicIdea }) {
 function WriteFromIdeaDialog({ idea, onClose }: { idea: TopicIdea; onClose: () => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const [instructions, setInstructions] = useState('')
   const [push, setPush] = useState(false)
   const [cover, setCover] = useState(true)
   const [translate, setTranslate] = useState(false)
 
   const mut = useMutation({
     mutationFn: () =>
-      startWrite({ topic: idea.data, push, cover, translate, label: idea.title || idea.slug }),
+      startWrite({
+        topic: idea.data,
+        instructions,
+        push,
+        cover,
+        translate,
+        label: idea.title || idea.slug,
+      }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['runs'] })
       onClose()
@@ -141,13 +149,28 @@ function WriteFromIdeaDialog({ idea, onClose }: { idea: TopicIdea; onClose: () =
   })
 
   return (
-    <Modal title="Write a draft from this idea" onClose={onClose}>
+    <Modal title="Write a draft from this idea" onClose={onClose} width="max-w-xl">
       <div className="space-y-4">
         <p className="text-sm text-slate-300">
           Launches the full write pipeline for{' '}
           <span className="text-slate-100">{idea.title || idea.slug}</span>. You will land on the run
           so you can watch it, and the draft appears under Drafts when it finishes.
         </p>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-400">
+            Instructions <span className="text-slate-600">(optional)</span>
+          </label>
+          <textarea
+            className="h-24 w-full resize-none rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none"
+            placeholder="Focus on the licensing impact, skip the setup walkthrough"
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            Steers what the post argues, not just how it reads. This outranks the idea's own angle
+            where the two disagree.
+          </p>
+        </div>
         <div className="flex flex-wrap gap-4">
           <Check label="Push to WordPress" checked={push} onChange={setPush} />
           <Check label="Generate cover" checked={cover} onChange={setCover} />

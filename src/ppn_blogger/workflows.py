@@ -16,18 +16,26 @@
                           ▲                                              │
                           └───────────── (source loop, max N) ───────────┤
                                                                          ▼
-                                                    writer ─▶ draft_gate ─┬─▶ content_validator ─┐
-                                                      ▲                   └─▶ design_validator  ─┤
-                                                      │                                          ▼
+                                            outliner ─▶ outline_gate ─▶ writer ─▶ draft_gate ─┬─▶ content_validator ─┐
+                                                                         ▲                     └─▶ design_validator ─┤
+                                                                         │                                           ▼
                                                       └──── (revision loop, max N) ──── review_gate ─▶ finalizer
                                                                                                           │
                                                                        (only when approved) translator ◀──┘
                                                                                   │
                                                                           translation_gate ─▶ output
 
+The `outliner` decides what the post argues before a word of it exists, and
+`outline_gate` checks that plan against the dossier in code. It is the one stage
+with no loop back: every failure it can detect has a deterministic repair, so it
+fixes and records rather than re-asking. That is why the run still has exactly two
+round counters.
+
 `build_post_workflow(resume_from_dossier=True)` swaps the entry point for
 `dossier_entry`, which loads research already saved on disk and enters at the
 source checker — so a failure after the research stage never pays for it twice.
+With `skip_source_check` it enters at the outliner instead: a regeneration still
+gets a thesis, or the same research would argue something different each time.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from .executors import (
     IssueRequest,
     NewsletterCandidate,
     NotesGate,
+    OutlineGate,
     ResumePayload,
     ReviewGate,
     RunState,
@@ -325,6 +334,8 @@ def build_post_workflow(
     dossier_gate = DossierGate(state)
     source_checker = AgentExecutor(A.build_source_checker(settings, clients), id=A.SOURCE_CHECKER)
     source_gate = SourceGate(state, settings)
+    outliner = AgentExecutor(A.build_outliner(settings, clients), id=A.OUTLINER)
+    outline_gate = OutlineGate(state, settings)
     writer = AgentExecutor(A.build_writer(settings, clients), id=A.WRITER)
     draft_gate = DraftGate(state, settings)
     content_validator = AgentExecutor(
@@ -345,7 +356,9 @@ def build_post_workflow(
     translation_gate = TranslationGate(state, settings, push_to_wordpress=push_to_wordpress)
 
     # Enough iterations for max_source_rounds + max_revision_rounds plus slack.
-    budget = 40 + 10 * (settings.run.max_source_rounds + settings.run.max_revision_rounds)
+    # The outline stage adds three fixed supersteps and no round of its own, so it
+    # raises the constant rather than the per-round multiplier.
+    budget = 50 + 10 * (settings.run.max_source_rounds + settings.run.max_revision_rounds)
 
     builder = WorkflowBuilder(
         start_executor=entry,
@@ -360,7 +373,7 @@ def build_post_workflow(
         # source loop has nowhere to go back to and is not wired.
         builder.add_edge(entry, source_checker)
         if skip_source_check:
-            builder.add_edge(entry, writer)
+            builder.add_edge(entry, outliner)
     else:
         # Two ways out of the brief: through the notes normalizer when there are
         # real notes, or straight to the researcher when there are none.
@@ -375,7 +388,9 @@ def build_post_workflow(
     workflow = (
         builder
         .add_edge(source_checker, source_gate)
-        .add_edge(source_gate, writer)
+        .add_edge(source_gate, outliner)
+        .add_edge(outliner, outline_gate)
+        .add_edge(outline_gate, writer)
         .add_edge(writer, draft_gate)
         .add_fan_out_edges(draft_gate, [content_validator, design_validator])
         .add_fan_in_edges([content_validator, design_validator], review_gate)

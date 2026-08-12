@@ -332,6 +332,7 @@ def _topic_from_post(post: Post, versions: list[DraftVersion]) -> TopicSuggestio
     slug = post.slug
     keyword = ""
     post_format = "analysis"
+    thesis = ""
     latest = versions[0] if versions else None
     if latest and latest.markdown_path:
         try:
@@ -340,6 +341,11 @@ def _topic_from_post(post: Post, versions: list[DraftVersion]) -> TopicSuggestio
             slug = draft.slug or slug
             keyword = draft.primary_keyword
             post_format = draft.post_format or post_format
+            # The argument the earlier version made, read back off the front
+            # matter. Without it a regeneration hands the outliner a topic with an
+            # empty angle, so it re-derives a thesis from the dossier and the same
+            # research argues something different the second time round.
+            thesis = draft.thesis
         except Exception:  # noqa: BLE001 - the file may be gone; use the columns
             pass
     return TopicSuggestion(
@@ -348,7 +354,7 @@ def _topic_from_post(post: Post, versions: list[DraftVersion]) -> TopicSuggestio
         watch_area="",
         post_format=post_format,
         primary_keyword=keyword,
-        angle="",
+        angle=thesis,
         problem_statement="",
         why_now="",
         novelty="",

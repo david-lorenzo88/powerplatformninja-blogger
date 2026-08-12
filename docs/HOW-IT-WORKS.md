@@ -8,6 +8,7 @@ how it was built. This is the document to read before changing anything.
 - [Workflow 1 — topic discovery](#workflow-1--topic-discovery)
 - [Workflow 2 — writing a post](#workflow-2--writing-a-post)
 - [The source loop](#the-source-loop)
+- [The outline stage](#the-outline-stage)
 - [The revision loop](#the-revision-loop)
 - [Cover art](#cover-art)
 - [Publishing to WordPress](#publishing-to-wordpress)
@@ -21,7 +22,7 @@ how it was built. This is the document to read before changing anything.
 
 ## The shape of the thing
 
-Ten agents, two workflow graphs, one non-agent stage (cover art), and a publisher.
+Eleven agents, two workflow graphs, one non-agent stage (cover art), and a publisher.
 
 ```
                         ┌──────────────────┐
@@ -77,8 +78,9 @@ The models live in `models.py`. The important ones:
 | `TopicSuggestionSet` | Topic Editor | `suggestions`, `discarded` |
 | `AuthorClaimSet` | Notes Normalizer | `claims: list[AuthorClaim]` — the author's testimony, typed and id'd |
 | `ResearchDossier` | Researcher | `claims`, `citations`, `examples`, `gotchas`, `limits`, `open_questions`, `suggested_outline` |
+| `PostOutline` | Outliner | `thesis`, `reader_promise`, `out_of_scope`, `sections` (each with `claim_ids`), `warnings` |
 | `SourceVerdict` | Source Checker | `passed`, `average_trust`, `fabricated_urls`, `contradictions`, `findings`, `instructions_for_researcher` |
-| `Draft` | Writer / Translator | `markdown`, `title`, `slug`, `meta_description`, `tags`, `cover_concept`, `revision`, `changelog` |
+| `Draft` | Writer / Translator | `markdown`, `title`, `slug`, `meta_description`, `thesis`, `tags`, `cover_concept`, `revision`, `changelog` |
 | `ValidationReport` | each Validator | `score`, `passed`, `findings: list[RuleFinding]`, `strengths` |
 | `ReviewOutcome` | `ReviewGate` | aggregate of the above plus the source verdict |
 | `PostPackage` | `Finalizer` | everything, serialised to `.package.json` |
@@ -100,8 +102,8 @@ def _opts(response_format, temperature=None):
     return options
 ```
 
-Only four agents ask for a temperature at all: Writer `0.7`, both Validators `0.2`,
-Translator `0.3`. The scouts, Topic Editor, Researcher and Source Checker do not —
+Only five agents ask for a temperature at all: Writer `0.7`, both Validators `0.2`,
+Translator `0.3`, Outliner `0.3`. The scouts, Topic Editor, Researcher and Source Checker do not —
 their job is retrieval and judgement, not variety.
 
 The guard exists because reasoning models reject the parameter outright:
@@ -315,7 +317,9 @@ flowchart TD
     dossier_gate --> source_checker
     source_checker --> source_gate
     source_gate -->|failed, budget left| researcher
-    source_gate -->|passed, or budget spent| writer
+    source_gate -->|passed, or budget spent| outliner
+    outliner --> outline_gate
+    outline_gate --> writer
     writer --> draft_gate
     draft_gate --> content_validator
     draft_gate --> design_validator
@@ -460,16 +464,108 @@ corrected dossier.
 
 ---
 
+## The outline stage
+
+The stage that decides what the post argues, before any of it exists.
+
+It was added because the crew could pass every rule it had and still produce a
+survey. One real draft scored **93.5, APPROVED, zero blockers** with eleven
+sections averaging 170 words, four of them (40% of the body) about a product that
+was not its subject. Honesty passed, voice passed, structure passed, and nothing
+in the system was asking whether the post was about one thing. The Writer had been
+handed the full dossier and a mandate to fill eight to twelve sections, which is
+a recipe for finding eight to twelve subjects.
+
+### `outliner`
+
+Reasoning tier, bound to `PostOutline`, and **no tools at all**. Every fact it may
+use is already in the dossier and has already been through the Source Checker; a
+search tool here would invite it to widen scope at exactly the stage whose purpose
+is to narrow it.
+
+It produces a `thesis` (one sentence, stated so a reader could disagree), a
+`reader_promise`, a list of `sections` each making one point, and — the field that
+does the real work — `out_of_scope`: the subjects the research supports that this
+post deliberately leaves out.
+
+It returns **claim ids, never claim text**. This is the newsletter editor's
+contract, for the same reason: the model is asked *which* research to build on,
+and code resolves the answer, so a section cannot rest on research that does not
+exist.
+
+Where the operator supplied instructions on launch, those outrank the topic's own
+angle. A brief that says "focus on the licensing impact" is a *scope* instruction,
+and scope is decided here.
+
+### `outline_gate` — and why it does not loop
+
+`OutlineGate` checks the plan against the dossier in Python: unknown claim ids,
+sections with nothing behind them, a section count over the cap, an empty
+out-of-scope list, a word budget outside the band. Then it writes the outline to
+`research/<date>-<slug>.outline.json` **before** sending anything on, the same
+doctrine as `DossierGate`.
+
+**It has no round counter and no edge back to the outliner.** That is deliberate.
+`source_round` and `revision_round` are the only two counters in the system, and a
+third would need an env var, a bound, a documented exhaustion behaviour and a
+third exception to an invariant that currently holds exactly twice. It earns none
+of that, because a loop is for work a model must *redo*, and every failure here
+has one obviously correct deterministic repair:
+
+| Problem | Repair |
+|---|---|
+| a claim id the dossier does not have | drop the id; drop the section if it is left with nothing |
+| more sections than the cap | truncate the free middle, never the critical or closing section |
+| `out_of_scope` empty | derive it from the claims the outline did not select — that *is* the material the post is not covering |
+| word budget off the band | rescale proportionally, then clamp each section to the per-section bounds |
+| no thesis | fall back to the topic's angle, then to the dossier summary |
+| **too few sections** | the one irreparable case. Pass through with a warning and let S02 and F04 raise it in the revision loop, which is already bounded |
+
+Every repair is recorded in `outline.warnings`, which lands in the review report
+under **Thesis and scope**, so the human sees what was wrong with the plan.
+
+The repair logic lives in a pure `repair_outline()` at module level rather than
+inside the executor, so it is testable without building a workflow.
+
+### What the Writer now sees
+
+`_scoped_dossier()` narrows the Writer's view to the claims the outline selected,
+plus the citations those claims reference. `suggested_outline` is dropped outright
+— the Outliner has already read it and superseded it, and shipping both invites
+the Writer to follow the wrong plan. That field had been dead config until now:
+produced by the Researcher and read by nobody.
+
+`examples`, `gotchas`, `limits` and `licensing_notes` stay whole. They are free
+strings with no claim id to filter on, and they are what V12 and V13 (the
+specificity floor, a **blocker**) are satisfied from. Trading a focus win for a
+specificity blocker is a bad trade.
+
+This does not violate *nothing downstream of research may destroy research*.
+`DossierGate` already wrote the full dossier to disk, the full dossier rides in
+the `PostPackage`, and `_scoped_dossier` returns a plain `dict` rather than a
+`ResearchDossier` precisely so a truncated one can never be persisted by mistake.
+What narrows is one agent's view, not the record.
+
+The Writer is also handed an `<omitted_research>` block naming the claims that
+were cut. Telling it what was left out works better than silently withholding it:
+an unexplained gap invites it to fill the gap from memory.
+
+---
+
 ## The revision loop
 
 ### `writer`
 
 The Writer has almost no tools — `search_existing_posts` and `today`. It writes
-from the dossier and the author claims, and from nothing else. Everything it might
-have looked up has already been fetched, verified and structured.
+from the approved outline, the claims that outline selected, and the author
+claims, and from nothing else. Everything it might have looked up has already been
+fetched, verified, structured and scoped.
 
-Its message carries the run's `voice_mode`, a word-target band and the author
-claims. In `field_report` mode it may use first person, numbers and failures, but
+Its message carries the `thesis` and the `<approved_outline>`, the run's
+`voice_mode`, a word-target band and the author claims. The outline's sections are
+the post's sections, with those titles, in that order: no additions, no
+reordering. Where it thinks a section is wrong it writes the post anyway and says
+so in `changelog`. Nothing on the out-of-scope list gets a heading. In `field_report` mode it may use first person, numbers and failures, but
 only where a claim backs them. In `analysis` mode there is no first person at all,
 and the word target drops to the lower end of the band.
 
@@ -480,8 +576,8 @@ It enforces one fixed post shape, driven entirely by
 2. Exactly `opening_paragraphs` (2) opening paragraphs — problem, then payoff. No
    TL;DR block.
 3. `## Contents` — bullet list of anchor links, one per following H2, in order.
-4. Between `min_sections` and `max_sections` (8 to 12) `##` sections. **Never H3.**
-   Generic headings (`banned_headings`) are rejected.
+4. Between `min_sections` and `max_sections` (5 to 7) `##` sections, each 250 to
+   450 words. **Never H3.** Generic headings (`banned_headings`) are rejected.
 5. A mandatory penultimate section — `critical_section_heading`, default *"What to
    watch carefully"* — covering real risks, maturity, availability, and what can
    break.
@@ -498,7 +594,17 @@ claim; dossier caveats must survive into prose.
 On revision it must address every blocker and major finding *by id*, bump
 `revision`, and summarise what changed in `changelog`. Where it disagrees with a
 validator, it records the disagreement in the changelog rather than arguing in the
-body.
+body. Minor findings come through too, in a subordinate block capped at five per
+validator — they used to be filtered out entirely, so a validator could write a
+precise fix, deduct points for it, and have the Writer never see it.
+
+**The revision message restates the thesis and the outline every round, and
+resends the draft.** Without that, three rewrites happen steered only by style
+findings with no statement anywhere of what the post is meant to argue, which is
+how a draft ends up further from its brief the more it is revised. Resending the
+draft also makes the prompt self-contained: it previously arrived only through the
+`AgentSession` history, which made the instruction unreadable in a log and put the
+rewrite at the mercy of how much of a growing thread the model still attended to.
 
 ### `draft_gate`
 
@@ -506,24 +612,46 @@ Parses the `Draft`, fills `word_count` and `read_minutes` if the model left them
 blank (`reading_speed_wpm`, default 200), then **runs the code-side detectors** and
 fans out to both validators — with a *different* payload for each.
 
-`run_detectors()` in `detectors.py` compiles the 21 detector regexes and runs them
+`run_detectors()` in `detectors.py` compiles the 22 detector regexes and runs them
 over the draft before any model call. `auto: true` rules are decided in code; their
 hits become pre-computed `RuleFinding`s the validator is told to include rather than
 re-derive. It also computes the `measurements` a model must never estimate: average
-sentence length, per-section word counts, longest paragraph, H2 count, placeholder
-count, dash hits, banned-word hits. The T01/T02 detectors mask fenced code, inline
-code, URLs and list bullets first, so a hyphen in `low-code` or a URL is never
-flagged. The code findings are merged back into the reports at `review_gate`, so a
-blocker a regex raised gates the run exactly like a model blocker.
+sentence length, per-section word counts, longest paragraph, H2 count, body word
+count, placeholder count, dash hits, banned-word hits. The T01/T02 detectors mask
+fenced code, inline code, URLs and list bullets first, so a hyphen in `low-code` or
+a URL is never flagged. The code findings are merged back into the reports at
+`review_gate`, so a blocker a regex raised gates the run exactly like a model
+blocker.
+
+#### `auto: true` means the code decides it, and that is now checked
+
+Some rules need a configured number rather than a pattern: the section count
+against `min_sections`/`max_sections`, the word count against the format's band,
+the focus rules against the outline. Those live in `detectors.COMPUTED_RULES` and
+are decided in `_computed_findings()`.
+
+This exists because the alternative failed silently for two rulesets. `rules_text`
+stamps `[auto]` on any rule with `auto: true`, the validator prompt says to add
+findings only for rules *without* that tag, and `run_detectors` skips any rule
+carrying no `detector`. **A rule marked `auto` with nothing behind it was therefore
+checked by nobody** — no error, no warning, just a rule that read like policy and
+executed as nothing. Twelve rules were in that state, including S02 (section count)
+and C04 (word count): the two that would have caught the eleven-section draft that
+scored 93.5.
+
+Ten of those rules are now `auto: false` and judged by the validator that always
+should have owned them. S02 and C04 keep `auto: true` and have code behind them. A
+test asserts every `auto` rule carries a detector or sits in `COMPUTED_RULES`, so
+the hole cannot reopen.
 
 ### The two validators
 
 They run in parallel and judge different families, on purpose. One validator asked
 to check both facts and formatting does neither well.
 
-**Content Validator** (`rules_text(groups=("honesty", "voice", "content"))`,
+**Content Validator** (`rules_text(groups=("honesty", "voice", "content", "focus"))`,
 temperature 0.2) is the blog's hard-to-please editor. It receives the draft, the
-dossier *and the author claims* — the anti-hallucination backstop, since the
+dossier, the author claims *and the approved outline* — the anti-hallucination backstop, since the
 published post carries no inline citations. Its hardest rules:
 
 - **H01** — any statement not traceable to a dossier claim is a **blocker**, quoted
@@ -533,9 +661,17 @@ published post carries no inline citations. Its hardest rules:
 - **H04** — any dropped dossier caveat is a **blocker**.
 - The **V** family is where drafts read as machine-written: the specificity floor,
   the closing opinion, sentence-length variance, banned vocabulary.
+- The **F** family is the one that exists because a draft can pass everything else
+  and still be four posts stapled together. F01 (one thesis, not an enumeration of
+  what the post "covers") and F02 (every section advances it) are blockers and are
+  judged here; F03, F04 and F05 are decided in code against the outline. That last
+  point is the whole argument for having an outline stage: it turns three
+  judgements into three comparisons.
 
 **Design Validator** (`groups=("typography", "structure", "seo")`) judges
-typography, structure and readability. Most of its rules are `auto` and already
+typography, structure and readability. It gets neither the dossier nor the
+outline: whether the post argues one thing is an editorial question, and one
+validator handed everything does neither job well. Most of its rules are `auto` and already
 found by the detectors (dashes, curly quotes, images, missing code languages,
 generic headings, inline citations); it spends its judgement on the rest: TOC
 entries compared one-by-one against the actual H2s; the critical-read section
@@ -575,8 +711,12 @@ passed=False)` rather than crashing the run.
 
 ### `finalizer`
 
-1. Writes `drafts/<date>-<slug>.md` (front matter + body) and
-   `drafts/<date>-<slug>.review.md`.
+1. Writes `drafts/<date>-<slug>.md` (front matter + body, including the `thesis`)
+   and `drafts/<date>-<slug>.review.md`, whose **Thesis and scope** block sits
+   directly under the verdict: the thesis, the out-of-scope list, the planned
+   sections and any repair the outline gate had to make. "Did this post stay on
+   the argument it was commissioned to make" should be answerable in ten seconds
+   without opening the draft.
 2. Generates the cover, if enabled.
 3. Pushes to WordPress, if enabled. **Push failures are caught and logged, never
    raised** — a WordPress outage must not destroy a finished draft.

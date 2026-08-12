@@ -247,6 +247,10 @@ class SuggestRequest(BaseModel):
 
 class WriteRequest(BaseModel):
     topic: dict[str, Any]
+    # What the operator wants this post to be. It reaches the Outliner, where it
+    # outranks the topic's own angle, and is recorded on version 1 so a later
+    # regeneration inherits it through the ordinary guidance history.
+    instructions: str = ""
     push: bool | None = None
     cover: bool | None = None
     translate: bool | None = None
@@ -289,7 +293,13 @@ async def start_write(body: WriteRequest) -> dict[str, str]:
     label = body.label or body.topic.get("title", "Post")
     run_id = await manager().enqueue(
         "write",
-        {"topic": body.topic, "push": body.push, "cover": body.cover, "translate": body.translate},
+        {
+            "topic": body.topic,
+            "instructions": body.instructions,
+            "push": body.push,
+            "cover": body.cover,
+            "translate": body.translate,
+        },
         label,
     )
     return {"id": run_id}

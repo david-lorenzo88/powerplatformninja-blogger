@@ -4,7 +4,7 @@ Project instructions for Claude Code. Read this first; it is the map.
 
 ## What this is
 
-A crew of ten LLM agents that drafts blog posts for **powerplatformninja.com**,
+A crew of eleven LLM agents that drafts blog posts for **powerplatformninja.com**,
 orchestrated with **Microsoft Agent Framework** (`agent_framework` 1.12+) on
 **Azure AI Foundry**, publishing into WordPress as unpublished drafts.
 
@@ -22,7 +22,7 @@ Written and verified against the code. Do not restate these in chat — link the
 |---|---|
 | `docs/HOW-IT-WORKS.md` | Every stage, gate and loop, with the reasoning behind each design decision. The deep one. |
 | `docs/GETTING-STARTED.md` | Fresh-environment setup: Azure resources, roles, WordPress, first run. |
-| `docs/CONFIGURATION.md` | Every env var; every key in `config/`; all 33 validation rules. |
+| `docs/CONFIGURATION.md` | Every env var; every key in `config/`; all 61 validation rules. |
 | `docs/OPERATIONS.md` | CLI reference and troubleshooting for failures that actually occurred. |
 | `docs/DEPLOYMENT.md` | Deploy to Azure Container Apps (Entra Easy Auth, Postgres, Azure Files, Bicep) — the online-hosting runbook. |
 | `docs/ARCHITECTURE.md` | Server API contract — the input for the React UI. |
@@ -37,7 +37,7 @@ src/ppn_blogger/
   models.py         Pydantic contracts moved between agents
   clients.py        Foundry chat clients (reasoning + fast tiers)
   prompts.py        agent instructions, built from config at call time
-  agents.py         the ten agent factories
+  agents.py         the agent factories
   tools.py          search, fetch, feeds, Learn, blog search, trust checks
   executors.py      gates: parsing, routing, loop conditions, artefact writing
   workflows.py      the Agent Framework graphs + the entry-point functions
@@ -58,7 +58,7 @@ src/ppn_blogger/
                     (channels.py, delivery.py), feed discovery (discovery.py)
                     and cost (usage_store.py, prices.py)
 config/             editorial policy — the thing you actually tune
-tests/              290 tests, offline; conftest.py picks the DB backend
+tests/              313 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -71,7 +71,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 290 tests, ~40s, no network, no credentials
+pytest                      # 313 tests, ~45s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -123,6 +123,22 @@ counters in the system, each with exactly one bound
 (`PPN_MAX_SOURCE_ROUNDS`, `PPN_MAX_REVISION_ROUNDS`). Exhausting a budget
 finalises the run anyway — producing nothing after 40 minutes is worse than
 producing a draft marked NOT APPROVED.
+
+The outline gate deliberately adds **no third counter**. Every check it makes has
+one obviously correct deterministic repair (drop an invented claim id, truncate to
+the section cap, derive `out_of_scope` from the claims the outline left unused), and
+a loop is for work a model must *redo*. The one irreparable case, too few sections,
+passes through with a warning and is caught by S02 and F04 in the revision loop,
+which is already bounded. A test asserts `RunState` grows no further `_round` field.
+
+**The post's thesis is decided once, in code-checked form, before a word is
+written.** The Outliner returns claim *ids* and `OutlineGate` resolves them against
+the real dossier, so a section cannot rest on research that does not exist. The
+thesis is then restated in every writer turn including revisions — without that,
+three rewrites happen steered only by style findings, with no statement anywhere of
+what the post is meant to argue. `out_of_scope` is the load-bearing field: naming
+what a post excludes is the decision, and it is what the focus rules check a
+wandering heading against.
 
 **A discovered feed is proved before it is offered.** A discovery sweep asks a
 model where to look; `discovery._verify` then fetches and parses **every** URL it

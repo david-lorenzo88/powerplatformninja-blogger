@@ -27,6 +27,8 @@ from .models import (
     AuthorClaim,
     AuthorClaimSet,
     Draft,
+    OutlineSection,
+    PostOutline,
     PostPackage,
     ResearchDossier,
     ReviewOutcome,
@@ -161,6 +163,263 @@ def _editor_instructions(state: RunState) -> str:
     )
 
 
+def _outline_brief(outline: PostOutline | None) -> str:
+    """The outline as an agent needs to read it: compact, one line per section.
+
+    Never ``as_json(outline)``. The point of handing the plan downstream is to keep
+    the argument in front of the model on every round, and a prompt that grows by a
+    full JSON object each round defeats that.
+    """
+    if outline is None:
+        return "(no outline was produced for this run)"
+    lines = [f"THESIS: {outline.thesis}", f"READER PROMISE: {outline.reader_promise}"]
+    if outline.out_of_scope:
+        lines.append("OUT OF SCOPE (never give these a heading): " + "; ".join(outline.out_of_scope))
+    lines.append("SECTIONS, in order:")
+    for i, section in enumerate(outline.content_sections, 1):
+        claims = ", ".join(section.claim_ids) or "no claims"
+        lines.append(
+            f"  {i}. {section.title} [{section.target_words}w · {claims}]\n"
+            f"     point: {section.makes_this_point}"
+        )
+    return "\n".join(lines)
+
+
+def _scoped_dossier(dossier: ResearchDossier, outline: PostOutline | None) -> dict:
+    """The dossier as the Writer needs to see it: the claims this post argues.
+
+    Returns a **dict**, never a ``ResearchDossier``. A truncated dossier object
+    would eventually be persisted by somebody and "nothing downstream of research
+    may destroy research" would stop being checkable. Nothing is destroyed here:
+    ``DossierGate`` already wrote the whole thing to ``research/`` and the whole
+    thing rides in the ``PostPackage``. This narrows one agent's *view*, and only
+    after the outline has said which claims the post rests on.
+
+    What stays whole, and why, matters as much as what is cut. ``examples``,
+    ``gotchas`` and ``limits`` are free strings with no claim id to filter on, and
+    they are the material V12 and V13 (the specificity floor, a **blocker**) are
+    satisfied from. Trading a focus win for a specificity blocker is a bad trade.
+    ``suggested_outline`` is the one thing dropped outright: the Outliner has
+    already read it and superseded it, and shipping both invites the Writer to
+    follow the wrong plan.
+    """
+    if outline is None:
+        return dossier.model_dump(mode="json")
+
+    keep = set(outline.selected_claim_ids)
+    claims = [c for c in dossier.claims if c.id in keep]
+    cited = {cid for c in claims for cid in c.citation_ids}
+    data = dossier.model_dump(mode="json")
+    data["claims"] = [c.model_dump(mode="json") for c in claims]
+    data["citations"] = [c.model_dump(mode="json") for c in dossier.citations if c.id in cited]
+    data.pop("suggested_outline", None)
+    return data
+
+
+def _omitted_research(dossier: ResearchDossier, outline: PostOutline | None) -> str:
+    """The claims the outline did not select, named rather than silently withheld.
+
+    Telling the Writer what was cut works better than hiding it: an unexplained gap
+    invites it to go and fill the gap from memory, which is the one thing it must
+    never do.
+    """
+    if outline is None:
+        return ""
+    keep = set(outline.selected_claim_ids)
+    dropped = [c for c in dossier.claims if c.id not in keep]
+    if not dropped:
+        return ""
+    lines = "\n".join(f"- {c.id}: {c.statement}" for c in dropped[:25])
+    return (
+        "\n\n<omitted_research>\n"
+        "This research exists and is verified. It is not this post. Do not reach for "
+        f"it, and do not give any of it a heading.\n{lines}\n</omitted_research>"
+    )
+
+
+def _outline_brief_request(state: RunState, settings: Settings) -> str:
+    """The message that asks the Outliner for a plan.
+
+    Built in one place because two executors send it: the normal path through
+    ``SourceGate`` and the resume path through ``DossierEntry``. The Outliner gets
+    the dossier **whole** — it cannot choose what to leave out of research it was
+    never shown.
+    """
+    topic = state.topic
+    dossier = state.dossier
+    assert topic is not None and dossier is not None
+    fmt = topic.post_format or "analysis"
+    lo, hi = settings.word_target(fmt, state.voice_mode)
+    return f"""
+Plan this post. Decide what it argues and what it leaves out.
+
+<topic>
+{as_json(topic)}
+</topic>
+
+<dossier>
+{as_json(dossier)}
+</dossier>{state.unresolved_source_issues}{_editor_instructions(state)}
+
+<word_target>{lo} to {hi} words in total</word_target>
+
+Return the complete PostOutline JSON.
+""".strip()
+
+
+def _first_draft_request(state: RunState, settings: Settings) -> str:
+    """The message that asks the Writer for revision 1, against the approved plan."""
+    topic = state.topic
+    dossier = state.dossier
+    outline = state.outline
+    assert topic is not None and dossier is not None
+    return f"""
+Write the first draft of this post, following the approved outline exactly.
+
+<thesis>
+{outline.thesis if outline else topic.angle}
+</thesis>
+
+<approved_outline>
+{_outline_brief(outline)}
+</approved_outline>
+
+<topic>
+{as_json(topic)}
+</topic>
+
+<research>
+{as_json(_scoped_dossier(dossier, outline))}
+</research>{_omitted_research(dossier, outline)}{state.unresolved_source_issues}\
+{_editor_instructions(state)}
+
+{_author_context(state, settings)}
+
+Return the complete Draft JSON. Set revision to 1, and copy the thesis above into
+the `thesis` field verbatim.
+""".strip()
+
+
+def repair_outline(
+    outline: PostOutline,
+    dossier: ResearchDossier,
+    settings: Settings,
+    *,
+    band: tuple[int, int],
+    fallback_thesis: str = "",
+) -> PostOutline:
+    """Every check the outline gate makes, and every fix it applies.
+
+    Pure, so it is testable without building a workflow. Returns a repaired copy
+    with ``warnings`` recording each change.
+
+    It never raises and never rejects, and that is the design, not a shortcut.
+    Every problem below has one obviously correct deterministic repair, and a loop
+    is for work a model must redo. Adding a third round counter would mean a new
+    env var, a new bound, a new "what happens when the budget is spent" answer, and
+    a third exception to an invariant that currently holds exactly twice. The one
+    genuinely irreparable case (too few sections) is passed through with a warning
+    and left to the revision loop, which is already bounded: a thin post that says
+    NOT APPROVED beats no post at all.
+    """
+    warnings: list[str] = []
+    known = {claim.id for claim in dossier.claims}
+    lo = int(settings.structure.get("min_sections", 5))
+    hi = int(settings.structure.get("max_sections", 7))
+
+    sections: list[OutlineSection] = []
+    for section in outline.sections:
+        resolved = [cid for cid in section.claim_ids if cid in known]
+        if invented := [cid for cid in section.claim_ids if cid not in known]:
+            warnings.append(
+                f"Section {section.title!r} cited claim ids the dossier does not have: "
+                f"{', '.join(invented)}. Dropped."
+            )
+        sections.append(section.model_copy(update={"claim_ids": resolved}))
+
+    # The closing section is the only one allowed to rest on no claims, because it
+    # is an opinion. Anything else with nothing behind it would be written from
+    # thin air, which is exactly what H01 exists to stop.
+    if sections:
+        kept: list[OutlineSection] = []
+        for i, section in enumerate(sections):
+            if section.claim_ids or i >= len(sections) - 1:
+                kept.append(section)
+            else:
+                warnings.append(
+                    f"Section {section.title!r} was left with no dossier claims. Dropped."
+                )
+        sections = kept
+
+    if len(sections) > hi:
+        # Keep the two mandatory tail sections and cut from the free middle, so a
+        # truncation can never remove the critical-read or the closing section.
+        cut = [s.title for s in sections[hi - 2:-2]]
+        sections = sections[: hi - 2] + sections[-2:]
+        if cut:
+            warnings.append(f"{len(cut)} sections over the cap of {hi}; dropped: {', '.join(cut)}.")
+    elif len(sections) < lo:
+        warnings.append(
+            f"Only {len(sections)} sections against a floor of {lo}. Passed through anyway; "
+            "S02 and F04 will raise it on the draft."
+        )
+
+    out_of_scope = [s.strip() for s in outline.out_of_scope if s.strip()]
+    if not out_of_scope:
+        # Synthesised from the claims the outline did not select: those statements
+        # are literally the material this post is not covering, so the field can
+        # rarely come back empty and the focus rules have something to check.
+        used = {cid for s in sections for cid in s.claim_ids}
+        out_of_scope = [c.statement.strip() for c in dossier.claims if c.id not in used][:5]
+        warnings.append(
+            "The outline excluded nothing."
+            + (
+                f" out_of_scope was derived from the {len(out_of_scope)} unused dossier claims."
+                # A thin dossier can legitimately leave nothing spare. Say so rather
+                # than passing an empty list off as a decision: F02 and F03 have
+                # nothing to check against it, and the human should know that.
+                if out_of_scope
+                else " Every claim was used, so there is nothing to derive it from and the "
+                "focus rules have no scope boundary to check."
+            )
+        )
+
+    thesis = outline.thesis.strip()
+    if not thesis:
+        thesis = fallback_thesis.strip() or dossier.summary.strip().split(". ")[0]
+        warnings.append("The outline carried no thesis; fell back to the topic angle.")
+
+    planned = sum(max(0, s.target_words) for s in sections)
+    target = (band[0] + band[1]) // 2
+    if sections and planned and not band[0] <= planned <= band[1]:
+        scale = target / planned
+        # Clamped to the per-section bounds afterwards, so rescaling to hit the
+        # total can never hand the Writer a section budget that F04 will then
+        # fail. The total may land slightly off the midpoint; the per-section
+        # floor is the constraint that actually protects the argument.
+        floor = int(settings.structure.get("min_section_words", 250))
+        ceiling = int(settings.structure.get("max_section_words", 450))
+        sections = [
+            s.model_copy(
+                update={"target_words": min(ceiling, max(floor, round(s.target_words * scale)))}
+            )
+            for s in sections
+        ]
+        warnings.append(
+            f"Planned {planned} words against a band of {band[0]} to {band[1]}; "
+            f"rescaled to about {target}, each section clamped to {floor}-{ceiling}."
+        )
+
+    return outline.model_copy(
+        update={
+            "thesis": thesis,
+            "out_of_scope": out_of_scope,
+            "sections": sections,
+            "warnings": warnings,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared run state
 # ---------------------------------------------------------------------------
@@ -180,12 +439,21 @@ class RunState:
 
     topic: TopicSuggestion | None = None
     dossier: ResearchDossier | None = None
+    outline: PostOutline | None = None
     draft: Draft | None = None
     source_verdict: SourceVerdict | None = None
     reports: list[ValidationReport] = field(default_factory=list)
+    # The only two round counters in the system, each with exactly one bound. The
+    # outline stage deliberately adds no third: every check its gate makes is
+    # deterministically repairable, so there is nothing to send back and re-ask.
     source_round: int = 0
     revision_round: int = 0
     dossier_path: str = ""
+    outline_path: str = ""
+    # The source checker's unresolved findings, rendered once by SourceGate and
+    # carried so OutlineGate can pass the same warning to the Writer. Rebuilding
+    # it in two places is how the two gates start disagreeing.
+    unresolved_source_issues: str = ""
     package: PostPackage | None = None
     # Editor guidance for a regeneration, injected into the writer's first-draft
     # prompt. Empty for an ordinary write.
@@ -555,24 +823,15 @@ class DossierEntry(Executor):
         self.state.source_verdict = SourceVerdict(
             passed=True, summary="Skipped at the operator's request (--skip-source-check)."
         )
-        prompt = f"""
-Write the first draft of this post.
-
-<topic>
-{as_json(payload.topic)}
-</topic>
-
-<dossier>
-{as_json(payload.dossier)}
-</dossier>{_editor_instructions(self.state)}
-
-{_author_context(self.state, self.settings)}
-
-Return the complete Draft JSON. Set revision to 1.
-""".strip()
+        # Still through the outliner. A regeneration that skipped straight to the
+        # Writer would be the one path with no thesis, which is precisely how the
+        # same research produced a differently-argued post last time.
         await ctx.send_message(
-            AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
-            target_id=A.WRITER,
+            AgentExecutorRequest(
+                messages=[user_message(_outline_brief_request(self.state, self.settings))],
+                should_respond=True,
+            ),
+            target_id=A.OUTLINER,
         )
 
 
@@ -606,8 +865,65 @@ class DossierGate(Executor):
         )
 
 
+class OutlineGate(Executor):
+    """Checks the plan against the dossier in code, repairs it, and briefs the Writer.
+
+    The routing decision this stage does *not* make is the interesting one: there
+    is no branch back to the Outliner and no ``outline_round``. See
+    ``repair_outline`` for why every failure here is a deterministic fix rather
+    than a re-ask.
+
+    Like ``DossierGate``, it writes its artefact before sending anything on, so a
+    failure at the Writer costs you the Writer and not the decision about what the
+    post argues.
+    """
+
+    def __init__(self, state: RunState, settings: Settings, id: str = "outline_gate") -> None:
+        super().__init__(id)
+        self.state = state
+        self.settings = settings
+
+    @handler
+    async def route(
+        self, response: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
+    ) -> None:
+        topic = self.state.topic
+        dossier = self.state.dossier
+        assert topic is not None and dossier is not None
+
+        outline = parse_model(response, PostOutline)
+        offered = len(dossier.claims)
+        outline = repair_outline(
+            outline,
+            dossier,
+            self.settings,
+            band=self.settings.word_target(topic.post_format or "analysis", self.state.voice_mode),
+            fallback_thesis=topic.angle,
+        )
+        self.state.outline = outline
+        self.state.outline_path = str(storage.save_outline(outline, topic.slug or topic.title))
+
+        logger.info(
+            "outline ready: %d sections, %d of %d claims selected, %d out of scope",
+            len(outline.content_sections),
+            len(outline.selected_claim_ids),
+            offered,
+            len(outline.out_of_scope),
+        )
+        for warning in outline.warnings:
+            logger.warning("outline repaired: %s", warning)
+
+        await ctx.send_message(
+            AgentExecutorRequest(
+                messages=[user_message(_first_draft_request(self.state, self.settings))],
+                should_respond=True,
+            ),
+            target_id=A.WRITER,
+        )
+
+
 class SourceGate(Executor):
-    """Routes on the source verdict: back to the researcher, or on to the writer."""
+    """Routes on the source verdict: back to the researcher, or on to the outliner."""
 
     def __init__(self, state: RunState, settings: Settings, id: str = "source_gate") -> None:
         super().__init__(id)
@@ -651,7 +967,7 @@ class SourceGate(Executor):
         dossier = self.state.dossier
         topic = self.state.topic
         assert dossier is not None and topic is not None
-        caveat = (
+        self.state.unresolved_source_issues = (
             ""
             if verdict.passed
             else (
@@ -661,24 +977,12 @@ class SourceGate(Executor):
                 f"changelog.\n{as_json(verdict.findings)}\n</unresolved_source_issues>"
             )
         )
-        prompt = f"""
-Write the first draft of this post.
-
-<topic>
-{as_json(topic)}
-</topic>
-
-<dossier>
-{as_json(dossier)}
-</dossier>{caveat}{_editor_instructions(self.state)}
-
-{_author_context(self.state, self.settings)}
-
-Return the complete Draft JSON. Set revision to 1.
-""".strip()
         await ctx.send_message(
-            AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
-            target_id=A.WRITER,
+            AgentExecutorRequest(
+                messages=[user_message(_outline_brief_request(self.state, self.settings))],
+                should_respond=True,
+            ),
+            target_id=A.OUTLINER,
         )
 
 
@@ -708,6 +1012,11 @@ class DraftGate(Executor):
             wpm = int(get_settings().structure.get("reading_speed_wpm", 200)) or 200
             draft.read_minutes = max(1, round(draft.word_count / wpm))
         draft.revision = draft.revision or (self.state.revision_round + 1)
+        if not draft.thesis and self.state.outline:
+            # Same shape as the word_count fallback above: a field the model was
+            # told to fill, filled in code when it did not, so everything
+            # downstream (the front matter, a later regeneration) can rely on it.
+            draft.thesis = self.state.outline.thesis
         self.state.draft = draft
 
         dossier = self.state.dossier
@@ -720,6 +1029,11 @@ class DraftGate(Executor):
             dossier_blob=dossier_blob,
             author_claims=self.state.author_claims,
             slug=draft.slug,
+            # C04's band is per format and shrinks in analysis mode, so the word
+            # target the writer was given is the one it is judged against.
+            post_format=draft.post_format,
+            voice_mode=self.state.voice_mode,
+            outline=self.state.outline,
         )
         design_run = detectors.run_detectors(
             draft.markdown,
@@ -777,9 +1091,19 @@ class DraftGate(Executor):
                 if self.state.author_claims
                 else "(none — analysis post)"
             )
+            outline = self.state.outline
+            # Only the Content Validator gets the outline. The Design Validator
+            # judges shape and typography; whether the post argues one thing is an
+            # editorial question, and giving both the same material is how one
+            # validator ends up doing neither job well.
             extra = (
                 f"\n\n<voice_mode>{self.state.voice_mode}</voice_mode>"
                 f"\n\n<author_claims>\n{claims}\n</author_claims>"
+                f"\n\n<thesis>\n{outline.thesis if outline else '(no outline)'}\n</thesis>"
+                "\n\n<out_of_scope>\n"
+                + ("\n".join(f"- {s}" for s in outline.out_of_scope) if outline else "(none)")
+                + "\n</out_of_scope>"
+                f"\n\n<approved_outline>\n{_outline_brief(outline)}\n</approved_outline>"
                 f"\n\n<dossier>\n{as_json(dossier) if dossier else '{}'}\n</dossier>"
             )
         return f"""
@@ -872,21 +1196,46 @@ class ReviewGate(Executor):
         self.state.revision_round += 1
         instructions = _revision_text(reports)
         dossier = self.state.dossier
+        outline = self.state.outline
+        draft = self.state.draft
+        # The thesis and the outline are restated every single round. Without
+        # them, three rewrites happen steered only by style findings, with no
+        # statement anywhere of what the post is supposed to be arguing — which is
+        # how a draft ends up further from its brief the more it is revised.
+        #
+        # The draft is resent for the same reason. It used to arrive only via the
+        # AgentSession history, which made the prompt unreadable in a log and put
+        # the correctness of a rewrite at the mercy of how much of a growing thread
+        # the model still attended to.
         prompt = f"""
 The validators reviewed revision {self.state.revision_round} of your draft. Address every
 blocker and major finding, then return the full corrected Draft JSON with
 revision={self.state.revision_round + 1} and a changelog describing what you changed.
-Change nothing factual while fixing style.
+Change nothing factual while fixing style, and do not drift off the thesis to
+satisfy a style finding.
+
+<thesis>
+{outline.thesis if outline else ''}
+</thesis>
+
+<approved_outline>
+{_outline_brief(outline)}
+</approved_outline>
 
 <validator_findings>
 {instructions}
 </validator_findings>
 
-{_author_context(self.state, self.settings)}
+<current_draft_markdown>
+{draft.markdown if draft else ''}
+</current_draft_markdown>
 
-<dossier>
-{as_json(dossier) if dossier else '{}'}
-</dossier>
+{_author_context(self.state, self.settings)}
+{_editor_instructions(self.state)}
+
+<research>
+{as_json(_scoped_dossier(dossier, outline)) if dossier else '{}'}
+</research>
 """.strip()
         await ctx.send_message(
             AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),
@@ -924,19 +1273,45 @@ Change nothing factual while fixing style.
         self.state.reports = reports
 
 
+#: Minors are worth sending but not worth a runaway prompt, and a long tail of
+#: them buries the blockers above.
+_MAX_MINORS_PER_VALIDATOR = 5
+
+
 def _revision_text(reports: list[ValidationReport]) -> str:
+    """Validator findings as an instruction to the Writer.
+
+    Minors are included, subordinate to the graded findings. They used to be
+    filtered out entirely, so a validator could write a precise fix, deduct points
+    for it, and have the Writer never see it: one real run carried the same two
+    minors unfixed through all three revision rounds while the config said "fix
+    blockers first, then majors, then minors". ``info`` stays out — it never
+    deducts and never blocks.
+    """
     lines: list[str] = []
     for report in reports:
         graded = [f for f in report.findings if f.severity in {"blocker", "major"}]
-        if not graded:
+        minors = [f for f in report.findings if f.severity == "minor"]
+        if not graded and not minors:
             continue
         lines.append(f"From the {report.validator} validator (score {report.score}/100):")
         for f in sorted(graded, key=lambda x: 0 if x.severity == "blocker" else 1):
             where = f" [{f.location}]" if f.location else ""
             lines.append(f"  - {f.rule_id} ({f.severity}){where}: {f.problem}")
             lines.append(f"    FIX: {f.fix}")
+        if minors:
+            lines.append("  Also, where you can do it without disturbing anything above:")
+            for f in minors[:_MAX_MINORS_PER_VALIDATOR]:
+                where = f" [{f.location}]" if f.location else ""
+                lines.append(f"  - {f.rule_id} (minor){where}: {f.problem}")
+                lines.append(f"    FIX: {f.fix}")
+            if len(minors) > _MAX_MINORS_PER_VALIDATOR:
+                lines.append(
+                    f"  ({len(minors) - _MAX_MINORS_PER_VALIDATOR} further minor findings "
+                    "omitted from this round.)"
+                )
         lines.append("")
-    return "\n".join(lines).strip() or "No blocking findings; polish only."
+    return "\n".join(lines).strip() or "No findings this round."
 
 
 class Finalizer(Executor):
@@ -971,10 +1346,14 @@ class Finalizer(Executor):
         assert draft is not None and dossier is not None
 
         markdown_path = storage.save_draft(draft, outcome)
-        report_path = storage.save_review_report(draft, outcome, markdown_path=markdown_path)
+        report_path = storage.save_review_report(
+            draft, outcome, markdown_path=markdown_path, outline=self.state.outline
+        )
         package = PostPackage(
             draft=draft,
             dossier=dossier,
+            outline=self.state.outline,
+            outline_path=self.state.outline_path,
             outcome=outcome,
             voice_mode=self.state.voice_mode,
             author_claims=list(self.state.author_claims),

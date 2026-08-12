@@ -529,6 +529,12 @@ def write(
         "--notes",
         help="Author notes markdown. Defaults to input/notes/<slug>.md. Empty = analysis mode.",
     ),
+    instructions: str = typer.Option(
+        "",
+        "--instructions",
+        "-i",
+        help='Steer this draft, e.g. "focus on the licensing impact, skip the setup walkthrough".',
+    ),
     push: bool | None = typer.Option(
         None, "--push/--no-push", help="Override WP_AUTO_PUSH for this run."
     ),
@@ -587,6 +593,7 @@ def write(
                 translate=translate,
                 skip_source_check=skip_source_check,
                 notes_text=notes_text,
+                extra_instructions=instructions,
                 on_event=on_event,
             ),
             timeout_minutes=get_settings().run.write_timeout_minutes,
@@ -603,6 +610,7 @@ def write(
             make_cover=False if dry_run else cover,
             translate=translate,
             notes_text=notes_text,
+            extra_instructions=instructions,
             on_event=on_event,
         ),
         timeout_minutes=get_settings().run.write_timeout_minutes,

@@ -57,7 +57,7 @@ ppn models
 
 #### `ppn rules` · `ppn show-config`
 
-`rules` prints the 33 validation rules with severities, colour-coded. `show-config`
+`rules` prints the 61 validation rules with severities, colour-coded. `show-config`
 dumps the effective configuration as JSON with secrets reduced to booleans — safe
 to paste into an issue.
 

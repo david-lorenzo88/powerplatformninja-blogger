@@ -97,6 +97,7 @@ def draft_to_model(path: Path, concept: str = "") -> Draft:
         category=front.get("category", ""),
         tags=front.get("tags", []) or [],
         post_format=front.get("post_format", "analysis"),
+        thesis=front.get("thesis", ""),
         markdown=body,
         cover_concept=concept or front.get("cover_concept", ""),
         word_count=words,

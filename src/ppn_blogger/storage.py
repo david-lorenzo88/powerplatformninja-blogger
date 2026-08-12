@@ -11,6 +11,7 @@ import yaml
 from .models import (
     AuthorClaim,
     Draft,
+    PostOutline,
     PostPackage,
     ResearchDossier,
     ReviewOutcome,
@@ -140,6 +141,31 @@ def load_dossier(path: Path) -> ResearchDossier:
     return ResearchDossier.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def save_outline(outline: PostOutline, slug_or_title: str) -> Path:
+    """Write the approved outline beside the dossier it was built from.
+
+    Written by ``OutlineGate`` *before* the outline goes anywhere, for the same
+    reason ``save_dossier`` is: the plan is what the rest of the run is judged
+    against, and a failure at the Writer should not cost you the decision about
+    what the post argues. Named to match: ``<date>-<slug>.outline.json``.
+    """
+    settings = get_settings()
+    settings.ensure_dirs()
+    name = f"{date.today().isoformat()}-{slugify(slug_or_title)}.outline.json"
+    path = settings.run.research_dir / name
+    path.write_text(outline.model_dump_json(indent=2), encoding="utf-8")
+    return path
+
+
+def load_outline(path: Path) -> PostOutline:
+    """Read an outline saved by :func:`save_outline`."""
+    settings = get_settings()
+    if not path.is_absolute():
+        candidate = settings.run.research_dir / path
+        path = candidate if candidate.exists() else path
+    return PostOutline.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def save_notes(claims: list[AuthorClaim], slug_or_title: str) -> Path:
     """Write the normalised author claims beside the dossier.
 
@@ -170,6 +196,10 @@ def draft_front_matter(
         "title": draft.title,
         "slug": draft.slug,
         "description": draft.meta_description,
+        # The argument the post was commissioned to make. Carried in the front
+        # matter so a regeneration reads it back off disk and argues the same
+        # thing, rather than re-deriving a thesis from the dossier.
+        "thesis": draft.thesis,
         "primary_keyword": draft.primary_keyword,
         "category": draft.category,
         "tags": draft.tags,
@@ -215,7 +245,10 @@ def save_draft(
 
 
 def save_review_report(
-    draft: Draft, outcome: ReviewOutcome, markdown_path: Path | None = None
+    draft: Draft,
+    outcome: ReviewOutcome,
+    markdown_path: Path | None = None,
+    outline: PostOutline | None = None,
 ) -> Path:
     settings = get_settings()
     settings.ensure_dirs()
@@ -238,6 +271,31 @@ def save_review_report(
         f"- **Open blockers:** {outcome.blockers}",
         "",
     ]
+
+    # First thing after the verdict, deliberately. "Did this post stay on the
+    # argument it was commissioned to make" is the question the human is really
+    # asking, and it should be answerable without opening the draft.
+    if outline is not None:
+        lines += [
+            "## Thesis and scope",
+            "",
+            f"- **Thesis:** {outline.thesis}",
+            f"- **Reader promise:** {outline.reader_promise}",
+            "",
+        ]
+        if outline.out_of_scope:
+            lines += ["**Deliberately out of scope**", ""]
+            lines += [f"- {item}" for item in outline.out_of_scope]
+            lines += [""]
+        lines += ["**Planned sections**", ""]
+        for section in outline.content_sections:
+            claims = ", ".join(section.claim_ids) or "no claims"
+            lines += [f"- {section.title} ({section.target_words}w · {claims})"]
+        lines += [""]
+        if outline.warnings:
+            lines += ["**Repairs the outline gate had to make**", ""]
+            lines += [f"- {w}" for w in outline.warnings]
+            lines += [""]
 
     if outcome.source_verdict:
         sv = outcome.source_verdict
@@ -291,7 +349,7 @@ def save_review_report(
         lines += ["## Measurements", "", "| Metric | Value |", "|---|---|"]
         for key in (
             "avg_sentence_words", "longest_paragraph_sentences", "h2_count",
-            "placeholder_count", "dash_hits", "banned_word_hits",
+            "body_word_count", "placeholder_count", "dash_hits", "banned_word_hits",
         ):
             if key in measurements:
                 lines.append(f"| {key} | {measurements[key]} |")
