@@ -35,6 +35,8 @@ from .models import (
     Draft,
     FeedSuggestionSet,
     NewsletterIssueDraft,
+    OutlineSection,
+    PostOutline,
     ResearchDossier,
     RuleFinding,
     ScoutReport,
@@ -53,6 +55,19 @@ TODAY = date.today().isoformat()
 # is written to pass every auto detector: no dash characters, no in-body images,
 # no first person (analysis register), contractions present, and every measured
 # claim traceable to the stub dossier.
+#
+# Two detectors it deliberately does NOT pass, because the alternative is worse.
+# The sample is ~700 words against a 1440 word floor, so C04 (word count) fires,
+# and its sections are far under min_section_words, so F04 fires once. Inflating
+# it to 2000 words would make this module unreadable and every future diff noisy,
+# and special-casing the stub inside the production detectors is not an option.
+# Both are minor findings that leave the stub run approving, and a test asserts
+# the computed findings are exactly those two, which turns the compromise into a
+# regression test of the new detectors rather than a silent oddity.
+#
+# It carries exactly six content sections: the count is checked against
+# min_sections/max_sections by the suite, so a section added here without a
+# config change fails the build.
 _SAMPLE_MARKDOWN = """# Elastic tables in Dataverse: what you give up to scale
 
 Standard Dataverse tables start to hurt past a few million rows, and the usual
@@ -65,12 +80,9 @@ migration checklist you can follow.
 
 ## Contents
 - [What elastic tables actually are](#what-elastic-tables-actually-are)
-- [Why partitioning a standard table solves nothing](#why-partitioning-a-standard-table-solves-nothing)
 - [Which features stop working](#which-features-stop-working)
 - [How to model the partition key](#how-to-model-the-partition-key)
 - [How to move the data without downtime](#how-to-move-the-data-without-downtime)
-- [What changes for your plugins and flows](#what-changes-for-your-plugins-and-flows)
-- [Licensing and capacity impact](#licensing-and-capacity-impact)
 - [What to watch carefully](#what-to-watch-carefully)
 - [My take](#my-take)
 
@@ -79,10 +91,9 @@ migration checklist you can follow.
 Dataverse tables backed by distributed storage that scales writes horizontally, in
 exchange for giving up part of the relational model. You trade joins for throughput.
 
-## Why partitioning a standard table solves nothing
-
-Request limits are allocated per user, per rolling day, not per table. Splitting one
-big table into ten changes nothing, because the ceiling was never the table.
+Request limits are allocated per user, per rolling day, not per table, which is why
+partitioning a standard table solves nothing. Splitting one big table into ten
+changes nothing, because the ceiling was never the table.
 
 ## Which features stop working
 
@@ -112,15 +123,8 @@ environment before you cut over.
 pac data export --schemaFile schema.xml --dataFile data.zip
 ```
 
-## What changes for your plugins and flows
-
 The plugin pipeline doesn't change, but review any synchronous step that assumes
 server-side calculated aggregates. Those aggregates aren't there anymore.
-
-## Licensing and capacity impact
-
-Capacity consumption is measured the same way as for standard tables, so a move
-here won't blow up the bill on its own.
 
 ## What to watch carefully
 
@@ -153,12 +157,9 @@ completa y una checklist de migración que puedes seguir.
 
 ## Contenido
 - [Qué son realmente las elastic tables](#que-son-realmente-las-elastic-tables)
-- [Por qué particionar una tabla estándar no resuelve nada](#por-que-particionar-una-tabla-estandar-no-resuelve-nada)
 - [Qué funcionalidades dejan de funcionar](#que-funcionalidades-dejan-de-funcionar)
 - [Cómo modelar la partition key](#como-modelar-la-partition-key)
 - [Cómo mover los datos sin cortes](#como-mover-los-datos-sin-cortes)
-- [Qué cambia para tus plugins y flows](#que-cambia-para-tus-plugins-y-flows)
-- [Impacto en licenciamiento y capacidad](#impacto-en-licenciamiento-y-capacidad)
 - [Lo que conviene observar con cautela](#lo-que-conviene-observar-con-cautela)
 - [Mi lectura](#mi-lectura)
 
@@ -167,10 +168,9 @@ completa y una checklist de migración que puedes seguir.
 Tablas de Dataverse respaldadas por almacenamiento distribuido que escala la
 escritura horizontalmente, a cambio de renunciar a parte del modelo relacional.
 
-## Por qué particionar una tabla estándar no resuelve nada
-
-Los límites de peticiones se asignan por usuario y por día, no por tabla. Partir una
-tabla grande en diez no cambia nada, porque el techo nunca fue la tabla.
+Los límites de peticiones se asignan por usuario y por día, no por tabla, y por eso
+particionar una tabla estándar no resuelve nada. Partir una tabla grande en diez no
+cambia nada, porque el techo nunca fue la tabla.
 
 ## Qué funcionalidades dejan de funcionar
 
@@ -200,15 +200,8 @@ entorno antes de hacer el cambio.
 pac data export --schemaFile schema.xml --dataFile data.zip
 ```
 
-## Qué cambia para tus plugins y flows
-
 El pipeline de plugins no cambia, pero revisa cualquier paso síncrono que asuma
 agregados calculados en servidor. Esos agregados ya no están.
-
-## Impacto en licenciamiento y capacidad
-
-El consumo de capacidad se mide igual que en las tablas estándar, así que un cambio
-aquí no dispara la factura por sí solo.
 
 ## Lo que conviene observar con cautela
 
@@ -348,6 +341,17 @@ def _dossier(clean: bool) -> ResearchDossier:
                 citation_ids=["S2"],
                 confidence="high",
             ),
+            # Deliberately not selected by the canned outline. A dossier where every
+            # claim gets used is the one shape that never exercises the scoping: no
+            # out_of_scope to derive, no omitted research to name, and the Writer's
+            # narrowed view identical to the full one.
+            Claim(
+                id="C3",
+                statement="Elastic tables are billed against the same capacity meter as standard tables.",
+                criticality="supporting",
+                citation_ids=["S2"],
+                confidence="medium",
+            ),
         ],
         citations=citations,
         examples=['pac data export --schemaFile schema.xml --dataFile data.zip'],
@@ -357,6 +361,81 @@ def _dossier(clean: bool) -> ResearchDossier:
         open_questions=[],
         suggested_outline=["TL;DR", "Why the obvious approach fails", "Migration steps", "Gotchas", "Verdict"],
         internal_link_candidates=["https://powerplatformninja.com/dataverse-performance"],
+    )
+
+
+def _outline() -> PostOutline:
+    """Canned outliner output, deliberately broken in three ways.
+
+    The stub's job is to walk the gate, not to prove that a well-behaved model
+    would have been fine — the same doctrine as the fabricated article id in
+    ``_newsletter_issue``. Every dry run therefore exercises all three repairs in
+    ``repair_outline``:
+
+    * a section citing ``C99``, which the dossier does not have (the id is dropped);
+    * a non-closing section with no claims at all (the section is dropped);
+    * an empty ``out_of_scope`` (derived from the unselected claims).
+
+    Because the gate repairs rather than loops, this is safe unconditionally and
+    needs no ``exercise_loops`` branch. The surviving titles match
+    ``_SAMPLE_MARKDOWN`` exactly, so the draft the stub returns next still agrees
+    with the plan the gate approved.
+    """
+    return PostOutline(
+        thesis=(
+            "Elastic tables are worth it only when write throughput is the real "
+            "bottleneck, because they take relational aggregation with them."
+        ),
+        reader_promise="Decide whether to migrate, and know what breaks before you do.",
+        out_of_scope=[],  # repaired by the gate
+        working_title="Elastic tables in Dataverse: what you give up to scale",
+        sections=[
+            OutlineSection(
+                title="What elastic tables actually are",
+                makes_this_point="Elastic tables trade the relational model for write throughput.",
+                claim_ids=["C2"],
+                target_words=300,
+            ),
+            OutlineSection(
+                title="Which features stop working",
+                makes_this_point="Rollup and calculated columns are gone, which blocks most models.",
+                claim_ids=["C1", "C99"],  # C99 does not exist; the gate drops it
+                evidence_kind="table",
+                target_words=320,
+            ),
+            OutlineSection(
+                title="How to model the partition key",
+                makes_this_point="The partition key must spread writes and match how you filter.",
+                claim_ids=["C2"],
+                evidence_kind="code",
+                target_words=300,
+            ),
+            OutlineSection(
+                title="How to move the data without downtime",
+                makes_this_point="Stage the migration in a second environment before cutting over.",
+                claim_ids=["C1"],
+                evidence_kind="code",
+                target_words=300,
+            ),
+            OutlineSection(
+                title="Whatever the dossier had left over",
+                makes_this_point="This section was planned with nothing behind it.",
+                claim_ids=[],  # no claims, not the closing section: the gate drops it
+                target_words=200,
+            ),
+            OutlineSection(
+                title="What to watch carefully",
+                makes_this_point="Preview status moves and there is no easy way back.",
+                claim_ids=["C1"],
+                target_words=280,
+            ),
+            OutlineSection(
+                title="My take",
+                makes_this_point="Migrate only for high-write workloads; otherwise wait.",
+                claim_ids=[],  # the closing section is allowed to carry none
+                target_words=260,
+            ),
+        ],
     )
 
 
@@ -625,6 +704,12 @@ class StubChatClient(BaseChatClient):
         if model is SourceVerdict:
             n = self._bump("source")
             return _source_verdict(passed=not self._exercise_loops or n > 1)
+        if model is PostOutline:
+            # Its own counter. The "draft" and "validation" counters drive the
+            # deliberate first-round failures, and the outline stage adds no round,
+            # so it must not disturb either of them.
+            self._bump("outline")
+            return _outline()
         if model is Draft:
             # Writer and Translator share the Draft schema — tell them apart by task.
             if "Translate this approved post" in full:

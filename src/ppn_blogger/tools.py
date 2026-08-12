@@ -15,6 +15,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -407,28 +408,45 @@ async def search_microsoft_learn(
 
 @tool(name="search_existing_posts")
 async def search_existing_posts(
-    query: Annotated[str, "Keywords to look for among posts already published on the blog."],
+    query: Annotated[str, "Keywords to look for among posts already on the blog, draft or live."],
     max_results: Annotated[int, "How many posts to return."] = 10,
 ) -> str:
-    """Search posts already published on powerplatformninja.com.
+    """Search posts on powerplatformninja.com, including unpublished drafts.
 
     Use this to avoid proposing a duplicate topic and to find internal linking
     opportunities. Returns JSON: [{id, title, url, date, excerpt}].
+
+    Drafts are included deliberately. Every post this crew produces lands as a
+    WordPress *draft* and stays one until a human presses Publish, so a
+    publish-only search made the crew blind to its own output — it once proposed
+    and wrote the same subject twice in two days. A draft on the blog is a topic
+    already taken.
     """
     log_tool("search_existing_posts", query)
     settings = get_settings()
     if not settings.wordpress.url:
         return json.dumps({"error": "no_wp_url", "message": "WP_URL is not configured."})
+    # Listing drafts needs authentication. Without credentials WordPress rejects
+    # the whole request rather than quietly returning the published subset, so
+    # fall back to publish-only instead of failing the tool call.
+    headers = {}
+    if settings.wordpress.is_configured:
+        token = base64.b64encode(
+            f"{settings.wordpress.username}:{settings.wordpress.app_password.replace(' ', '')}".encode()
+        ).decode()
+        headers["Authorization"] = f"Basic {token}"
     params = {
         "search": query,
         "per_page": str(max(1, min(max_results, 20))),
-        "status": "publish",
-        "_fields": "id,link,date,title,excerpt",
+        "status": "publish,draft" if headers else "publish",
+        "_fields": "id,link,date,title,excerpt,status",
         "orderby": "relevance",
     }
     try:
         async with _client(verify=settings.wordpress.verify_tls) as http:
-            resp = await http.get(f"{settings.wordpress.api_base}/posts", params=params)
+            resp = await http.get(
+                f"{settings.wordpress.api_base}/posts", params=params, headers=headers
+            )
             resp.raise_for_status()
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
@@ -441,6 +459,9 @@ async def search_existing_posts(
                 "id": post.get("id"),
                 "title": re.sub(r"(?s)<[^>]+>", "", (post.get("title") or {}).get("rendered", "")),
                 "url": post.get("link", ""),
+                # So the agent can tell "already published" from "already drafted,
+                # not yet live". Both mean the topic is taken.
+                "status": post.get("status", ""),
                 "date": (post.get("date") or "")[:10],
                 "excerpt": re.sub(
                     r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", (post.get("excerpt") or {}).get("rendered", ""))

@@ -223,6 +223,80 @@ class SourceVerdict(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Outlining
+#
+# The stage that turns a dossier into an argument. A dossier answers "what is
+# true"; an outline answers "what is this post arguing", and those are different
+# questions. Without one, the Writer was handed every verified claim at once and
+# a mandate to fill eight to twelve sections, which is a recipe for a survey: one
+# real draft spent forty percent of its body on a product that was not its topic.
+#
+# The outliner returns *claim ids*, never claim text — the same contract as the
+# newsletter editor, and for the same reason. `OutlineGate` resolves each id back
+# to the claim it came from and drops what it cannot account for, so a section
+# cannot be built on research that does not exist.
+#
+# `out_of_scope` is the field that does the work. Anyone can list what a post
+# covers; naming what it deliberately leaves out is the decision, and it is what
+# the focus rules later check a wandering heading against.
+# ---------------------------------------------------------------------------
+
+
+class OutlineSection(BaseModel):
+    title: str = Field(..., description="The H2 as it will appear. Descriptive and specific.")
+    makes_this_point: str = Field(
+        ..., description="ONE sentence: the single point this section establishes. Not a summary."
+    )
+    claim_ids: list[str] = Field(
+        default_factory=list,
+        description="Dossier claim ids this section rests on. Never invent one.",
+    )
+    evidence_kind: Literal["prose", "list", "table", "code", "callout"] = "prose"
+    target_words: int = Field(300, ge=0)
+
+
+class PostOutline(BaseModel):
+    thesis: str = Field(
+        ...,
+        description=(
+            "One sentence. The argument the post makes, stated so a reader could "
+            "disagree with it. Not the topic, and not a list of what the post covers."
+        ),
+    )
+    reader_promise: str = Field(
+        ..., description="What the reader can do afterwards that they could not before"
+    )
+    out_of_scope: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Subjects the research supports that this post deliberately leaves out. "
+            "Never empty: a post that excludes nothing has no thesis."
+        ),
+    )
+    sections: list[OutlineSection] = Field(default_factory=list)
+    working_title: str = ""
+    # Set in code by OutlineGate, never by the model — same contract as
+    # AuthorClaimSet.voice_mode. Every deterministic repair the gate made, so the
+    # review report can show the human what was wrong with the plan.
+    warnings: list[str] = Field(default_factory=list)
+
+    @property
+    def selected_claim_ids(self) -> list[str]:
+        """Every claim id the outline uses, in order, without duplicates."""
+        seen: dict[str, None] = {}
+        for section in self.sections:
+            for claim_id in section.claim_ids:
+                seen.setdefault(claim_id, None)
+        return list(seen)
+
+    @property
+    def content_sections(self) -> list[OutlineSection]:
+        """The sections that become H2s, excluding any Contents/Sources slip."""
+        skip = {"contents", "sources", "contenido", "fuentes"}
+        return [s for s in self.sections if s.title.strip().casefold() not in skip]
+
+
+# ---------------------------------------------------------------------------
 # Drafting
 # ---------------------------------------------------------------------------
 
@@ -236,6 +310,9 @@ class Draft(BaseModel):
     tags: list[str] = Field(default_factory=list)
     post_format: str = "analysis"
     excerpt: str = ""
+    thesis: str = Field(
+        "", description="The approved outline's thesis, restated verbatim. Do not reword it."
+    )
     markdown: str = Field(..., description="Full post body in Markdown, starting with the H1")
     cover_concept: str = Field(
         "",
@@ -337,6 +414,8 @@ class PublishTarget(BaseModel):
 class PostPackage(BaseModel):
     draft: Draft
     dossier: ResearchDossier
+    outline: PostOutline | None = None
+    outline_path: str = Field("", description="Where the outline JSON was saved on disk")
     outcome: ReviewOutcome
     voice_mode: str = "analysis"
     author_claims: list[AuthorClaim] = Field(default_factory=list)

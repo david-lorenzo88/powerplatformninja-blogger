@@ -106,6 +106,7 @@ function WriteForm({ onClose }: { onClose: () => void }) {
   const [push, setPush] = useState(true)
   const [cover, setCover] = useState(true)
   const [translate, setTranslate] = useState(false)
+  const [instructions, setInstructions] = useState('')
   const [labelText, setLabelText] = useState('')
 
   // Completed suggest runs carry a suggestions[] we can launch a write from.
@@ -130,7 +131,7 @@ function WriteForm({ onClose }: { onClose: () => void }) {
   const mut = useMutation({
     mutationFn: () => {
       if (!topic) throw new Error('Choose a topic first.')
-      return startWrite({ topic, push, cover, translate, label: labelText })
+      return startWrite({ topic, instructions, push, cover, translate, label: labelText })
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['runs'] })
@@ -203,6 +204,19 @@ function WriteForm({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       )}
+
+      <div>
+        <label className={label}>Instructions (optional)</label>
+        <textarea
+          className={`${field} h-20 resize-none`}
+          placeholder="Focus on the licensing impact, skip the setup walkthrough"
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          Steers what the post argues, not just how it reads.
+        </p>
+      </div>
 
       <div className="flex flex-wrap gap-4 border-t border-slate-800 pt-3">
         <Check label="Push to WordPress" checked={push} onChange={setPush} />

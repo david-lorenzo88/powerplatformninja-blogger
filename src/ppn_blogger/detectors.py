@@ -30,6 +30,7 @@ from typing import Any
 
 from .models import AuthorClaim, RuleFinding
 from .settings import Settings
+from .util import word_count
 
 # ---------------------------------------------------------------------------
 # Masking: turn markdown into "prose only" for the prose-scoped detectors
@@ -71,7 +72,20 @@ def prose_only(markdown: str) -> str:
 _PROSE_SCOPED = {
     "H03", "T01", "T02", "T04", "T06",
     "V01", "V02", "V05", "V07", "V08", "V14", "V15",
+    "F01",
 }
+
+# Rules decided here in code with no regex behind them, because the check is a
+# comparison against a configured number rather than a pattern in the text.
+#
+# A rule carrying ``auto: true`` must appear either in the detector map or in this
+# set. In neither, it is checked by nobody: ``rules_text`` stamps it ``[auto]`` and
+# the validator prompt says to skip ``[auto]`` rules, while the loop below skips
+# any rule with no ``detector``. S02 and C04 sat in exactly that hole for two
+# rulesets, which is how an eleven-section draft passed the section count and
+# still scored 93.5. ``tests/test_pipeline.py`` fails if the set and the ruleset
+# ever disagree again.
+COMPUTED_RULES = frozenset({"S02", "C04", "F03", "F04", "F05"})
 
 
 @lru_cache(maxsize=8)
@@ -154,6 +168,9 @@ def compute_measurements(markdown: str, settings: Settings) -> dict[str, Any]:
         "short_sentences_per_section": short_per_section,
         "longest_paragraph_sentences": longest_para,
         "section_word_counts": section_word_counts,
+        # The same count the Draft carries, computed the same way, so C04 compares
+        # against the number the writer was given rather than a second opinion.
+        "body_word_count": word_count(markdown),
         "h2_count": len(section_word_counts),
         "placeholder_count": len(placeholder.findall(markdown)) if placeholder else 0,
         "dash_hits": len(dash.findall(prose)) if dash else 0,
@@ -212,6 +229,145 @@ def _h03_untraceable(
     return out
 
 
+def _rule_by_id(settings: Settings, rule_id: str, groups: tuple[str, ...]) -> dict[str, Any] | None:
+    """The rule, if it exists and this run owns its family. Otherwise None."""
+    for rule in settings.all_rules():
+        if rule["id"] == rule_id:
+            return rule if rule["group"] in groups else None
+    return None
+
+
+def _normalise_heading(title: str) -> str:
+    """Casefolded, punctuation-stripped heading, for comparing draft against plan."""
+    return re.sub(r"[^\w\s]", "", title).strip().casefold()
+
+
+def _computed_findings(
+    *,
+    markdown: str,
+    groups: tuple[str, ...],
+    settings: Settings,
+    measurements: dict[str, Any],
+    post_format: str,
+    voice_mode: str,
+    outline: Any | None = None,
+) -> list[RuleFinding]:
+    """The COMPUTED_RULES checks: a measured number against a configured bound.
+
+    Kept apart from the detector loop because there is no pattern to match. The
+    numbers are already counted in ``compute_measurements`` — a model asked how
+    many sections a draft has will guess, and guessed wrong for two rulesets.
+    """
+    findings: list[RuleFinding] = []
+
+    if rule := _rule_by_id(settings, "S02", groups):
+        lo = int(settings.structure.get("min_sections", 5))
+        hi = int(settings.structure.get("max_sections", 7))
+        count = int(measurements.get("h2_count", 0))
+        if not lo <= count <= hi:
+            findings.append(
+                _finding(
+                    rule,
+                    location=f"{count} content sections",
+                    problem=f"{count} content sections; the house shape is {lo} to {hi}.",
+                )
+            )
+
+    if rule := _rule_by_id(settings, "C04", groups):
+        lo, hi = settings.word_target(post_format, voice_mode)
+        count = int(measurements.get("body_word_count", 0))
+        if not lo <= count <= hi:
+            label = post_format or "this format"
+            findings.append(
+                _finding(
+                    rule,
+                    location=f"{count} words",
+                    problem=f"{count} words; the band for {label} is {lo} to {hi}.",
+                )
+            )
+
+    # The focus family below is decidable in code only because an outline exists.
+    # Without one every check here no-ops, which keeps the typography-only call
+    # from TranslationGate safe.
+    if outline is None:
+        return findings
+
+    toc = str(settings.structure.get("toc_heading", "Contents"))
+    sources = str(settings.structure.get("sources_heading", "Sources"))
+    draft_titles = [t for t, _ in split_sections(markdown) if t not in {toc, sources}]
+
+    if rule := _rule_by_id(settings, "F03", groups):
+        # Headings only, deliberately. "Unlike Business Central, ..." is the single
+        # clause the style guide explicitly allows; F02 owns the prose case.
+        for excluded in outline.out_of_scope:
+            phrase = excluded.strip()
+            if not phrase:
+                continue
+            pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+            for title in draft_titles:
+                if pattern.search(title):
+                    findings.append(
+                        _finding(
+                            rule,
+                            location=title,
+                            problem=(
+                                f"The heading {title!r} covers {phrase!r}, which the outline "
+                                "put out of scope."
+                            ),
+                        )
+                    )
+                    break
+
+    if rule := _rule_by_id(settings, "F04", groups):
+        floor = int(settings.structure.get("min_section_words", 250))
+        ceiling = int(settings.structure.get("max_section_words", 450))
+        counts: dict[str, int] = measurements.get("section_word_counts", {})
+        thin = [f"{t} ({n}w)" for t, n in counts.items() if n < floor]
+        fat = [f"{t} ({n}w)" for t, n in counts.items() if n > ceiling]
+        # One aggregated finding, in the style of S13's "N callouts". One per
+        # section would drown the report on exactly the drafts that need reading.
+        if thin:
+            findings.append(
+                _finding(
+                    rule,
+                    location=f"{len(thin)} sections under {floor} words: {', '.join(thin)}",
+                    problem=f"{len(thin)} sections are below the {floor} word floor.",
+                )
+            )
+        if fat:
+            findings.append(
+                _finding(
+                    rule,
+                    location=f"{len(fat)} sections over {ceiling} words: {', '.join(fat)}",
+                    problem=f"{len(fat)} sections run past the {ceiling} word ceiling.",
+                )
+            )
+
+    if rule := _rule_by_id(settings, "F05", groups):
+        planned = [s.title for s in outline.content_sections]
+        want = [_normalise_heading(t) for t in planned]
+        got = [_normalise_heading(t) for t in draft_titles]
+        if want and got != want:
+            added = [t for t, n in zip(draft_titles, got, strict=False) if n not in want]
+            missing = [t for t, n in zip(planned, want, strict=False) if n not in got]
+            parts = []
+            if added:
+                parts.append(f"not in the outline: {', '.join(added)}")
+            if missing:
+                parts.append(f"outlined but absent: {', '.join(missing)}")
+            if not parts:
+                parts.append("same sections, different order")
+            findings.append(
+                _finding(
+                    rule,
+                    location="; ".join(parts),
+                    problem="The draft's sections do not match the approved outline.",
+                )
+            )
+
+    return findings
+
+
 def run_detectors(
     markdown: str,
     *,
@@ -220,6 +376,9 @@ def run_detectors(
     dossier_blob: str = "",
     author_claims: list[AuthorClaim] | None = None,
     slug: str = "",
+    post_format: str = "",
+    voice_mode: str = "field_report",
+    outline: Any | None = None,
 ) -> DetectorRun:
     """Run every detector for ``groups`` and return findings + measurements.
 
@@ -352,8 +511,14 @@ def run_detectors(
                 _finding(rule, location=_snippet(target, hits[0].start(), hits[0].end()) + note)
             )
 
-    return DetectorRun(
-        findings=findings,
-        measurements=compute_measurements(markdown, settings),
-        hints="\n".join(hints),
+    measurements = compute_measurements(markdown, settings)
+    findings += _computed_findings(
+        markdown=markdown,
+        groups=groups,
+        settings=settings,
+        measurements=measurements,
+        post_format=post_format,
+        voice_mode=voice_mode,
+        outline=outline,
     )
+    return DetectorRun(findings=findings, measurements=measurements, hints="\n".join(hints))

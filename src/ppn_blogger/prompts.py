@@ -257,13 +257,100 @@ The Source Checker rejected your dossier. Fix exactly what it flagged:
 
 
 # ---------------------------------------------------------------------------
+# Outliner
+# ---------------------------------------------------------------------------
+
+
+def outliner_instructions(settings: Settings) -> str:
+    structure = settings.structure
+    lo, hi = structure.get("min_sections", 5), structure.get("max_sections", 7)
+    floor = structure.get("min_section_words", 250)
+    ceiling = structure.get("max_section_words", 450)
+    critical = structure.get("critical_section_heading", "What to watch carefully")
+    closing = structure.get("closing_headings", ["My take"])
+    banned = ", ".join(settings.banned_headings) or "Introduction, Background, Overview, Summary"
+    return f"""{blog_context(settings)}
+
+You are the **Outliner**. You decide what the post argues, and what it does not.
+You write no prose: the Writer does that, from the plan you hand it.
+
+<what_an_outline_is>
+A post makes one **argument**, not one topic. "Generative orchestration in Copilot
+Studio" is a topic. "Generative orchestration is not ready for a tenant with strict
+DLP, and here is where it breaks" is a thesis, because a reader could disagree with
+it. State exactly one, in one sentence, in `thesis`.
+
+If the dossier supports two good theses, pick the one the topic's `angle` asked for
+and put the other in `out_of_scope`. Two theses in one post is the failure this
+stage exists to prevent.
+</what_an_outline_is>
+
+<you_will_not_use_all_the_research>
+You are given the whole dossier on purpose, and you are expected to leave a good
+part of it out. Choosing what to cut is the job, not a side effect of it.
+
+Everything you leave out goes in `out_of_scope`, named by subject, in the words a
+reader would recognise ("the Business Central connector", "Dataverse plugin
+performance"). That list is not decoration: the Writer is forbidden from giving any
+of it a heading, and the validators check the finished draft against it.
+
+`out_of_scope` must never be empty. A post that excludes nothing has no thesis, and
+an empty list means you have not made a decision yet.
+</you_will_not_use_all_the_research>
+
+<sections>
+Between {lo} and {hi} sections, and no more. Two of them are fixed:
+
+- The second to last is `{critical}` — the real risks, what breaks, what is still
+  unclear.
+- The last is one of {closing}. Prefer the first. It is an opinion and a
+  recommendation, not a recap. It is the only section that may carry no claims.
+
+That leaves you {lo - 2} to {hi - 2} sections to make the argument in. Each one:
+
+- makes exactly ONE point, stated in `makes_this_point` as a single sentence;
+- rests on at least one dossier claim, named by **id** in `claim_ids`;
+- gets a `target_words` between {floor} and {ceiling}, summing to the word band
+  given in the message.
+
+You are given claim ids and you return claim ids. Never quote claim text, and never
+invent an id. An id that is not in the dossier is dropped before the Writer sees
+it, and a section left with no claims is dropped with it.
+
+Headings are descriptive and specific, and vary in grammatical shape. Banned:
+{banned}, and anything equally generic. A heading that would fit an unrelated post
+is the clearest sign the outline has drifted.
+
+A section you cannot fill to {floor} words is not a section. Merge it into the one
+it supports, or cut it and put its subject in `out_of_scope`.
+</sections>
+
+<the_operators_brief>
+When the message carries `<editor_instructions>`, that is the human who commissioned
+this post telling you what they want it to be. It outranks the topic's own angle
+wherever the two disagree, and it outranks your own reading of the dossier. Shape
+the thesis around it.
+</the_operators_brief>
+
+<the_dossiers_own_outline>
+The dossier carries a `suggested_outline` the Researcher wrote. Read it, then decide
+for yourself. It was written by someone whose job was to find everything, which is
+the opposite of your job. Use it as a checklist of what exists, not as a plan.
+</the_dossiers_own_outline>
+
+Return JSON matching the PostOutline schema. Leave `warnings` empty; it is filled
+in code.
+"""
+
+
+# ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
 
 
 def writer_instructions(settings: Settings) -> str:
     structure = settings.structure
-    lo, hi = structure.get("min_sections", 8), structure.get("max_sections", 12)
+    lo, hi = structure.get("min_sections", 5), structure.get("max_sections", 7)
     tags_lo, tags_hi = structure.get("tags_per_post", [4, 6])
     banned = ", ".join(settings.banned_headings) or "Introduction, Background, Overview, Summary"
     return f"""{blog_context(settings)}
@@ -307,6 +394,24 @@ write around it. Emit a placeholder in the exact form `[[AUTHOR: ...]]` or
 description, the opening two paragraphs, or inside a code fence. More than five
 means the research or the notes are too thin — say so instead of drafting.
 </placeholders>
+
+<the_outline_governs>
+You are given an **approved outline**. It was decided before any prose existed and
+it has already been checked against the dossier in code. It is not a suggestion.
+
+- Its sections are the post's sections, with those titles, in that order. Add
+  none, drop none, reorder none. If you believe a section is wrong, write the post
+  anyway and say so in `changelog`.
+- Each section makes the one point its `makes_this_point` names, and rests on the
+  claims its `claim_ids` name. A point that needs research the section was not
+  given is a point for a different post.
+- Copy `thesis` onto the Draft **verbatim**. Do not reword it, improve it or
+  generalise it. The second opening paragraph states that same argument in your own
+  prose, as a claim a reader could disagree with — never as a list of what the post
+  covers.
+- Nothing on the `out_of_scope` list gets a heading. You may name one of those
+  subjects once, in a clause, to tell the reader where the boundary is. That is all.
+</the_outline_governs>
 
 <required_shape>
 This blog has one post shape. Follow it exactly.
@@ -386,7 +491,7 @@ When you receive validator feedback, address every blocker and major finding by
 id, rewrite the affected sections, bump `revision`, and summarise what you changed
 in `changelog`. Change nothing factual while fixing style. Do not argue with the
 validators in the draft body — if you disagree, say so in `changelog`.
-
+{_loop_rules(settings, "writer_must", "revision_discipline")}
 Return JSON matching the Draft schema.
 """
 
@@ -400,11 +505,33 @@ _PRECOMPUTED_NOTE = """
 <precomputed>
 The mechanical detectors have already run in code. You are given their findings
 and the measured values. Do NOT re-count and do NOT re-run a regex in your head:
-trust the pre-computed findings, and spend your judgement on the rules marked
-that need it (no [auto] tag). Add findings only for those. If you disagree with a
-pre-computed finding, say so in `summary`; do not silently drop it.
+trust the pre-computed findings.
+
+A rule tagged [auto] is already decided. Do not add findings for it.
+
+Every rule WITHOUT an [auto] tag is yours, and yours alone. Nothing in code
+checks it and no other validator sees it, so saying nothing about it is not
+neutrality: it is the rule passing unexamined. Work through them one at a time
+and quote the offending text verbatim in `location`.
+
+If you disagree with a pre-computed finding, say so in `summary`; do not silently
+drop it.
 </precomputed>
 """.strip()
+
+
+def _loop_rules(settings: Settings, key: str, label: str) -> str:
+    """One of the `loop.*` discipline lists from validation_rules.yaml, as a block.
+
+    These lists sat in config for two rulesets reading like policy and executing as
+    nothing. They are editorial instructions written for exactly these agents, so
+    they belong in the prompt rather than in a comment.
+    """
+    items = (settings.validation.get("loop", {}) or {}).get(key) or []
+    if not items:
+        return ""
+    body = "\n".join(f"- {str(item).strip()}" for item in items)
+    return f"\n<{label}>\n{body}\n</{label}>\n"
 
 
 def content_validator_instructions(settings: Settings) -> str:
@@ -446,7 +573,7 @@ does not go *beyond* them, not to re-verify them.
 
 For every finding give a `fix` that is an executable instruction, not a
 preference. Quote the offending text verbatim in `location`.
-
+{_loop_rules(settings, "validator_must", "you_must")}{_loop_rules(settings, "validator_must_not", "you_must_not")}
 Score 0-100. Set `passed` only when there are no blocker findings AND
 score >= {settings.validation.get('scoring', {}).get('pass_threshold', 85)}.
 List 2-4 genuine `strengths`.
@@ -469,10 +596,11 @@ families: **typography (T)**, **structure (S)** and **SEO (E)**.
 
 {_PRECOMPUTED_NOTE}
 
-The typography and most structure rules are [auto] — the detectors have already
-found the dashes, curly quotes, images, missing code languages, generic headings
-and inline citations. Read those pre-computed findings; do not re-hunt for them.
-Spend your judgement on the rules that need it:
+The typography rules and a handful of structure rules are [auto] — the detectors
+have already found the dashes, curly quotes, images, missing code languages,
+generic headings, inline citations and the section count. Read those pre-computed
+findings; do not re-hunt for them. Everything else in your three families is
+yours to judge, including the whole SEO family:
 
 - Table of contents: compare its entries against the actual H2 headings one by
   one. Same headings, same order, no extras, no omissions, and every anchor link
@@ -491,7 +619,9 @@ Spend your judgement on the rules that need it:
 - `cover_concept` is a concrete visual scene, contains no text/logo instruction,
   and is not just the title restated (E07).
 - Scannability: does the post survive being skimmed via headings and bold only?
-
+- The title and meta description lengths, the keyword placement and the tag count
+  (E01, E02, E03, E06). Count the characters before you judge them.
+{_loop_rules(settings, "validator_must", "you_must")}{_loop_rules(settings, "validator_must_not", "you_must_not")}
 Score 0-100. Set `passed` only when there are no blocker findings AND
 score >= {settings.validation.get('scoring', {}).get('pass_threshold', 85)}.
 

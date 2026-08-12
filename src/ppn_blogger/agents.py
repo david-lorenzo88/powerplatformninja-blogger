@@ -18,6 +18,7 @@ from .models import (
     Draft,
     FeedSuggestionSet,
     NewsletterIssueDraft,
+    PostOutline,
     ResearchDossier,
     ScoutReport,
     SourceVerdict,
@@ -33,6 +34,7 @@ DOCS_SCOUT = "docs_scout"
 TOPIC_EDITOR = "topic_editor"
 NOTES_NORMALIZER = "notes_normalizer"
 RESEARCHER = "researcher"
+OUTLINER = "outliner"
 WRITER = "writer"
 CONTENT_VALIDATOR = "content_validator"
 DESIGN_VALIDATOR = "design_validator"
@@ -192,6 +194,26 @@ def build_source_checker(settings: Settings, clients: ClientBundle) -> Agent:
         tools=_searchable(tools.SOURCE_CHECKER_TOOLS, clients.reasoning),
         default_options=_opts(SourceVerdict),
         middleware=_meter(SOURCE_CHECKER),
+    )
+
+
+def build_outliner(settings: Settings, clients: ClientBundle) -> Agent:
+    """Decides the one argument the post makes, and what it leaves out.
+
+    Reasoning tier and **no tools**, deliberately. Every fact it may draw on is
+    already in the dossier and has already been through the Source Checker, so a
+    search tool here would only invite it to widen the scope at exactly the stage
+    whose entire purpose is to narrow it. It refers to research by claim id and
+    never quotes it, so it cannot fabricate — the newsletter editor's contract.
+    """
+    return Agent(
+        clients.reasoning,
+        prompts.outliner_instructions(settings),
+        id=OUTLINER,
+        name=OUTLINER,
+        description="Turns a dossier into one argument: thesis, sections, and what is out of scope.",
+        default_options=_opts(PostOutline, temperature=0.3),
+        middleware=_meter(OUTLINER),
     )
 
 

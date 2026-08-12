@@ -50,15 +50,29 @@ categories:
 # Structural conventions
 #
 # Modelled on the house style of blog.azurebrains.com: a table of contents,
-# 8-12 descriptive H2 sections, no H3, no TL;DR box, a critical-reading section
+# 5-7 descriptive H2 sections, no H3, no TL;DR box, a critical-reading section
 # near the end, a closing section, and a plain "Sources" list. No in-body
 # images of any kind — the only image is the cover, in front matter.
+#
+# The section count was 8-12 and that was the single biggest cause of unfocused
+# drafts. Against a 2000-2800 word band scaled to 0.8 for an analysis post, twelve
+# sections is 133 words each: a model told to fill twelve slots about a narrow
+# subject goes and finds twelve subjects. One real draft spent 40 percent of its
+# body on a product that was not its topic. Two of these slots are always spoken
+# for (the critical section and the closing one), so 5-7 leaves 3-5 free sections
+# with room to actually make a point. The floor that matters is now per section
+# rather than inferred from the arithmetic — see min_section_words.
 # ---------------------------------------------------------------------------
 structure:
   table_of_contents: true          # linked list of the H2 sections, at the top
   toc_heading: Contents
-  min_sections: 8
-  max_sections: 12
+  min_sections: 5
+  max_sections: 7
+  # A section under the floor is a bullet pretending to be a section: merge it or
+  # cut it. Enforced per section by rule F04, so a short post format cannot dodge
+  # it by spreading the same words more thinly.
+  min_section_words: 250
+  max_section_words: 450
   heading_depth: 2                 # H2 only — no H3
   opening_paragraphs: 2            # framing paragraphs instead of a TL;DR box
   tldr_block: false
@@ -111,7 +125,10 @@ voice_mode:
   analysis:
     first_person: false
     v12: relaxed
-    word_target_factor: 0.8
+    # 0.8 put a twelve-section analysis post at 133 words a section. Fewer
+    # sections is the real fix, but shrinking the budget by a fifth on top of it
+    # was pulling the sections back under the floor.
+    word_target_factor: 0.9
     register: >-
       Neutral register. No first person anywhere, singular or plural. No invented
       anecdote. V12 is satisfied by a named limitation the official docs understate,

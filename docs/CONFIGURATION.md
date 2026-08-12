@@ -202,7 +202,8 @@ keeps them in agreement.
 |---|---|---|
 | `table_of_contents` | `true` | A `## Contents` list of anchor links after the opening. |
 | `toc_heading` | `Contents` | |
-| `min_sections` / `max_sections` | `8` / `12` | H2 count, excluding Contents and Sources. Outside the range is a finding. |
+| `min_sections` / `max_sections` | `5` / `7` | H2 count, excluding Contents and Sources. Outside the range is an S02 finding, raised by the code-side detector. |
+| `min_section_words` / `max_section_words` | `250` / `450` | Per section. Enforced by F04, so a short post format cannot dodge the floor by spreading the same words more thinly. |
 | `heading_depth` | `2` | H2 only. **Any H3 is a blocker.** |
 | `opening_paragraphs` | `2` | Problem, then payoff. |
 | `tldr_block` | `false` | No TL;DR box. |
@@ -217,9 +218,16 @@ keeps them in agreement.
 | `tags_per_post` | `[4, 6]` | |
 | `reading_speed_wpm` | `200` | Drives `read_minutes`. |
 
-Changing `min_sections`/`max_sections` changes both what the Writer targets and
-what the Design Validator enforces, because both read this key. That is the point
-of putting it here rather than in a prompt.
+Changing `min_sections`/`max_sections` changes what the Outliner plans, what the
+Writer targets and what the detectors enforce, because all three read this key.
+That is the point of putting it here rather than in a prompt.
+
+These were `8`/`12` and that was the single largest cause of unfocused drafts.
+Against a 2000-2800 word band scaled to 0.8 for an analysis post, twelve sections
+is 133 words each, and a model told to fill twelve slots about a narrow subject
+goes and finds twelve subjects. Two slots are always spoken for (the critical
+section and the closing one), so 5-7 leaves 3-5 sections with room to make a
+point.
 
 ### `voice_mode`
 
@@ -381,22 +389,37 @@ mostly from Reddit fails even if every individual URL resolves.
 
 ## Part 5 — `config/validation_rules.yaml`
 
-The v2 ruleset: **six families**, split across the two validators. The Content
-Validator owns **honesty (H)**, **voice (V)** and **content (C)**; the Design
-Validator owns **typography (T)**, **structure (S)** and **SEO (E)**. Severity:
+The v2 ruleset: **seven families**, split across the two validators. The Content
+Validator owns **honesty (H)**, **voice (V)**, **content (C)** and **focus (F)**;
+the Design Validator owns **typography (T)**, **structure (S)** and **SEO (E)**.
+Focus sits with the editor because "is this post about one thing" is an editorial
+question, not a formatting one. Severity:
 **blocker** stops finalisation, **major** must be fixed unless justified, **minor**
 is reported and never blocks, **info** is a guard rail that never fires against the
 Writer.
 
 ### Detectors run in code
 
-21 rules carry a `detector` regex. Those regexes run in **Python**, in
+22 rules carry a `detector` regex. Those regexes run in **Python**, in
 `detectors.py`, before either validator model is called (`run_detectors`). Rules
 marked `auto: true` are decided by the detector and passed to the validator as
 pre-computed findings; the model only judges the `auto: false` rules. The
 measurements a `ValidationReport` carries (average sentence length, per-section word
-counts, H2 count, dash hits, banned-word hits, placeholder count) are counted the
-same way, never estimated by a model.
+counts, H2 count, body word count, dash hits, banned-word hits, placeholder count)
+are counted the same way, never estimated by a model.
+
+Five more rules are decided in code with no regex, because the check is a measured
+number against a configured bound: **S02** (section count), **C04** (word count),
+and **F03/F04/F05** (the outline comparisons). They are listed in
+`detectors.COMPUTED_RULES`.
+
+**`auto: true` is a statement about the code, not about the rule.** It means a
+detector or a `COMPUTED_RULES` entry decides it. A rule marked `auto` with neither
+is checked by *nobody*: `rules_text` stamps it `[auto]`, the validator prompt says
+to skip `[auto]` rules, and `run_detectors` skips anything without a detector.
+Twelve rules sat in that hole for two rulesets, S02 and C04 among them, which is
+how a draft with eleven thin sections scored 93.5. A test now fails the build if
+the set and the ruleset ever disagree again.
 
 The T01/T02 detectors skip fenced code blocks, inline code spans, URLs and list
 bullets, so a hyphen in `low-code`, a slug, a CLI flag or a URL is never mistaken
@@ -408,9 +431,10 @@ for punctuation.
 |---|---|---|
 | **H** honesty | Content | H01 every statement traces to the dossier; **H02** first person traces to author notes; **H03** every number/version traces to dossier or notes; H04 caveats survive; H05 placeholder discipline. Blocker-heavy. |
 | **T** typography | Design | **T01** no dash characters (blocker); **T02** no spaced-hyphen punctuation (blocker); T04 straight quotes only; T06 UI paths use `>`. All regex-decided. |
+| **F** focus | Content | The family that exists because a draft can pass everything else and still be four posts stapled together. **F01** one thesis, not an enumeration of what the post "covers" (blocker); **F02** every section advances it (blocker); F03 nothing out of scope gets a heading; F04 per-section word floor; F05 the draft's sections match the approved outline. F03-F05 are code-decided against the outline. |
 | **V** voice | Content | The anti-LLM family: V01 banned vocabulary, V02 antithesis reflex, V05 signposting, V07 audience sandwich, V08 empty comparatives, V09 closing opinion, V10 sentence-length variance, **V12** specificity floor, V13 something not in the docs, V15 no first-person plural. |
 | **C** content | Content | C01 two framing paragraphs; C02 reproducible steps; C03 cost of a position stated; C04 word count in band. |
-| **S** structure | Design | S01 one H1/no H3; S02 8 to 12 sections; S03 Contents matches; S06 critical-read penultimate; S07 closing = My take; S08 Sources + no inline citations; S09 code fences carry a language; **S11 no images anywhere (blocker)**; S12 descriptive links. |
+| **S** structure | Design | S01 one H1/no H3; S02 the configured section count; S03 Contents matches; S06 critical-read penultimate; S07 closing = My take; S08 Sources + no inline citations; S09 code fences carry a language; **S11 no images anywhere (blocker)**; S12 descriptive links. |
 | **E** SEO | Design | E01 title length + keyword; E02 meta description; E04 slug format; E07 `cover_concept` is a concrete neon scene, not a restated title. |
 
 The old `C01–C12` and `S11 (alt text)` IDs from v1 are gone. The anti-hallucination

@@ -665,13 +665,16 @@ class Settings:
         "typography_rules",
         "voice_rules",
         "content_rules",
+        "focus_rules",
         "structure_rules",
         "seo_rules",
     )
 
-    # Which validator owns which families. Content judges honesty, voice and
-    # content; Design judges typography, structure and SEO.
-    CONTENT_GROUPS = ("honesty", "voice", "content")
+    # Which validator owns which families. Content judges honesty, voice, content
+    # and focus; Design judges typography, structure and SEO. Focus sits with the
+    # editor because "is this post about one thing" is an editorial question, not
+    # a formatting one.
+    CONTENT_GROUPS = ("honesty", "voice", "content", "focus")
     DESIGN_GROUPS = ("typography", "structure", "seo")
 
     def all_rules(self) -> list[dict[str, Any]]:

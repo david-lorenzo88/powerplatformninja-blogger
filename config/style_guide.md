@@ -268,7 +268,45 @@ than what you saw.
 
 ---
 
-## 7. Post structure
+## 7. Thesis discipline
+
+A post makes **one argument**. Not one topic, one argument. "Generative orchestration
+in Copilot Studio" is a topic. "Generative orchestration is not ready for a tenant with
+strict DLP, and here is where it breaks" is a thesis, because someone could disagree
+with it.
+
+The second opening paragraph states that thesis. It is not a table of contents in prose.
+If you catch yourself writing "this post covers X, Y and Z", you have no thesis and you
+are enumerating instead. Go back and decide what you are arguing.
+
+### Every section earns its place
+
+Before writing a section, finish this sentence: "this section matters because
+&lt;thesis&gt;". If you cannot finish it, the section belongs in a different post. It does
+not matter how good the material is or how much research supports it. Research that
+does not serve the thesis is not wasted, it is the next post.
+
+**The dossier is not a table of contents.** You will be given more research than the
+post needs, deliberately. Choosing what to leave out is the work.
+
+### What to leave out
+
+You are given an out-of-scope list: subjects the research covers that this post does
+not. Those subjects may be named once, in a clause, to tell the reader where the
+boundary is. They never get a heading. A heading naming an out-of-scope subject is the
+clearest sign a post lost its argument halfway through.
+
+Signs the thesis has gone:
+
+- a section whose heading would fit an unrelated post;
+- two adjacent sections making the same point about different products;
+- a closing "My take" recommending something the title never promised;
+- more sources than the argument needs, because the sections were written to use up
+  the research.
+
+---
+
+## 8. Post structure
 
 ```text
 # <Title: specific, 45 to 65 characters, contains the primary keyword>
@@ -294,7 +332,10 @@ than what you saw.
 
 Rules:
 
-- **Between 8 and 12 H2 sections**, counting neither `Contents` nor `Sources`.
+- **Between 5 and 7 H2 sections**, counting neither `Contents` nor `Sources`. Two of
+  them are always spoken for, so you have 3 to 5 free sections. Each runs 250 to 450
+  words. A section under 250 words is a bullet pretending to be a section: merge it
+  into the one it supports, or cut it.
 - **H2 only.** No H3. If a section needs subdividing, split it or use a list.
 - **No TL;DR block.** The opening two paragraphs do that job.
 - **`## Contents`** sits immediately after the opening paragraphs, one anchor link per
@@ -325,7 +366,7 @@ matter. It never appears in the body.
 
 ---
 
-## 8. Formatting
+## 9. Formatting
 
 - Markdown. Exactly one H1. Only H2 below it.
 - Every code fence declares a language: `powerfx`, `json`, `csharp`, `yaml`, `bash`,
@@ -346,7 +387,7 @@ matter. It never appears in the body.
 
 ---
 
-## 9. Citations and sources
+## 10. Citations and sources
 
 **No inline citations.** The body reads clean, with no parenthetical links trailing
 claims.
@@ -368,10 +409,13 @@ Losing a caveat during writing is a blocker, not a style nit.
 
 ---
 
-## 10. Self-check before you hand off
+## 11. Self-check before you hand off
 
 Run these in order. Fix what fails before submitting to the Validator.
 
+0. Write the thesis out as one sentence. Now read the headings alone, in order. Does
+   every one of them advance that sentence? Delete the ones that do not, and check no
+   heading names a subject on the out-of-scope list.
 1. Search the draft for `—`, `–`, `−`, and for a hyphen with spaces around it. Zero hits.
 2. Search for every banned word in section 5. Zero hits.
 3. Read the opening two paragraphs. Do they name a specific pain in the first 40 words?
@@ -387,7 +431,7 @@ Run these in order. Fix what fails before submitting to the Validator.
 
 ---
 
-## 11. What a finished draft is not
+## 12. What a finished draft is not
 
 - Not a restructured Microsoft Learn page.
 - Not a feature list with no opinion.

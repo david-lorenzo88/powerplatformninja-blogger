@@ -160,9 +160,9 @@ def test_rules_load_and_are_non_empty():
     settings = get_settings()
     rules = settings.all_rules()
     assert len(rules) >= 20
-    # v2 ruleset: six families instead of three.
+    # v2 ruleset plus the focus family: seven families instead of three.
     assert {r["group"] for r in rules} == {
-        "honesty", "typography", "voice", "content", "structure", "seo"
+        "honesty", "typography", "voice", "content", "focus", "structure", "seo"
     }
     assert all(r["severity"] in {"blocker", "major", "minor", "info"} for r in rules)
 
@@ -522,18 +522,18 @@ def test_resume_graph_excludes_the_researcher():
 
 
 def test_validation_rules_parse_and_all_detectors_compile():
-    """The new ruleset loads and every one of its 21 detectors compiles."""
+    """The ruleset loads and every one of its 22 detectors compiles."""
     import re
 
     from ppn_blogger.detectors import compile_all
 
     settings = get_settings()
     compiled = compile_all(settings)
-    assert len(compiled) == 21, f"expected 21 detectors, got {len(compiled)}"
+    assert len(compiled) == 22, f"expected 22 detectors, got {len(compiled)}"
     assert all(isinstance(p, re.Pattern) for p in compiled.values())
-    # The six families are all present.
+    # The seven families are all present.
     assert {r["group"] for r in settings.all_rules()} == {
-        "honesty", "typography", "voice", "content", "structure", "seo"
+        "honesty", "typography", "voice", "content", "focus", "structure", "seo"
     }
 
 
@@ -734,3 +734,481 @@ async def test_editor_instructions_reach_the_writer_resume(tmp_path, monkeypatch
 
     assert captured, "writer never received a first-draft prompt"
     assert any("<editor_instructions>" in p and "DROP THE FAQ SECTION" in p for p in captured)
+
+
+# ---------------------------------------------------------------------------
+# The outline stage: the plan, the gate that checks it, and the thesis that
+# has to survive to the end of the run.
+# ---------------------------------------------------------------------------
+
+
+def test_the_outline_sits_between_the_source_gate_and_the_writer():
+    """The writer is never reachable without passing through the outline."""
+    from agent_framework import WorkflowViz
+
+    from ppn_blogger.workflows import build_post_workflow
+
+    graph = WorkflowViz(build_post_workflow(clients=stub_clients()).workflow).to_mermaid()
+
+    assert "source_gate --> outliner" in graph
+    assert "outliner --> outline_gate" in graph
+    assert "outline_gate --> writer" in graph
+    assert "source_gate --> writer" not in graph, "the writer must not bypass the outline"
+
+
+def test_resume_with_skip_source_check_still_outlines():
+    """The regeneration path is the one most likely to lose the outline.
+
+    `server/runs.py` takes it on every "regenerate reusing prior research", and a
+    stale `target_id=A.WRITER` here would be a silent no-op rather than an error.
+    """
+    from agent_framework import WorkflowViz
+
+    from ppn_blogger.workflows import build_post_workflow
+
+    graph = WorkflowViz(
+        build_post_workflow(
+            clients=stub_clients(), resume_from_dossier=True, skip_source_check=True
+        ).workflow
+    ).to_mermaid()
+
+    assert "dossier_entry --> outliner" in graph
+    assert "dossier_entry --> writer" not in graph
+
+
+def test_the_outline_stage_adds_no_round_counter():
+    """CLAUDE.md: source_round and revision_round are the only counters.
+
+    The outline gate repairs deterministically instead of looping, which is what
+    lets that invariant keep holding. Encoded as a test so a future "just one
+    more retry" has to argue with the build.
+    """
+    import dataclasses
+
+    from ppn_blogger.executors import RunState
+
+    counters = {f.name for f in dataclasses.fields(RunState) if f.name.endswith("_round")}
+    assert counters == {"source_round", "revision_round"}
+
+
+def _repaired(outline, dossier=None, thesis=""):
+    from ppn_blogger.executors import repair_outline
+    from ppn_blogger.testing import _dossier
+
+    settings = get_settings()
+    return repair_outline(
+        outline,
+        dossier or _dossier(clean=True),
+        settings,
+        band=settings.word_target("deep-dive", "analysis"),
+        fallback_thesis=thesis,
+    )
+
+
+def test_outline_gate_drops_claim_ids_the_dossier_does_not_have():
+    from ppn_blogger.testing import _outline
+
+    repaired = _repaired(_outline())
+
+    assert "C99" not in repaired.selected_claim_ids
+    assert all("C99" not in s.claim_ids for s in repaired.sections)
+    assert any("C99" in w for w in repaired.warnings)
+
+
+def test_outline_gate_drops_a_section_with_no_claims_but_keeps_the_closing_one():
+    from ppn_blogger.testing import _outline
+
+    repaired = _repaired(_outline())
+    titles = [s.title for s in repaired.sections]
+
+    assert "Whatever the dossier had left over" not in titles
+    # The closing section carries no claims either, and must survive: it is an
+    # opinion, not a statement of fact, so it has nothing to trace to.
+    assert titles[-1] == "My take"
+    assert repaired.sections[-1].claim_ids == []
+
+
+def test_outline_gate_synthesises_out_of_scope_from_the_unselected_claims():
+    from ppn_blogger.testing import _outline
+
+    outline = _outline()
+    assert outline.out_of_scope == [], "the canned outline must arrive with none"
+
+    repaired = _repaired(outline)
+
+    assert repaired.out_of_scope, "an empty out_of_scope must never reach the writer"
+    assert any("capacity meter" in s for s in repaired.out_of_scope)
+    assert any("excluded nothing" in w for w in repaired.warnings)
+
+
+def test_outline_gate_repairs_rather_than_rejecting():
+    """A maximally broken outline still yields something usable, with warnings."""
+    from ppn_blogger.models import OutlineSection, PostOutline
+
+    broken = PostOutline(
+        thesis="",
+        reader_promise="",
+        out_of_scope=[],
+        sections=[
+            OutlineSection(
+                title=f"Section {i}",
+                makes_this_point="x",
+                claim_ids=["NOPE"],
+                target_words=9000,
+            )
+            for i in range(20)
+        ],
+    )
+
+    repaired = _repaired(broken, thesis="The angle from the topic.")
+
+    assert repaired.thesis == "The angle from the topic."
+    assert len(repaired.sections) <= get_settings().structure["max_sections"]
+    ceiling = get_settings().structure["max_section_words"]
+    assert all(s.target_words <= ceiling for s in repaired.sections)
+    assert len(repaired.warnings) >= 3
+
+
+def test_too_few_sections_passes_through_with_a_warning():
+    """The one irreparable case. Producing a thin draft beats producing none."""
+    from ppn_blogger.models import OutlineSection, PostOutline
+
+    thin = PostOutline(
+        thesis="One thing.",
+        reader_promise="y",
+        out_of_scope=["something else"],
+        sections=[
+            OutlineSection(title="Only section", makes_this_point="x", claim_ids=["C1"]),
+            OutlineSection(title="My take", makes_this_point="x", claim_ids=[]),
+        ],
+    )
+
+    repaired = _repaired(thin)
+
+    assert len(repaired.sections) == 2, "nothing was invented to reach the floor"
+    assert any("floor" in w for w in repaired.warnings)
+
+
+def _prompt_capturing_clients():
+    """Records the outliner, writer and content-validator prompts of a run."""
+    from ppn_blogger.clients import ClientBundle
+    from ppn_blogger.models import Draft, PostOutline, ValidationReportDraft
+    from ppn_blogger.testing import StubChatClient
+
+    seen: dict[str, list[str]] = {"outline": [], "draft": [], "revision": [], "validate": []}
+
+    class _Capturing(StubChatClient):
+        def _payload(self, model, messages):
+            full = " ".join(m.text or "" for m in messages)
+            if model is PostOutline:
+                seen["outline"].append(full)
+            elif model is Draft:
+                # `full` is the whole conversation, so by the revision turn it
+                # still carries the first-draft brief. Match the later marker
+                # first or every revision looks like a first draft.
+                if "The validators reviewed revision" in full:
+                    seen["revision"].append(full)
+                elif "Write the first draft" in full:
+                    seen["draft"].append(full)
+            elif model is ValidationReportDraft:
+                seen["validate"].append(full)
+            return super()._payload(model, messages)
+
+    client = _Capturing(exercise_loops=True)
+    return ClientBundle(reasoning=client, fast=client), seen
+
+
+@pytest.mark.asyncio
+async def test_the_writer_sees_only_the_claims_the_outline_selected(tmp_path, monkeypatch):
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients, seen = _prompt_capturing_clients()
+    topics = await discover_topics(clients=clients)
+    await write_post(topics.suggestions[0], clients=clients, push_to_wordpress=False)
+
+    assert seen["draft"], "the writer never received a first draft brief"
+    brief = seen["draft"][0]
+    research = brief.split("<research>", 1)[1].split("</research>", 1)[0]
+
+    # C3 is the claim the canned outline deliberately leaves unused. It must be
+    # absent from the research the writer may draw on, and named in the block
+    # that tells it what was cut. Silently withholding research invites the
+    # writer to fill the gap from memory, which is the one thing it must not do.
+    assert "C3" not in research and "capacity meter" not in research
+    assert "<omitted_research>" in brief
+    assert "C3" in brief.split("<omitted_research>", 1)[1]
+    assert "rollup columns" in research, "the selected claims must still be there"
+    # Superseded by the real outline; shipping both invites the wrong plan.
+    assert "suggested_outline" not in research
+    assert "<approved_outline>" in brief and "<thesis>" in brief
+
+
+@pytest.mark.asyncio
+async def test_the_revision_prompt_carries_the_thesis_and_the_draft(tmp_path, monkeypatch):
+    """Three rewrites used to happen with no statement of what the post argues."""
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients, seen = _prompt_capturing_clients()
+    topics = await discover_topics(clients=clients)
+    await write_post(topics.suggestions[0], clients=clients, push_to_wordpress=False)
+
+    assert seen["revision"], "the revision loop never ran"
+    revision = seen["revision"][0]
+    assert "<thesis>" in revision
+    assert "<approved_outline>" in revision
+    # Self-contained: the draft is resent rather than relied on from the session.
+    assert "<current_draft_markdown>" in revision
+    assert "## What to watch carefully" in revision
+
+
+@pytest.mark.asyncio
+async def test_only_the_content_validator_gets_the_outline(tmp_path, monkeypatch):
+    """The split is load-bearing: design judges shape, content judges argument."""
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    clients, seen = _prompt_capturing_clients()
+    topics = await discover_topics(clients=clients)
+    await write_post(topics.suggestions[0], clients=clients, push_to_wordpress=False)
+
+    content = [p for p in seen["validate"] if "you own the content families" in p.lower()]
+    design = [p for p in seen["validate"] if "you own the design families" in p.lower()]
+    assert content and design
+    assert all("<approved_outline>" in p for p in content)
+    assert all("<approved_outline>" not in p for p in design)
+
+
+@pytest.mark.asyncio
+async def test_the_thesis_survives_into_the_package_and_the_front_matter(tmp_path, monkeypatch):
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    topics = await discover_topics(clients=stub_clients())
+    package = await write_post(
+        topics.suggestions[0], clients=stub_clients(), push_to_wordpress=False
+    )
+
+    assert package.outline is not None and package.outline.thesis
+    assert package.draft.thesis == package.outline.thesis
+    assert package.outline_path and Path(package.outline_path).exists()
+    assert "thesis:" in Path(package.markdown_path).read_text(encoding="utf-8")
+    # The review report answers "did this stay on its argument" without opening
+    # the draft, which is the whole point of writing it there.
+    report = Path(package.report_path).read_text(encoding="utf-8")
+    assert "## Thesis and scope" in report
+    assert "Deliberately out of scope" in report
+
+
+# ---------------------------------------------------------------------------
+# Enforcement: rules that claim to be automatic must actually be decided
+# somewhere, and the focus family must fire on the failure that prompted it.
+# ---------------------------------------------------------------------------
+
+
+def test_every_auto_rule_has_a_detector_or_a_computed_check():
+    """The hole that let S02 and C04 go unchecked for two rulesets.
+
+    `rules_text` stamps `[auto]` on the rule and the validator prompt says to
+    skip `[auto]` rules, while `run_detectors` skips anything with no detector.
+    A rule in neither place is therefore checked by nobody, silently.
+    """
+    from ppn_blogger.detectors import COMPUTED_RULES
+
+    orphans = [
+        rule["id"]
+        for rule in get_settings().all_rules()
+        if rule.get("auto") and "detector" not in rule and rule["id"] not in COMPUTED_RULES
+    ]
+    assert not orphans, (
+        f"{orphans} are marked auto with nothing behind them: give each a detector "
+        "or add it to detectors.COMPUTED_RULES."
+    )
+
+
+def test_s02_and_c04_produce_code_findings():
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    lo = settings.structure["min_sections"]
+    md = "# Title\n\n" + "".join(
+        f"## Section {i}\n\nA very short section.\n\n" for i in range(lo - 2)
+    )
+
+    design = run_detectors(md, groups=settings.DESIGN_GROUPS, settings=settings)
+    content = run_detectors(
+        md,
+        groups=settings.CONTENT_GROUPS,
+        settings=settings,
+        post_format="analysis",
+        voice_mode="analysis",
+    )
+
+    assert "S02" in {f.rule_id for f in design.findings}
+    assert "C04" in {f.rule_id for f in content.findings}
+
+
+def _outline_for(titles, out_of_scope=()):
+    from ppn_blogger.models import OutlineSection, PostOutline
+
+    return PostOutline(
+        thesis="One argument.",
+        reader_promise="y",
+        out_of_scope=list(out_of_scope),
+        sections=[
+            OutlineSection(title=t, makes_this_point="x", claim_ids=["C1"]) for t in titles
+        ],
+    )
+
+
+def test_f03_fires_on_an_out_of_scope_heading():
+    """The observed failure, encoded: four Business Central sections in a post
+    about Copilot Studio orchestration."""
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    md = (
+        "# Generative versus classic orchestration\n\n"
+        "## How the two orchestrators differ\n\nBody.\n\n"
+        "## What this means for Business Central\n\nBody.\n\n"
+    )
+    run = run_detectors(
+        md,
+        groups=settings.CONTENT_GROUPS,
+        settings=settings,
+        outline=_outline_for(
+            ["How the two orchestrators differ"], out_of_scope=["Business Central"]
+        ),
+    )
+
+    f03 = [f for f in run.findings if f.rule_id == "F03"]
+    assert len(f03) == 1
+    assert "Business Central" in f03[0].location
+
+
+def test_f03_ignores_an_out_of_scope_mention_in_prose():
+    """One clause naming the boundary is explicitly allowed; F02 owns the rest."""
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    md = (
+        "# Generative versus classic orchestration\n\n"
+        "## How the two orchestrators differ\n\n"
+        "Unlike Business Central, this post stays on the orchestrator itself.\n\n"
+    )
+    run = run_detectors(
+        md,
+        groups=settings.CONTENT_GROUPS,
+        settings=settings,
+        outline=_outline_for(
+            ["How the two orchestrators differ"], out_of_scope=["Business Central"]
+        ),
+    )
+
+    assert not [f for f in run.findings if f.rule_id == "F03"]
+
+
+def test_f04_reports_thin_sections_once_not_once_each():
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    md = "# Title\n\n" + "".join(f"## Section {i}\n\nToo short.\n\n" for i in range(6))
+    run = run_detectors(
+        md,
+        groups=settings.CONTENT_GROUPS,
+        settings=settings,
+        outline=_outline_for([f"Section {i}" for i in range(6)]),
+    )
+
+    f04 = [f for f in run.findings if f.rule_id == "F04"]
+    assert len(f04) == 1, "one aggregated finding, or the report drowns"
+    assert "6 sections under" in f04[0].location
+
+
+def test_f05_fires_when_the_headings_drift_from_the_outline():
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    md = "# Title\n\n## Planned one\n\nBody.\n\n## Never outlined\n\nBody.\n\n"
+    run = run_detectors(
+        md,
+        groups=settings.CONTENT_GROUPS,
+        settings=settings,
+        outline=_outline_for(["Planned one", "Planned two"]),
+    )
+
+    f05 = [f for f in run.findings if f.rule_id == "F05"]
+    assert len(f05) == 1
+    assert "Never outlined" in f05[0].location
+    assert "Planned two" in f05[0].location
+
+
+def test_the_focus_rules_are_silent_without_an_outline():
+    """TranslationGate runs the typography family with no outline in hand."""
+    from ppn_blogger.detectors import run_detectors
+
+    settings = get_settings()
+    run = run_detectors(
+        "# Title\n\n## One\n\nBody.\n\n", groups=settings.CONTENT_GROUPS, settings=settings
+    )
+    assert not [f for f in run.findings if f.rule_id.startswith("F")]
+
+
+def test_the_stub_sample_fires_exactly_the_two_expected_findings():
+    """The sample is short on purpose; the cost is C04 and F04, and no more.
+
+    Asserted rather than tolerated, so the compromise stays a regression test of
+    the new detectors instead of drifting into a silent oddity.
+    """
+    from ppn_blogger.detectors import run_detectors
+    from ppn_blogger.testing import _SAMPLE_MARKDOWN, _dossier, _outline
+
+    settings = get_settings()
+    outline = _repaired(_outline(), _dossier(clean=True))
+    ids = set()
+    for groups, extra in (
+        (settings.DESIGN_GROUPS, {}),
+        (settings.CONTENT_GROUPS, {"post_format": "deep-dive", "voice_mode": "analysis"}),
+    ):
+        run = run_detectors(
+            _SAMPLE_MARKDOWN,
+            groups=groups,
+            settings=settings,
+            slug="dataverse-elastic-tables-tradeoffs",
+            outline=outline,
+            **extra,
+        )
+        ids |= {f.rule_id for f in run.findings}
+
+    assert ids == {"C04", "F04"}, f"unexpected findings on the house sample: {sorted(ids)}"
+
+
+def test_minor_findings_reach_the_writer():
+    """They used to be filtered out, so a validator could deduct for a fix the
+    writer never saw. One real run carried the same two minors through all
+    three revision rounds."""
+    from ppn_blogger.executors import _revision_text
+    from ppn_blogger.models import RuleFinding, ValidationReport
+
+    report = ValidationReport(
+        validator="design",
+        score=88,
+        passed=False,
+        findings=[
+            RuleFinding(rule_id="S02", severity="major", problem="p", fix="f"),
+            RuleFinding(rule_id="E05", severity="minor", problem="no internal links", fix="add two"),
+            RuleFinding(rule_id="T03", severity="info", problem="p", fix="f"),
+        ],
+    )
+
+    text = _revision_text([report])
+
+    assert "S02" in text
+    assert "E05" in text and "add two" in text
+    assert "T03" not in text, "info never deducts and never blocks"
+    assert text.index("S02") < text.index("E05"), "minors stay subordinate"
