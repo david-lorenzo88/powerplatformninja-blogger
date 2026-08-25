@@ -121,6 +121,33 @@ async def test_an_unknown_schedule_kind_is_a_422(api) -> None:
     assert "Unknown schedule kind" in response.json()["detail"]
 
 
+async def test_a_daily_schedule_survives_the_round_trip(api) -> None:
+    letter = (await api.post("/api/news/newsletters", json={"name": "Daily"})).json()
+    response = await api.patch(
+        f"/api/news/newsletters/{letter['id']}",
+        json={"schedule_kind": "daily", "hour_local": 7, "minute_local": 0, "timezone": "UTC"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schedule_kind"] == "daily"
+    assert body["upcoming"], "a daily newsletter must report its next fire times"
+    assert all(t[11:16] == "07:00" for t in body["upcoming"])
+
+
+async def test_auto_send_can_be_turned_on_over_http(api) -> None:
+    """The gap that made this necessary: the field existed and nothing could set it."""
+    letter = (await api.post("/api/news/newsletters", json={"name": "Hands off"})).json()
+    assert letter["auto_send"] is False
+
+    on = await api.patch(f"/api/news/newsletters/{letter['id']}", json={"auto_send": True})
+    assert on.status_code == 200, on.text
+    assert on.json()["auto_send"] is True
+
+    off = await api.patch(f"/api/news/newsletters/{letter['id']}", json={"auto_send": False})
+    assert off.status_code == 200, off.text
+    assert off.json()["auto_send"] is False, "and it must be possible to turn it back off"
+
+
 async def test_patching_without_a_name_keeps_the_name(api) -> None:
     """Editing the schedule must not blank the name.
 

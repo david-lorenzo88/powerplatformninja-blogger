@@ -121,6 +121,8 @@ export function describeSchedule(n: {
       return n.interval_minutes % 60 === 0
         ? `every ${n.interval_minutes / 60}h`
         : `every ${n.interval_minutes}m`
+    case 'daily':
+      return `every day at ${at}`
     case 'weekly':
       return `${DAYS[n.weekday] ?? 'Monday'}s at ${at}`
     case 'monthly':
