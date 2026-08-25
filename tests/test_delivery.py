@@ -276,6 +276,34 @@ async def test_a_broadcast_channel_gets_one_row_with_no_recipient(store) -> None
     assert result["deliveries"][0]["recipient_id"] is None
 
 
+async def test_one_issue_goes_out_on_every_configured_channel(store, monkeypatch) -> None:
+    """The assertion behind auto-send: sending is a fan-out, not a first match.
+
+    An unattended issue has nobody to notice that only one channel was used, so
+    this pins the shape: every enabled recipient gets a delivery row on their own
+    channel, a broadcast channel gets its single row, and all of them are sent in
+    the one pass.
+    """
+    issue = await _issue()
+    await newsletters.create_recipient("telegram", "-1001", name="The group")
+    await newsletters.create_recipient("telegram", "424242", name="David")
+    await newsletters.create_recipient("email", "david@example.com", name="David")
+    await newsletters.create_recipient("manual", "", name="Copy out")
+
+    telegram = _channel(monkeypatch, "telegram", DeliveryResult(True, provider_message_id="t"))
+    email = _channel(monkeypatch, "email", DeliveryResult(True, provider_message_id="e"))
+    manual = _channel(monkeypatch, "manual", DeliveryResult(True))
+
+    result = await delivery.deliver_issue(issue["id"])
+
+    assert result["total"] == 4
+    assert result["sent"] == 4 and result["failed"] == 0
+    assert sorted(telegram) == ["-1001", "424242"]
+    assert email == ["david@example.com"]
+    assert manual == ["broadcast"]
+    assert {d["channel"] for d in result["deliveries"]} == {"telegram", "email", "manual"}
+
+
 async def test_sending_with_no_recipients_says_so(store) -> None:
     issue = await _issue()
     with pytest.raises(ValueError, match="No recipients"):

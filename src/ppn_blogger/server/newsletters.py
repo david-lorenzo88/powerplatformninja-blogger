@@ -45,7 +45,7 @@ logger = logging.getLogger("ppn.server.newsletters")
 # draft the operator discarded, a failed run — must not burn them permanently.
 SPENT_STATUSES = ("ready", "sending", "sent")
 
-SCHEDULE_KINDS = ("manual", "interval", "weekly", "monthly")
+SCHEDULE_KINDS = ("manual", "interval", "daily", "weekly", "monthly")
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,15 @@ def next_due(newsletter: dict[str, Any], *, after: datetime) -> datetime | None:
     minute = max(0, min(59, int(newsletter.get("minute_local", 0) or 0)))
     target = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    if kind == "weekly":
+    if kind == "daily":
+        # Anchored to a wall-clock time rather than expressed as a 24-hour
+        # interval: an interval is measured from the last *generation*, so a
+        # daily issue would walk a little later every day and land at a
+        # different hour within a week. A reader expects the letter at the same
+        # time each morning, and DST is handled by computing in the local zone.
+        if target <= local:
+            target = target + timedelta(days=1)
+    elif kind == "weekly":
         wanted = max(0, min(6, int(newsletter.get("weekday", 0) or 0)))
         ahead = (wanted - target.weekday()) % 7
         target = target + timedelta(days=ahead)

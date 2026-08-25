@@ -5,12 +5,14 @@ import {
   deleteNewsletter,
   generateIssue,
   getNewsletter,
+  listChannels,
   listFeedGroups,
   listIssues,
+  listRecipients,
   previewNewsletter,
   updateNewsletter,
 } from '../api/client'
-import type { NewsletterSummary, ScheduleKind } from '../api/types'
+import type { ChannelInfo, NewsletterSummary, Recipient, ScheduleKind } from '../api/types'
 import { useOnline } from '../hooks/useOnline'
 import { formatTime, relativeTime, relativeToNow } from '../lib/format'
 import { card, field, ghostBtn, label, primaryBtn } from '../lib/ui'
@@ -129,6 +131,12 @@ export function NewsletterDetailScreen() {
 
       <ScheduleEditor newsletter={n} onChange={(c) => patch.mutate(c)} busy={!online || patch.isPending} />
 
+      <DeliveryEditor
+        newsletter={n}
+        onChange={(c) => patch.mutate(c)}
+        busy={!online || patch.isPending}
+      />
+
       <section className="mt-6">
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Feed groups
@@ -214,7 +222,9 @@ export function NewsletterDetailScreen() {
         </button>
       </div>
       <p className="mt-2 text-xs text-slate-600">
-        Generating writes a draft issue for you to read. Nothing is sent to anyone.
+        {n.auto_send
+          ? 'Generating writes an issue and then sends it, on every configured channel.'
+          : 'Generating writes a draft issue for you to read. Nothing is sent to anyone.'}
       </p>
     </div>
   )
@@ -253,6 +263,7 @@ function ScheduleEditor({
           >
             <option value="manual">Only when I ask</option>
             <option value="interval">Every N hours</option>
+            <option value="daily">Daily</option>
             <option value="weekly">Weekly</option>
             <option value="monthly">Monthly</option>
           </select>
@@ -342,6 +353,106 @@ function ScheduleEditor({
       ) : (
         <p className="mt-3 text-xs text-slate-600">
           Runs only when you press Generate.
+        </p>
+      )}
+    </section>
+  )
+}
+
+// Auto-send is the only setting in this app that makes it act on an audience
+// unattended, so the toggle is deliberately not a bare checkbox: it names every
+// recipient it would reach and every channel it would use, right where the
+// decision is made. The filter below mirrors `_materialise` in `delivery.py` —
+// enabled, not parked, and subscribed either to this newsletter or to all of
+// them — so what is listed here is what would actually be sent to.
+function DeliveryEditor({
+  newsletter,
+  onChange,
+  busy,
+}: {
+  newsletter: NewsletterSummary
+  onChange: (changes: Partial<NewsletterSummary>) => void
+  busy: boolean
+}) {
+  const channels = useQuery({ queryKey: ['channels'], queryFn: listChannels })
+  const recipients = useQuery({ queryKey: ['recipients'], queryFn: listRecipients })
+
+  const configured = new Map<string, ChannelInfo>(
+    (channels.data ?? []).map((c) => [c.id as string, c]),
+  )
+  const mine = (recipients.data ?? []).filter(
+    (r) =>
+      r.enabled &&
+      !r.failed_at &&
+      (r.newsletter_ids.length === 0 || r.newsletter_ids.includes(newsletter.id)),
+  )
+  const willSend = mine.filter((r) => configured.get(r.channel)?.configured)
+  const willSkip = mine.filter((r) => !configured.get(r.channel)?.configured)
+
+  const groups = new Map<string, Recipient[]>()
+  for (const r of willSend) groups.set(r.channel, [...(groups.get(r.channel) ?? []), r])
+
+  return (
+    <section className={`${card} mt-4 p-4`}>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Delivery
+      </h2>
+
+      <label className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-5 w-5 accent-cyan-400 lg:h-4 lg:w-4"
+          checked={newsletter.auto_send}
+          disabled={busy}
+          onChange={(e) => onChange({ auto_send: e.target.checked })}
+        />
+        <span>
+          <span className="text-sm text-slate-200">Send each issue automatically</span>
+          <span className="mt-0.5 block text-xs text-slate-500">
+            Every issue this newsletter generates — scheduled or on demand — goes out on its
+            own, to every channel below. Leave it off to read each issue first and press Send.
+          </span>
+        </span>
+      </label>
+
+      {willSend.length === 0 ? (
+        <p className="mt-3 text-xs text-amber-400">
+          Nobody is set up to receive this yet, so auto-send would have nothing to do. Add a{' '}
+          <Link className="text-accent hover:underline" to="/newsletters/recipients">
+            recipient
+          </Link>{' '}
+          on a configured channel.
+        </p>
+      ) : (
+        <div className="mt-3">
+          <p className="text-xs text-slate-500">
+            {willSend.length} recipient{willSend.length === 1 ? '' : 's'} on{' '}
+            {groups.size} channel{groups.size === 1 ? '' : 's'}:
+          </p>
+          <ul className="mt-2 flex flex-col gap-1">
+            {[...groups.entries()].map(([id, rs]) => (
+              <li key={id} className="text-xs text-slate-400">
+                <span className="text-slate-300">{configured.get(id)?.label ?? id}</span>
+                <span className="text-slate-600">
+                  {' '}
+                  — {rs.map((r) => r.name || r.address).join(', ')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {willSkip.length > 0 && (
+        <p className="mt-2 text-xs text-slate-500">
+          {willSkip.length} recipient{willSkip.length === 1 ? '' : 's'} will be skipped — their
+          channel is not configured. Skipped is not failed; nothing is lost.
+        </p>
+      )}
+
+      {newsletter.auto_send && (
+        <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/90">
+          On. Issues will reach these people without anyone reading them first.
         </p>
       )}
     </section>

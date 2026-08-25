@@ -297,11 +297,18 @@ recipient before the mechanism for it has been reviewed on its own.
   column, absolute URLs only, `javascript:` dropped) and plain text. Built from
   the composed issue rather than by converting the markdown, so there is nothing
   to sanitise.
-- **Schedules** are pure and previewable: `manual | interval | weekly | monthly`,
-  computed in the newsletter's own zone, with the next three fire times shown in
-  the UI. Monthly is capped at day 28 — "the 31st" silently meaning "the 28th" in
-  February is a schedule that lies. Claimed by the scheduler with the same
-  compare-and-swap as the system jobs.
+- **Schedules** are pure and previewable: `manual | interval | daily | weekly |
+  monthly`, computed in the newsletter's own zone, with the next three fire times
+  shown in the UI. Monthly is capped at day 28 — "the 31st" silently meaning "the
+  28th" in February is a schedule that lies. `daily` is a wall-clock time rather
+  than `interval` set to 1440: an interval is measured from the last generation,
+  so a daily letter would land a few minutes later every day. Claimed by the
+  scheduler with the same compare-and-swap as the system jobs.
+- **Auto-send** (`auto_send`, off by default) queues the same `deliver` run the
+  Send button queues, so an unattended issue fans out to every enabled recipient
+  on every configured channel. The toggle on the newsletter screen names them all
+  before it is flipped — turning it on is the one setting that lets the app reach
+  an audience with nobody reading first.
 - **UI**: a fifth `Letters` tab (the ceiling), newsletter list/detail with a live
   candidate preview and schedule editor, and an issue screen whose email preview
   is a **sandboxed iframe** — email HTML carries its own inlined styles and would

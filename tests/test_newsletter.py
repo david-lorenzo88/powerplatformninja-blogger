@@ -34,7 +34,12 @@ def _entry(url: str, title: str) -> news.FetchedEntry:
         title=title,
         url=url,
         summary="why it matters",
-        published=datetime(2026, 8, 9, tzinfo=UTC),
+        # Relative to now rather than a fixed date. `candidates` only offers
+        # articles inside the newsletter's lookback window, so a hard-coded
+        # publication date quietly stops matching once the calendar passes it —
+        # which is exactly what happened: five tests in this file went red on a
+        # day nobody touched them.
+        published=datetime.now(UTC) - timedelta(hours=12),
         entry_key=news.url_hash(url),
     )
 
@@ -227,6 +232,53 @@ async def test_a_quiet_week_skips_without_calling_a_model(store, monkeypatch) ->
     assert issues[0]["status"] == "skipped"
 
 
+async def test_auto_send_queues_the_delivery_the_operator_would_have_pressed(
+    store, monkeypatch
+) -> None:
+    """Auto-send is the only difference, and it is a queued run, not a shortcut.
+
+    The issue is stored first either way; auto-send then queues the *same*
+    `deliver` run the Send button queues, which is what makes an unattended issue
+    reach every configured channel rather than some reduced subset.
+    """
+    from ppn_blogger import workflows as wf
+    from ppn_blogger.server import runs
+    from ppn_blogger.server.newsletter_runs import compose_and_store
+    from ppn_blogger.testing import stub_clients
+
+    queued: list[tuple[str, dict]] = []
+
+    class _Manager:
+        async def enqueue(self, kind, params, title=""):
+            queued.append((kind, params))
+            return "run-1"
+
+    monkeypatch.setattr(runs, "manager", lambda: _Manager())
+
+    group = await _feed_with_articles(monkeypatch, count=5)
+    real = wf.compose_issue
+
+    async def stubbed(newsletter, candidates, **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        return await real(newsletter, candidates, **kw)
+
+    monkeypatch.setattr(wf, "compose_issue", stubbed)
+
+    quiet = await newsletters.create(
+        "Read it first", group_ids=[group["id"]], max_per_feed=10, min_items=1
+    )
+    result = await compose_and_store(quiet["id"])
+    assert result["auto_send"] is False
+    assert queued == [], "off by default: nothing reaches an audience unattended"
+
+    eager = await newsletters.create(
+        "Send it", group_ids=[group["id"]], max_per_feed=10, min_items=1, auto_send=True
+    )
+    result = await compose_and_store(eager["id"])
+    assert result["auto_send"] is True
+    assert queued == [("deliver", {"issue_id": result["issue_id"]})]
+
+
 # ---------------------------------------------------------------------------
 # Schedules — pure
 # ---------------------------------------------------------------------------
@@ -260,6 +312,39 @@ def test_interval_is_measured_from_now() -> None:
     now = datetime(2026, 8, 10, 12, tzinfo=UTC)
     due = newsletters.next_due(_letter(schedule_kind="interval", interval_minutes=90), after=now)
     assert due == now + timedelta(minutes=90)
+
+
+def test_daily_lands_on_the_next_local_hour() -> None:
+    now = datetime(2026, 8, 10, 12, tzinfo=UTC)  # today's 07:00 has gone
+    due = newsletters.next_due(
+        _letter(schedule_kind="daily", hour_local=7, timezone="UTC"), after=now
+    )
+    assert due == datetime(2026, 8, 11, 7, tzinfo=UTC)
+
+
+def test_daily_does_not_drift_the_way_a_24_hour_interval_would() -> None:
+    """The whole reason `daily` exists rather than `interval` set to 1440.
+
+    An interval is measured from the last generation, so a letter that takes
+    four minutes to write lands four minutes later every day and is an hour late
+    within a fortnight. A daily schedule is a wall-clock time and stays put.
+    """
+    letter = _letter(schedule_kind="daily", hour_local=7, timezone="UTC")
+    times = newsletters.upcoming(letter, count=3, after=datetime(2026, 8, 10, 7, 40, tzinfo=UTC))
+    assert [t[11:16] for t in times] == ["07:00", "07:00", "07:00"]
+
+
+def test_daily_holds_its_local_hour_across_dst() -> None:
+    """A daily letter crosses every transition, so this is not a corner case."""
+    from zoneinfo import ZoneInfo
+
+    madrid = ZoneInfo("Europe/Madrid")  # moves on 2026-10-25
+    times = newsletters.upcoming(
+        _letter(schedule_kind="daily", hour_local=7, timezone="Europe/Madrid"),
+        count=3,
+        after=datetime(2026, 10, 24, 12, tzinfo=UTC),
+    )
+    assert [datetime.fromisoformat(t).astimezone(madrid).hour for t in times] == [7, 7, 7]
 
 
 def test_weekly_lands_on_the_right_weekday_and_hour() -> None:

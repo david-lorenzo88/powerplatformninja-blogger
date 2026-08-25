@@ -569,7 +569,7 @@ export interface ArticleFilters {
 
 // -- Newsletters --------------------------------------------------------------
 
-export type ScheduleKind = 'manual' | 'interval' | 'weekly' | 'monthly'
+export type ScheduleKind = 'manual' | 'interval' | 'daily' | 'weekly' | 'monthly'
 export type IssueStatus = 'draft' | 'ready' | 'sending' | 'sent' | 'failed' | 'skipped'
 
 export interface NewsletterSummary {
