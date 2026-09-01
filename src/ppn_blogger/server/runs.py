@@ -546,6 +546,17 @@ class RunManager:
 
         return handler
 
+    async def _save_params(self, run_id: str, params: dict[str, Any]) -> None:
+        """Persist params a run worked out for itself. Never sinks the run."""
+        try:
+            async with session() as s:
+                run = await s.get(Run, run_id)
+                if run is not None:
+                    run.params = dict(params)
+                    await s.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not record interpreted params for run %s", run_id)
+
     async def _dispatch(self, run_id: str, kind: str, params: dict[str, Any]) -> dict[str, Any]:
         from ..models import TopicSuggestion
         from ..workflows import discover_topics, write_post
@@ -608,8 +619,31 @@ class RunManager:
             }
 
         if kind == "write":
-            topic = TopicSuggestion.model_validate(params["topic"])
+            corpus: list[str] = list(params.get("sources") or [])
             instructions = params.get("instructions") or ""
+            if params.get("brief"):
+                # No topic was chosen, so one is interpreted from the operator's
+                # own words before the pipeline starts. Under its own timeout:
+                # `_dispatch` wraps nothing, and a server-side run without one can
+                # hold a worker forever.
+                from ..workflows import topic_from_brief
+
+                topic, corpus = await asyncio.wait_for(
+                    topic_from_brief(params["brief"], corpus),
+                    timeout=settings.run.write_timeout_minutes * 60,
+                )
+                # Recorded so the run shows what the interpreter decided, and so
+                # the catalog groups the post by its slug exactly as an ordinary
+                # write does.
+                params["topic"] = topic.model_dump(mode="json")
+                params["sources"] = corpus
+                await self._save_params(run_id, params)
+                # The brief is also the instruction for the draft — it is what the
+                # operator wants the post to argue — so it reaches the Outliner and
+                # the Writer rather than being spent on the topic and thrown away.
+                instructions = "\n\n".join(x for x in (params["brief"], instructions) if x)
+            else:
+                topic = TopicSuggestion.model_validate(params["topic"])
             # A regeneration carries the whole guidance history, not just the
             # newest note, so earlier revision requests keep applying. Only the
             # new note is stored per version (record_write_result); the fold of
@@ -648,7 +682,12 @@ class RunManager:
                     **common,
                 )
             else:
-                package = await write_post(topic, extra_instructions=instructions, **common)
+                package = await write_post(
+                    topic,
+                    extra_instructions=instructions,
+                    source_corpus=corpus or None,
+                    **common,
+                )
             return {
                 "title": package.draft.title,
                 "slug": package.draft.slug,

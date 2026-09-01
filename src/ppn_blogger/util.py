@@ -146,6 +146,28 @@ def as_json(obj: Any, *, limit: int | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
+# A URL in prose is rarely alone: it is followed by a comma, a full stop, or
+# wrapped in brackets. Trailing punctuation is stripped rather than parsed —
+# getting this wrong means fetching a 404 for a link the operator typed
+# correctly.
+_URL_RE = re.compile(r"https?://[^\s<>\"'`\]\)]+", re.IGNORECASE)
+
+
+def extract_urls(text: str) -> list[str]:
+    """Every http(s) URL in a block of prose, de-duplicated, in the order written.
+
+    Used to read the links out of an operator's brief. Pure and order-preserving:
+    the operator sees the same list back, and a run built from it can be
+    reproduced from the brief alone.
+    """
+    seen: list[str] = []
+    for match in _URL_RE.finditer(text or ""):
+        url = match.group(0).rstrip(".,;:!?'\"")
+        if url not in seen:
+            seen.append(url)
+    return seen
+
+
 def slugify(value: str, max_len: int = 60) -> str:
     try:
         from slugify import slugify as _s

@@ -22,6 +22,7 @@ from .models import (
     ResearchDossier,
     ScoutReport,
     SourceVerdict,
+    TopicSuggestion,
     TopicSuggestionSet,
     ValidationReportDraft,
 )
@@ -32,6 +33,7 @@ NEWS_SCOUT = "news_scout"
 FEED_SCOUT = "feed_scout"
 DOCS_SCOUT = "docs_scout"
 TOPIC_EDITOR = "topic_editor"
+BRIEF_INTERPRETER = "brief_interpreter"
 NOTES_NORMALIZER = "notes_normalizer"
 RESEARCHER = "researcher"
 OUTLINER = "outliner"
@@ -156,6 +158,26 @@ def build_topic_editor(settings: Settings, clients: ClientBundle) -> Agent:
 # ---------------------------------------------------------------------------
 
 
+def build_brief_interpreter(settings: Settings, clients: ClientBundle) -> Agent:
+    """Turns the author's own brief into the topic record the pipeline expects.
+
+    Fast tier and no tools but the date: this is transcription of an intent the
+    author has already formed, not research. The URLs it is told about are
+    attached to the topic by code afterwards — the agent is never asked for one,
+    which is why it cannot supply one.
+    """
+    return Agent(
+        clients.fast,
+        prompts.brief_interpreter_instructions(settings),
+        id=BRIEF_INTERPRETER,
+        name=BRIEF_INTERPRETER,
+        description="Turns an operator's free-form brief into one typed topic.",
+        tools=[tools.today_tool],
+        default_options=_opts(TopicSuggestion),
+        middleware=_meter(BRIEF_INTERPRETER, fast=True),
+    )
+
+
 def build_notes_normalizer(settings: Settings, clients: ClientBundle) -> Agent:
     # Fast tier: this is extraction, not reasoning. It never touches the web —
     # it only reshapes the notes the author already wrote.
@@ -171,23 +193,49 @@ def build_notes_normalizer(settings: Settings, clients: ClientBundle) -> Agent:
     )
 
 
-def build_researcher(settings: Settings, clients: ClientBundle) -> Agent:
+def build_researcher(
+    settings: Settings, clients: ClientBundle, *, corpus_only: bool = False
+) -> Agent:
+    """The Researcher, optionally confined to a corpus the operator chose.
+
+    ``corpus_only`` bypasses ``_searchable`` rather than filtering its result,
+    and that is the whole point: ``_searchable`` is what attaches Foundry's
+    *server-side* web search, so a tool list that merely drops the local
+    ``web_search`` function would still leave the model able to search. What is
+    left is fetching (the corpus), the blog's own archive (internal links) and
+    the date.
+    """
+    tool_set = (
+        [tools.fetch_page, tools.search_existing_posts, tools.today_tool]
+        if corpus_only
+        else _searchable(tools.RESEARCHER_TOOLS, clients.reasoning)
+    )
     return Agent(
         clients.reasoning,
-        prompts.researcher_instructions(settings),
+        prompts.researcher_instructions(settings, corpus_only=corpus_only),
         id=RESEARCHER,
         name=RESEARCHER,
         description="Builds an evidence-backed dossier for one topic.",
-        tools=_searchable(tools.RESEARCHER_TOOLS, clients.reasoning),
+        tools=tool_set,
         default_options=_opts(ResearchDossier),
         middleware=_meter(RESEARCHER),
     )
 
 
-def build_source_checker(settings: Settings, clients: ClientBundle) -> Agent:
+def build_source_checker(
+    settings: Settings, clients: ClientBundle, *, operator_sourced: bool = False
+) -> Agent:
+    """The Source Checker, keeping its tools even when the corpus is fixed.
+
+    ``operator_sourced`` suspends the rules a chosen corpus cannot satisfy, not
+    the checking. It still searches — the one thing it can find that the
+    Researcher cannot act on, an official page contradicting a supplied one, is
+    exactly the warning worth having, and it surfaces as an unresolved issue the
+    Writer is shown rather than an endless loop.
+    """
     return Agent(
         clients.reasoning,
-        prompts.source_checker_instructions(settings),
+        prompts.source_checker_instructions(settings, operator_sourced=operator_sourced),
         id=SOURCE_CHECKER,
         name=SOURCE_CHECKER,
         description="Adversarially verifies every citation and critical claim in the dossier.",

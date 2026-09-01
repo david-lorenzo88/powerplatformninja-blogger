@@ -41,6 +41,7 @@ from .models import (
     ValidationReport,
     ValidationReportDraft,
 )
+from .news import canonical_url
 from .settings import Settings, get_settings
 from .util import as_json, parse_model, user_message, word_count
 
@@ -74,9 +75,19 @@ def notes_are_filled(text: str) -> bool:
     return False
 
 
-def _research_brief(topic: TopicSuggestion, notes_text: str = "") -> str:
+def _research_brief(
+    topic: TopicSuggestion, notes_text: str = "", corpus: list[str] | None = None
+) -> str:
     questions = "\n".join(f"- {q}" for q in topic.key_questions) or "- (derive them from the angle)"
-    seeds = "\n".join(f"- {s}" for s in topic.seed_sources) or "- (none supplied; find your own)"
+    # A corpus is not a longer list of seeds, so it does not get the seeds
+    # wording. "Start from these" and "these are all you have" are different
+    # instructions, and the second one is the operator's decision.
+    if corpus:
+        seeds_label = "The complete corpus. Read every one; you may cite nothing else:"
+        seeds = "\n".join(f"- {s}" for s in corpus)
+    else:
+        seeds_label = "Seed sources to start from (verify each before citing):"
+        seeds = "\n".join(f"- {s}" for s in topic.seed_sources) or "- (none supplied; find your own)"
     notes_block = ""
     if notes_text.strip():
         # The error strings and version numbers in the raw notes are the best
@@ -109,7 +120,7 @@ Novelty we are promising:
 Questions the dossier MUST answer:
 {questions}
 
-Seed sources to start from (verify each before citing):
+{seeds_label}
 {seeds}
 </research_brief>{notes_block}
 
@@ -143,6 +154,72 @@ def _testimony(state: RunState) -> str:
         "\n\n<author_testimony>\nThese are the author's own claims. Do NOT verify them, "
         "search for them, or fail the dossier because of them. Pass over them.\n"
         f"{as_json([c.model_dump() for c in state.author_claims])}\n</author_testimony>"
+    )
+
+
+def _operator_sources(state: RunState) -> str:
+    """The corpus for the Source Checker: chosen by a human, not by the crew."""
+    if not state.source_corpus:
+        return ""
+    listing = "\n".join(f"- {url}" for url in state.source_corpus)
+    return (
+        "\n\n<operator_sources>\nThe author supplied these sources himself and the "
+        "Researcher was allowed no others. Their tier is not a finding, and a critical "
+        "claim resting on a single one of them is not a finding. What they actually say, "
+        "and whether the dossier says more than they do, still is.\n"
+        f"{listing}\n</operator_sources>"
+    )
+
+
+def _corpus_key(url: str) -> str:
+    """Corpus identity for a URL: ``canonical_url`` with the scheme dropped.
+
+    http vs https is the one difference that turns up here — a page fetched over
+    https that the operator typed as http is the same page — and treating them as
+    two would silently narrow the corpus the operator chose.
+    """
+    return canonical_url(url).split("://", 1)[-1]
+
+
+def repair_corpus_citations(dossier: ResearchDossier, corpus: list[str]) -> ResearchDossier:
+    """Confine a dossier to the sources the operator actually supplied.
+
+    The same shape of repair as ``repair_outline``, for the same reason: there is
+    exactly one correct fix, so this is a deterministic edit rather than a round
+    of the source loop. A citation from outside the corpus is not a source that
+    needs re-checking — the Researcher had no way to reach it, so it was written
+    from memory — and a claim left with nothing behind it is precisely the claim
+    the corpus rule exists to stop reaching the Writer.
+
+    Pure, so it is testable without building a workflow. Returns a repaired copy
+    with ``warnings`` recording every drop; the Researcher's own warnings, if it
+    invented any, are discarded.
+    """
+    allowed = {_corpus_key(url) for url in corpus}
+    warnings: list[str] = []
+
+    citations = [c for c in dossier.citations if _corpus_key(c.url) in allowed]
+    for citation in dossier.citations:
+        if _corpus_key(citation.url) not in allowed:
+            warnings.append(
+                f"Citation {citation.id} ({citation.url}) is not one of the supplied "
+                "sources. Dropped."
+            )
+
+    known = {c.id for c in citations}
+    claims = []
+    for claim in dossier.claims:
+        resolved = [cid for cid in claim.citation_ids if cid in known]
+        if not resolved:
+            warnings.append(
+                f"Claim {claim.id} ({claim.statement[:70]}...) rests on nothing in the "
+                "supplied sources. Dropped."
+            )
+            continue
+        claims.append(claim.model_copy(update={"citation_ids": resolved}))
+
+    return dossier.model_copy(
+        update={"citations": citations, "claims": claims, "warnings": warnings}
     )
 
 
@@ -458,6 +535,11 @@ class RunState:
     # Editor guidance for a regeneration, injected into the writer's first-draft
     # prompt. Empty for an ordinary write.
     extra_instructions: str = ""
+    # The operator's own sources, when the run was launched from a brief rather
+    # than a topic. Non-empty means the research is closed: these URLs and
+    # nothing else. Not a field on TopicSuggestion, because that model is the
+    # topic editor's response schema and this is not something a model decides.
+    source_corpus: list[str] = field(default_factory=list)
     # Author notes: raw text in, typed claims and a voice mode out.
     notes_text: str = ""
     author_claims: list[AuthorClaim] = field(default_factory=list)
@@ -730,7 +812,11 @@ class BriefBuilder(Executor):
         logger.info("no author notes — analysis mode")
         await ctx.send_message(
             AgentExecutorRequest(
-                messages=[user_message(_research_brief(topic, self.state.notes_text))],
+                messages=[
+                    user_message(
+                        _research_brief(topic, self.state.notes_text, self.state.source_corpus)
+                    )
+                ],
                 should_respond=True,
             ),
             target_id=A.RESEARCHER,
@@ -766,7 +852,11 @@ class NotesGate(Executor):
         )
         await ctx.send_message(
             AgentExecutorRequest(
-                messages=[user_message(_research_brief(topic, self.state.notes_text))],
+                messages=[
+                    user_message(
+                        _research_brief(topic, self.state.notes_text, self.state.source_corpus)
+                    )
+                ],
                 should_respond=True,
             ),
             target_id=A.RESEARCHER,
@@ -847,6 +937,13 @@ class DossierGate(Executor):
         self, response: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
     ) -> None:
         dossier = parse_model(response, ResearchDossier)
+        if self.state.source_corpus:
+            # Repaired before it is saved, deliberately: the file is then what the
+            # pipeline actually used, and `ppn write --dossier` resumes from
+            # research that is already corpus-pure.
+            dossier = repair_corpus_citations(dossier, self.state.source_corpus)
+            for warning in dossier.warnings:
+                logger.warning("corpus repair: %s", warning)
         self.state.dossier = dossier
         self.state.dossier_path = str(storage.save_dossier(dossier))
         logger.info(
@@ -857,7 +954,8 @@ class DossierGate(Executor):
         )
         prompt = (
             "Verify this dossier against the source policy. Be adversarial.\n\n"
-            f"<dossier>\n{as_json(dossier)}\n</dossier>{_testimony(self.state)}"
+            f"<dossier>\n{as_json(dossier)}\n</dossier>"
+            f"{_testimony(self.state)}{_operator_sources(self.state)}"
         )
         await ctx.send_message(
             AgentExecutorRequest(messages=[user_message(prompt)], should_respond=True),

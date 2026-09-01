@@ -408,6 +408,9 @@ dozens of fetches, minutes of wall clock — and everything after it can fail. S
 here means a failure at the Writer costs you the Writer, not the whole run. It is
 what makes `ppn write --dossier …` possible.
 
+On a corpus run it also repairs before it saves — see
+[writing from your own sources](#workflow-2c--writing-from-your-own-sources).
+
 ---
 
 ## The source loop
@@ -461,6 +464,92 @@ Researcher to fix only what was flagged: replace fabricated or unreachable URLs,
 add corroborating official sources for the named claims, remove or downgrade
 unsupportable claims — and *not* to expand scope. Then return the complete
 corrected dossier.
+
+---
+
+## Workflow 2c — writing from your own sources
+
+Sometimes the author already knows what the post is and which pages it rests on.
+`ppn write-brief`, and the **Custom** mode of the app's Write dialog, take a brief
+in his own words and build the draft from the links inside it — **and from nothing
+else**.
+
+It is the same graph. No node is added and no counter is added; two agents are
+built differently and one gate does more work.
+
+### The topic comes first, upstream
+
+`topic_from_brief()` is a single cheap model call, not a stage of the post
+pipeline — the same relationship topic discovery has to it. The `brief_interpreter`
+reads the brief and returns a `TopicSuggestion`: title, angle, reader problem,
+format. Then code has the last word:
+
+- `seed_sources` is **overwritten** with the links read out of the brief in Python.
+  The agent is told not to write a URL at all, and whatever it writes is discarded,
+  so a run cannot end up resting on a URL the operator never typed.
+- `watch_area` and `post_format` are clamped to the configured taxonomy, falling
+  back to the first entry rather than reaching a prompt that lists the real ones.
+
+The brief is then *also* handed on as editor instructions, so it reaches the
+Outliner and the Writer verbatim. It decided what the post is; it should still be
+steering what the post argues.
+
+### The Researcher has nowhere else to go
+
+`build_researcher(corpus_only=True)` gives it `fetch_page`, `search_existing_posts`
+and the date. Nothing else. The list bypasses `_searchable()` rather than filtering
+it, because `_searchable()` is what attaches Foundry's *server-side* web search — a
+tool list that merely dropped the local `web_search` function would still leave the
+model able to search, and the guarantee would be prose rather than a fact.
+`search_existing_posts` stays because it reads this blog's own archive for internal
+links, which is not outside research.
+
+Its prompt is a different prompt, not the standard one with a paragraph bolted on:
+the corpus is the ceiling, anything the pages do not support goes to
+`open_questions`, and a gap is never filled from the model's own knowledge.
+
+### The dossier is confined in code
+
+`repair_corpus_citations()` — pure, testable, the same shape of repair as
+`repair_outline`. Any citation whose URL is not in the corpus is dropped; any claim
+left with nothing behind it goes with it; every drop is recorded in the dossier's
+`warnings` and logged. There is no loop back, for the same reason the outline gate
+has none: a citation from outside the corpus is not a source that needs
+re-checking, because the Researcher had no way to reach it.
+
+It runs *before* the save, so `research/` holds what the pipeline actually used and
+`ppn write --dossier` resumes from research that is already corpus-pure.
+
+### What the source check can still ask
+
+Three policy rules are suspended, and only these three: `min_average_trust`,
+`min_sources_per_critical_claim` and `require_official_for_critical`. They are
+removed from the policy the prompt renders, not merely waived in prose. Each asks a
+question the operator already answered — *is this source good enough?* — and none of
+them can be met by a fixed handful of pages. Left in, they fail every round, spend
+the source budget, and hand the Researcher orders it cannot carry out.
+
+Everything else is unchanged and matters more than usual, because there is no
+second source to catch a mistake: the URL must resolve, the excerpt must genuinely
+be on the page, and a claim that outruns its one source is a blocker. The checker
+also keeps its own search tools — the one thing it can find that the Researcher
+cannot act on, an official page contradicting a supplied one, is exactly the
+warning worth having, and it arrives as an `<unresolved_source_issues>` block the
+Writer is shown rather than as an endless loop.
+
+### Proved before it is queued
+
+The server fetches every link before the run is enqueued and answers a 422 listing
+the dead ones, so a typo costs a second rather than forty minutes. `allow_unreachable`
+starts it anyway and **keeps** the dead link in the corpus: the Researcher records
+what it could not read, which is more honest than a silently shorter list. Links
+that do resolve are replaced by where they landed, so a redirect does not later read
+as a citation from outside the corpus.
+
+What all this costs is corroboration. A post built this way is exactly as good as
+the pages behind it, and the crew can no longer catch a wrong claim in one of them
+by checking it against a second. That is the operator's decision to make, which is
+why it is a mode and not a default.
 
 ---
 

@@ -1250,3 +1250,119 @@ def test_minor_findings_reach_the_writer():
     assert "E05" in text and "add two" in text
     assert "T03" not in text, "info never deducts and never blocks"
     assert text.index("S02") < text.index("E05"), "minors stay subordinate"
+
+
+# ---------------------------------------------------------------------------
+# Writing from the operator's own sources
+# ---------------------------------------------------------------------------
+
+
+def test_a_corpus_researcher_has_no_way_to_search():
+    """The guard the whole corpus-only mode rests on.
+
+    Filtering `RESEARCHER_TOOLS` would not be enough — `_searchable` is what
+    attaches Foundry's server-side search — so what is asserted here is the
+    absence of *any* route to the open web, not the absence of one function.
+    """
+    from ppn_blogger.agents import build_researcher
+
+    clients = stub_clients()
+    settings = get_settings()
+
+    def tool_names(agent):
+        return {getattr(t, "name", "") for t in agent.default_options.get("tools", [])}
+
+    confined = tool_names(build_researcher(settings, clients, corpus_only=True))
+    assert confined == {"fetch_page", "search_existing_posts", "today"}
+
+    ordinary = tool_names(build_researcher(settings, clients))
+    assert "search_microsoft_learn" in ordinary
+    assert "read_feeds" in ordinary
+
+
+@pytest.mark.asyncio
+async def test_a_brief_becomes_a_topic_confined_to_its_links():
+    """The interpreter decides what the post is; code decides what it may read.
+
+    The stub answers with an invented `seed_sources` URL and a `post_format`
+    outside the profile, so this walks the clamp rather than the happy path.
+    """
+    from ppn_blogger.workflows import topic_from_brief
+
+    settings = get_settings()
+    brief = (
+        "Write up the elastic tables limits from https://learn.microsoft.com/a/elastic "
+        "and https://example.com/notes, focusing on what stops working."
+    )
+    topic, corpus = await topic_from_brief(brief, clients=stub_clients())
+
+    assert corpus == ["https://learn.microsoft.com/a/elastic", "https://example.com/notes"]
+    assert topic.seed_sources == corpus, "the model's own URL must not survive"
+
+    # A caller that worked the corpus out itself is believed, and the brief is
+    # not read for links a second time — that is what keeps a resolved link from
+    # arriving alongside the spelling it was resolved from.
+    _, given = await topic_from_brief(
+        brief, ["https://example.org/only-this"], clients=stub_clients()
+    )
+    assert given == ["https://example.org/only-this"]
+    assert "https://example.invalid/never-supplied" not in topic.seed_sources
+    assert topic.watch_area in {a["id"] for a in settings.watch_areas}
+    assert topic.post_format in {f["id"] for f in settings.blog_profile["post_formats"]}
+    assert topic.slug
+
+
+def test_a_dossier_is_confined_to_the_corpus_deterministically():
+    from ppn_blogger.executors import repair_corpus_citations
+    from ppn_blogger.models import Citation, Claim, ResearchDossier
+
+    dossier = ResearchDossier(
+        topic_title="t",
+        primary_keyword="k",
+        post_format="analysis",
+        summary="s",
+        citations=[
+            # Supplied as http, without the trailing slash: the same page.
+            Citation(id="S1", title="mine", url="https://example.com/page/"),
+            Citation(id="S2", title="not mine", url="https://elsewhere.example/x"),
+        ],
+        claims=[
+            Claim(id="C1", statement="from the corpus", citation_ids=["S1", "S2"]),
+            Claim(id="C2", statement="from nowhere", citation_ids=["S2"]),
+            Claim(id="C3", statement="from memory", citation_ids=[]),
+        ],
+    )
+    repaired = repair_corpus_citations(dossier, ["http://example.com/page"])
+
+    assert [c.id for c in repaired.citations] == ["S1"]
+    assert [c.id for c in repaired.claims] == ["C1"]
+    assert repaired.claims[0].citation_ids == ["S1"]
+    assert len(repaired.warnings) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_corpus_run_writes_a_draft_that_cites_only_the_corpus(tmp_path, monkeypatch):
+    settings = get_settings()
+    for attr in ("topics_dir", "output_dir", "research_dir"):
+        monkeypatch.setattr(settings.run, attr, tmp_path)
+
+    from ppn_blogger.models import ResearchDossier
+    from ppn_blogger.workflows import topic_from_brief
+
+    clients = stub_clients(exercise_loops=False)
+    corpus_url = "https://example.com/the-one-page"
+    topic, corpus = await topic_from_brief(f"Write this up from {corpus_url}", clients=clients)
+
+    package = await write_post(
+        topic, clients=clients, push_to_wordpress=False, source_corpus=corpus
+    )
+    assert isinstance(package, PostPackage)
+
+    saved = ResearchDossier.model_validate_json(
+        Path(package.dossier_path).read_text(encoding="utf-8")
+    )
+    assert [c.url for c in saved.citations] == [corpus_url]
+    assert saved.warnings, "a dropped citation must say so on the artefact"
+    # Nothing may be left resting on a source the operator never supplied.
+    kept = {c.id for c in saved.citations}
+    assert all(set(claim.citation_ids) <= kept for claim in saved.claims)

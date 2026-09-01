@@ -315,11 +315,20 @@ def build_post_workflow(
     notes_text: str = "",
     extra_instructions: str = "",
     dossier_path: str = "",
+    source_corpus: list[str] | None = None,
 ) -> PostWorkflow:
     settings = settings or get_settings()
     clients = clients or default_clients()
+    # A corpus is the operator's decision that this post rests on these pages and
+    # no others. It reshapes two agents rather than adding a stage: the Researcher
+    # loses every way of reaching anything else, and the Source Checker stops
+    # measuring against rules a fixed corpus cannot meet.
+    corpus = list(source_corpus or [])
     state = RunState(
-        notes_text=notes_text, extra_instructions=extra_instructions, dossier_path=dossier_path
+        notes_text=notes_text,
+        extra_instructions=extra_instructions,
+        dossier_path=dossier_path,
+        source_corpus=corpus,
     )
 
     brief = BriefBuilder(state, settings)
@@ -330,9 +339,14 @@ def build_post_workflow(
     )
     normalizer = AgentExecutor(A.build_notes_normalizer(settings, clients), id=A.NOTES_NORMALIZER)
     notes_gate = NotesGate(state)
-    researcher = AgentExecutor(A.build_researcher(settings, clients), id=A.RESEARCHER)
+    researcher = AgentExecutor(
+        A.build_researcher(settings, clients, corpus_only=bool(corpus)), id=A.RESEARCHER
+    )
     dossier_gate = DossierGate(state)
-    source_checker = AgentExecutor(A.build_source_checker(settings, clients), id=A.SOURCE_CHECKER)
+    source_checker = AgentExecutor(
+        A.build_source_checker(settings, clients, operator_sourced=bool(corpus)),
+        id=A.SOURCE_CHECKER,
+    )
     source_gate = SourceGate(state, settings)
     outliner = AgentExecutor(A.build_outliner(settings, clients), id=A.OUTLINER)
     outline_gate = OutlineGate(state, settings)
@@ -403,6 +417,75 @@ def build_post_workflow(
     return PostWorkflow(workflow=workflow, state=state, finalizer=finalizer)
 
 
+async def topic_from_brief(
+    brief: str,
+    sources: list[str] | None = None,
+    *,
+    settings: Settings | None = None,
+    clients: ClientBundle | None = None,
+) -> tuple[TopicSuggestion, list[str]]:
+    """Turn an operator's own brief into a topic and the corpus it names.
+
+    Upstream of the post pipeline, not part of it — the same relationship topic
+    discovery has to it, and the reason this is a plain agent call rather than a
+    node: the write graph is about turning *a topic* into a draft, and drawing
+    two more boxes on its canvas for every ordinary run would be a worse trade
+    than the one log line this costs.
+
+    The links are code, never judgement. They are read out of the brief in
+    Python, `seed_sources` is overwritten with exactly that list, and the model's
+    own answer for that field is discarded — so a run cannot end up resting on a
+    URL the operator never wrote. The taxonomy is clamped the same way: an
+    invented watch area or post format becomes the configured fallback rather
+    than reaching a prompt that lists the real ones.
+    """
+    from .util import extract_urls, parse_model, slugify, user_message
+
+    settings = settings or get_settings()
+    clients = clients or default_clients()
+
+    # A caller that has already worked the corpus out wins: the server fetches
+    # every link before it queues the run and replaces each with where it landed,
+    # and re-reading the brief here would put the unresolved spellings back
+    # alongside the resolved ones — the same page, twice, one of them a stranger
+    # to the citation check.
+    corpus = list(sources) if sources else extract_urls(brief)
+
+    listing = "\n".join(f"- {url}" for url in corpus) or "- (none)"
+    prompt = (
+        "The author wants this post. Turn it into one TopicSuggestion.\n\n"
+        f"<brief>\n{brief.strip()}\n</brief>\n\n"
+        "<supplied_sources>\nThese are the only pages the post may be built from. "
+        "They are attached by code — do not repeat them in your answer.\n"
+        f"{listing}\n</supplied_sources>"
+    )
+    agent = A.build_brief_interpreter(settings, clients)
+    topic = parse_model(await agent.run([user_message(prompt)]), TopicSuggestion)
+
+    # Config order, not set order: the fallback has to be the same one every run,
+    # and the profiles list the general-purpose entry first for exactly this.
+    areas = [a["id"] for a in settings.watch_areas]
+    formats = [f["id"] for f in settings.blog_profile.get("post_formats", []) if f.get("id")]
+    topic = topic.model_copy(
+        update={
+            "seed_sources": corpus,
+            "slug": slugify(topic.slug or topic.title),
+            "watch_area": topic.watch_area if topic.watch_area in areas else (areas or [""])[0],
+            "post_format": (
+                topic.post_format if topic.post_format in formats else (formats or ["analysis"])[0]
+            ),
+        }
+    )
+    logger.info(
+        "brief interpreted: %r (%s / %s), %d source(s)",
+        topic.title,
+        topic.watch_area,
+        topic.post_format,
+        len(corpus),
+    )
+    return topic, corpus
+
+
 async def write_post(
     topic: TopicSuggestion,
     *,
@@ -413,6 +496,7 @@ async def write_post(
     translate: bool | None = None,
     notes_text: str = "",
     extra_instructions: str = "",
+    source_corpus: list[str] | None = None,
     on_event: Any = None,
 ) -> PostPackage:
     built = build_post_workflow(
@@ -423,6 +507,7 @@ async def write_post(
         translate=translate,
         notes_text=notes_text,
         extra_instructions=extra_instructions,
+        source_corpus=source_corpus,
     )
 
     if on_event is None:

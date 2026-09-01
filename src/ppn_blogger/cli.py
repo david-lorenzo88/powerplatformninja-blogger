@@ -619,6 +619,70 @@ def write(
     _report(package)
 
 
+@app.command("write-brief")
+def write_brief(
+    text: str = typer.Option("", "--text", help="The brief, with the links to use inside it."),
+    file: Path | None = typer.Option(
+        None, "--file", "-f", help="Read the brief from a file instead of --text."
+    ),
+    source: list[str] = typer.Option(
+        [], "--source", help="A link outside the brief text. Repeatable."
+    ),
+    push: bool | None = typer.Option(None, "--push/--no-push"),
+    cover: bool | None = typer.Option(None, "--cover/--no-cover"),
+    translate: bool | None = typer.Option(
+        None, "--translate/--no-translate", help="Also produce the Spanish version."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Write a post from your own brief, built only from the links it names.
+
+    No topic discovery and no open-web research: the crew reads the pages you
+    give it and nothing else, so what the post can say is bounded by what those
+    pages say.
+    """
+    setup_logging()
+    from .util import extract_urls
+    from .workflows import topic_from_brief, write_post
+
+    brief = file.read_text(encoding="utf-8") if file else text
+    if not brief.strip():
+        raise typer.BadParameter("Pass a brief with --text or --file.")
+
+    clients = _clients(dry_run)
+    corpus = extract_urls(brief)
+    for url in source:
+        if url not in corpus:
+            corpus.append(url)
+    if not corpus:
+        raise typer.BadParameter(
+            "The brief names no links. A corpus run has nothing to read without them."
+        )
+    topic, _ = asyncio.run(topic_from_brief(brief, corpus, clients=clients))
+    console.print(
+        Panel(
+            f"[bold]{topic.title}[/]\n\n{topic.angle}\n\n"
+            + "\n".join(f"· {url}" for url in corpus),
+            title="Writing from your sources",
+        )
+    )
+    package = _run_with_progress(
+        lambda on_event: write_post(
+            topic,
+            clients=clients,
+            push_to_wordpress=push,
+            make_cover=False if dry_run else cover,
+            translate=translate,
+            extra_instructions=brief.strip(),
+            source_corpus=corpus,
+            on_event=on_event,
+        ),
+        timeout_minutes=get_settings().run.write_timeout_minutes,
+        what="write",
+    )
+    _report(package)
+
+
 @app.command("write-topic")
 def write_topic(
     title: str = typer.Option(..., "--title", help="Working title."),

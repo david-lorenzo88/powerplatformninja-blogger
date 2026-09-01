@@ -289,12 +289,40 @@ def _topic_set() -> TopicSuggestionSet:
     )
 
 
-def _dossier(clean: bool) -> ResearchDossier:
+def _brief_topic() -> TopicSuggestion:
+    """Canned brief interpretation, deliberately wrong in the two ways it can be.
+
+    It answers with a `seed_sources` URL nobody supplied and a `post_format` that
+    is not in the profile, so every dry run walks the clamp in `topic_from_brief`
+    rather than only the happy path. Same reasoning as the newsletter stub
+    inventing a link id.
+    """
+    return TopicSuggestion(
+        title="Reading the operator's own sources",
+        slug="operator-brief",
+        watch_area="not-a-watch-area",
+        post_format="listicle",
+        primary_keyword="operator brief",
+        angle="What the supplied pages actually establish.",
+        problem_statement="The author has the sources and wants the post written from them.",
+        why_now="Requested directly by the author.",
+        key_questions=["What do the supplied pages say?"],
+        seed_sources=["https://example.invalid/never-supplied"],
+        novelty="Author-selected corpus.",
+        audience_fit=4,
+        timeliness=3,
+        effort=3,
+        score=75.0,
+    )
+
+
+def _dossier(clean: bool, corpus_url: str = "") -> ResearchDossier:
     citations = [
         Citation(
             id="S1",
             title="Elastic tables overview",
-            url="https://learn.microsoft.com/en-us/power-apps/developer/data-platform/elastic-tables",
+            url=corpus_url
+            or "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/elastic-tables",
             publisher="Microsoft",
             published="2026-05-12",
             tier="official",
@@ -698,9 +726,15 @@ class StubChatClient(BaseChatClient):
             return _author_claims()
         if model is TopicSuggestionSet:
             return _topic_set()
+        if model is TopicSuggestion:
+            return _brief_topic()
         if model is ResearchDossier:
             n = self._bump("dossier")
-            return _dossier(clean=not self._exercise_loops or n > 1)
+            # A corpus run is told so by its own brief, and the canned dossier
+            # follows it: one citation inside the corpus, one outside, so the
+            # repair in DossierGate both keeps and drops on every dry run.
+            corpus = _first_url(full) if "The complete corpus" in full else ""
+            return _dossier(clean=not self._exercise_loops or n > 1, corpus_url=corpus)
         if model is SourceVerdict:
             n = self._bump("source")
             return _source_verdict(passed=not self._exercise_loops or n > 1)
@@ -810,6 +844,13 @@ class StubChatClient(BaseChatClient):
             )
 
         return _complete()
+
+
+def _first_url(text: str) -> str:
+    from .util import extract_urls
+
+    urls = extract_urls(text)
+    return urls[0] if urls else ""
 
 
 def _chunks(text: str, size: int = 400) -> list[str]:

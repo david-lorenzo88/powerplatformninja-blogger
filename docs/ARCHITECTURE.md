@@ -65,13 +65,23 @@ Base: `/api`
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/runs/suggest` | `{instruction, label, explore}` → `202 {id}`. `explore: true` enqueues kind `explore` instead of `suggest`. |
-| `POST` | `/runs/write` | `{topic, push, cover, translate, label}` → `202 {id}` |
+| `POST` | `/runs/write` | `{topic \| brief, sources, allow_unreachable, instructions, push, cover, translate, label}` → `202 {id}` |
 | `POST` | `/runs/cover` | `{path, concept}` → `202 {id}` |
 | `GET` | `/runs?status=&limit=` | newest first |
 | `GET` | `/runs/{id}` | run + `nodes` (derived per-executor status) + `usage` |
 | `GET` | `/runs/{id}/usage` | `{total, agents[]}` — the per-agent cost breakdown |
 | `POST` | `/runs/{id}/cancel` | works on queued *and* running |
 | `GET` | `/runs/{id}/events?after=N` | **SSE** |
+
+`/runs/write` takes **either** a `topic` — one the crew proposed — **or** a
+`brief` in the operator's own words, and 422s on both or neither. A brief is a
+corpus run: the links in it (plus any in `sources`) are the only pages the post
+may be built from. They are fetched before the run is queued, so a 422 listing
+dead links is the normal answer to a typo; `allow_unreachable` starts it anyway
+and keeps the dead link in the corpus, because the crew reporting what it could
+not read beats a silently shorter list. Reachable links are replaced by where
+they actually landed, and the interpreted topic is written back onto the run's
+`params` so the UI can show what it decided.
 
 Statuses: `queued · running · succeeded · failed · cancelled · interrupted`.
 `interrupted` is applied at startup to runs a crash left mid-flight.

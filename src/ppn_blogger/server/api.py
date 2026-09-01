@@ -246,7 +246,17 @@ class SuggestRequest(BaseModel):
 
 
 class WriteRequest(BaseModel):
-    topic: dict[str, Any]
+    # Two ways to start a post, and exactly one of them per request. A `topic`
+    # comes from a discovery run and researches the open web from there. A
+    # `brief` is the operator's own words, and the links in it are the *whole*
+    # corpus: the crew reads those pages and nothing else.
+    topic: dict[str, Any] | None = None
+    brief: str = ""
+    # Links that belong to the corpus but were not written inside the brief.
+    sources: list[str] = Field(default_factory=list)
+    # A dead link in a corpus run is missing corpus, not a slow start, so the
+    # links are proved before anything is queued. This is the deliberate override.
+    allow_unreachable: bool = False
     # What the operator wants this post to be. It reaches the Outliner, where it
     # outranks the topic's own angle, and is recorded on version 1 so a later
     # regeneration inherits it through the ordinary guidance history.
@@ -290,19 +300,72 @@ async def start_suggest(body: SuggestRequest) -> dict[str, str]:
 
 @router.post("/runs/write", status_code=202)
 async def start_write(body: WriteRequest) -> dict[str, str]:
-    label = body.label or body.topic.get("title", "Post")
-    run_id = await manager().enqueue(
-        "write",
-        {
-            "topic": body.topic,
-            "instructions": body.instructions,
-            "push": body.push,
-            "cover": body.cover,
-            "translate": body.translate,
-        },
-        label,
-    )
+    brief = body.brief.strip()
+    if bool(body.topic) == bool(brief):
+        raise HTTPException(422, "Send either a topic or a brief — one of the two, not both.")
+
+    params: dict[str, Any] = {
+        "instructions": body.instructions,
+        "push": body.push,
+        "cover": body.cover,
+        "translate": body.translate,
+    }
+    if brief:
+        params["brief"] = brief
+        params["sources"] = await _corpus(brief, body.sources, body.allow_unreachable)
+        label = body.label or brief.splitlines()[0][:60]
+    else:
+        params["topic"] = body.topic
+        label = body.label or (body.topic or {}).get("title", "Post")
+
+    run_id = await manager().enqueue("write", params, label)
     return {"id": run_id}
+
+
+async def _corpus(brief: str, extra: list[str], allow_unreachable: bool) -> list[str]:
+    """The links a brief run is built from, proved before the run is queued.
+
+    Two things happen here that cannot happen later. A brief with no links has no
+    corpus at all, so it is refused outright rather than researched from nothing.
+    And every link is fetched now: a 404 discovered forty minutes in is a post
+    resting on less than the operator thinks, whereas a 404 discovered here is a
+    typo he can fix. `allow_unreachable` is the override, and it keeps the dead
+    link in the corpus — the Researcher records what it could not read, which is
+    more honest than quietly shortening the list.
+
+    Reachable links are replaced by where they actually landed, so a redirect
+    (http to https, a locale added) does not read as a source from outside the
+    corpus when the citations are checked against it.
+    """
+    from ..tools import probe_url
+    from ..util import extract_urls
+
+    urls = extract_urls(brief)
+    for url in extract_urls(" ".join(extra)):
+        if url not in urls:
+            urls.append(url)
+    if not urls:
+        raise HTTPException(
+            422, "A brief needs at least one link — it is the only thing the post can be built from."
+        )
+
+    records = await asyncio.gather(*(probe_url(u) for u in urls[:20]))
+    dead = [
+        f"{url} ({record.get('status') or record.get('error', 'no response')})"
+        for url, record in zip(urls, records, strict=True)
+        if not record["ok"]
+    ]
+    if dead and not allow_unreachable:
+        raise HTTPException(
+            422,
+            "These links did not resolve: "
+            + "; ".join(dead)
+            + ". Fix them, or start anyway to run without them.",
+        )
+    return [
+        record["final_url"] if record["ok"] else url
+        for url, record in zip(urls, records, strict=True)
+    ]
 
 
 @router.post("/runs/cover", status_code=202)

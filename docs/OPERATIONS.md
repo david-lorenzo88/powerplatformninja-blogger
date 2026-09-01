@@ -163,6 +163,35 @@ ppn write-topic \
 
 `--source` and `--question` are repeatable.
 
+#### `ppn write-brief`
+
+Write a post from your own brief, built **only** from the links inside it. No
+topic discovery, and no open-web research: the crew reads those pages and nothing
+else.
+
+```bash
+ppn write-brief --text "What the new routing limits mean for admins.
+https://learn.microsoft.com/power-platform/admin/...
+https://someblog.example/what-broke" --no-push
+```
+
+`--file` reads the brief from a file instead; `--source` adds a link that is not
+written in the brief text and is repeatable.
+
+The brief does two jobs: a cheap model call turns it into the topic record the
+pipeline needs (title, angle, format — clamped to the configured taxonomy), and
+the text itself reaches the Outliner and the Writer as editor instructions, so it
+steers what the post argues.
+
+What it costs you is corroboration. A fixed corpus cannot satisfy
+`min_sources_per_critical_claim` or `require_official_for_critical`, so those
+rules and the trust average are suspended for the run — the Source Checker still
+verifies that every URL resolves, that every excerpt is genuinely on the page, and
+that no claim says more than its page does. Anything the corpus does not answer
+comes back in `open_questions` rather than being filled in from the model's own
+knowledge, and any citation from outside the corpus is dropped before the draft is
+planned.
+
 #### `ppn run`
 
 `suggest` then `write` on the top-ranked suggestion, unattended. Takes an hour or
