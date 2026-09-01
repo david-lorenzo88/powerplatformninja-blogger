@@ -190,6 +190,9 @@ class ResearchDossier(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     suggested_outline: list[str] = Field(default_factory=list)
     internal_link_candidates: list[str] = Field(default_factory=list)
+    # Filled by the gate, never by the Researcher: a deterministic repair records
+    # itself here, exactly as OutlineGate does on the outline it repaired.
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

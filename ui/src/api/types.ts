@@ -409,7 +409,14 @@ export interface Topic {
 }
 
 export interface WriteRequest {
-  topic: Topic
+  // Exactly one of `topic` and `brief`. A topic comes from a discovery run and
+  // researches outward from there; a brief is the operator's own words, and the
+  // links in it are the whole corpus — the crew reads those pages and no others.
+  topic?: Topic
+  brief?: string
+  sources?: string[]
+  // The links are fetched before the run is queued; this starts it anyway.
+  allow_unreachable?: boolean
   // Steers the draft. Reaches the Outliner, where it outranks the topic's own
   // angle, so it decides scope rather than only prose.
   instructions?: string

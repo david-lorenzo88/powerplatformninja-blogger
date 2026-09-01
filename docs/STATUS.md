@@ -520,8 +520,46 @@ self-reported integer, cross-run duplicate detection wired to
 
 ---
 
+## Writing from your own sources (new)
+
+A second way to start a post, for when the author already knows what it is and
+which pages it rests on: `ppn write-brief`, and the **Custom** mode of the Write
+dialog. The brief's links are the whole corpus — the crew reads them and nothing
+else. Full reasoning in
+[HOW-IT-WORKS](HOW-IT-WORKS.md#workflow-2c--writing-from-your-own-sources).
+
+- **One cheap call turns the brief into a topic**, and code has the last word:
+  `seed_sources` is overwritten with the links read out of the brief in Python, and
+  the taxonomy is clamped to the configured ids. The interpreter is never asked for
+  a URL and cannot contribute one.
+- **The Researcher loses every route to the open web** — the tool list bypasses
+  `_searchable()` rather than filtering it, so the hosted search tool is not
+  attached either. A test asserts the whole tool set, and it is the guard the mode
+  rests on.
+- **`repair_corpus_citations()`** drops any citation from outside the corpus and any
+  claim left unsupported, before the dossier is saved. Deterministic, no new loop,
+  no new counter.
+- **Three source-policy rules are suspended and only those three** — the trust
+  average, the source count for a critical claim, and the official-source
+  requirement. Reachability, excerpt accuracy and "no claim beyond its page" are
+  unchanged and matter more.
+- **Links are proved before the run is queued**: a 422 lists the dead ones,
+  `allow_unreachable` overrides, and reachable links are stored as where they
+  actually landed.
+
+Verified offline: 332 tests, ruff clean, `npm run build` and oxlint clean, and a
+full `ppn write-brief --dry-run` walks the whole pipeline.
+
+**Not yet done:** never run against a real model or real pages. The first live run
+is the interesting one — what a corpus-only dossier looks like when the pages are
+thin is exactly what cannot be learned from the stub.
+
+---
+
 ## Still open / not yet exercised
 
+- **A corpus run against real pages** — `write-brief` and the Custom mode are
+  exercised offline only.
 - **`write` run through the server/UI** — only the CLI has done a real write. Drive one
   from the Runs screen to prove the writer/validator streaming and the Drafts publish.
 - **The Translator** — wired, unit-tested against the stub, never run for real.

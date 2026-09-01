@@ -58,7 +58,7 @@ src/ppn_blogger/
                     (channels.py, delivery.py), feed discovery (discovery.py)
                     and cost (usage_store.py, prices.py)
 config/             editorial policy — the thing you actually tune
-tests/              313 tests, offline; conftest.py picks the DB backend
+tests/              332 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -71,7 +71,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 313 tests, ~45s, no network, no credentials
+pytest                      # 332 tests, ~50s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -79,6 +79,7 @@ ppn preflight               # 2 cheap real model calls; detects temperature supp
 ppn suggest --dry-run       # whole graph offline
 ppn suggest --explore --dry-run --yes   # wide sweep + source approval, offline
 ppn write --index 1 --dry-run
+ppn write-brief --text "... https://a-page" --dry-run  # your links, and only them
 ppn news validate <url>     # is there a feed there? (no model, no writes)
 ppn news add <url>          # register a feed, after confirming it is one
 ppn news discover "<brief>" # search the web for feeds matching a brief, then approve
@@ -177,6 +178,18 @@ operator approves is a faithful record of where the scouts went — never a mode
 account of it. `ScoutReplay` is the single place that filters to approved sites;
 keep it that way, or "the editor only ever sees approved sources" stops being an
 invariant and becomes a hope.
+
+**A brief's links are the corpus, and code decides what is in it.** `write-brief`
+and the UI's Custom mode build a post from the operator's own pages and no others.
+The links are read out of the brief in Python and *overwrite* whatever the brief
+interpreter answered, so a run cannot rest on a URL nobody typed; the Researcher is
+built without `_searchable()` rather than with a filtered tool list, because
+`_searchable()` is what attaches the hosted search tool and filtering it would leave
+the guarantee as prose; and `repair_corpus_citations` drops anything from outside the
+corpus before the dossier is saved. Exactly three source-policy rules are suspended
+for such a run — the trust average, the per-claim source count, and the
+official-source requirement — because a human already answered what they ask and a
+fixed corpus cannot satisfy them. Nothing else relaxes.
 
 **Nothing downstream of research may destroy research.** `DossierGate` writes the
 dossier to `research/` before sending it on, which is what makes

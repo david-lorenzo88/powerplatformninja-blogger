@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,7 @@ async def api(tmp_path, monkeypatch, database_url):
     real_discover, real_write = wf.discover_topics, wf.write_post
     real_write_from_dossier = wf.write_post_from_dossier
     real_explore, real_shortlist = wf.explore_sources, wf.shortlist_from_sources
+    real_topic_from_brief = wf.topic_from_brief
 
     async def stub_discover(instruction="", **kw):
         kw.setdefault("clients", stub_clients(exercise_loops=False))
@@ -65,6 +67,11 @@ async def api(tmp_path, monkeypatch, database_url):
         kw["make_cover"] = False
         return await real_write_from_dossier(topic, dossier, **kw)
 
+    async def stub_topic_from_brief(brief, sources=None, **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        return await real_topic_from_brief(brief, sources, **kw)
+
+    monkeypatch.setattr(wf, "topic_from_brief", stub_topic_from_brief)
     monkeypatch.setattr(wf, "discover_topics", stub_discover)
     monkeypatch.setattr(wf, "write_post", stub_write)
     monkeypatch.setattr(wf, "write_post_from_dossier", stub_write_from_dossier)
@@ -333,6 +340,88 @@ async def test_write_run_produces_a_reviewable_draft(api):
     edited = detail["markdown"] + "\n\nEdited in the UI.\n"
     assert (await api.put(f"/api/drafts/{name}", json={"markdown": edited})).status_code == 200
     assert "Edited in the UI." in (await api.get(f"/api/drafts/{name}")).json()["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_a_brief_run_is_built_only_from_the_links_it_names(api, monkeypatch, tmp_path):
+    """The whole promise of the custom mode, end to end.
+
+    The brief's link is offered as `http` and redirects; what the pipeline is
+    given is where it actually landed, so the citation the crew brings back is
+    recognised as part of the corpus rather than dropped as a stranger.
+    """
+    from ppn_blogger import tools
+
+    async def fake_probe(url):
+        return {"ok": True, "status": 200, "final_url": url.replace("http://", "https://")}
+
+    monkeypatch.setattr(tools, "probe_url", fake_probe)
+
+    body = {
+        "brief": "Write up what changes for admins, from http://example.com/the-page",
+        "push": False,
+    }
+    run_id = (await api.post("/api/runs/write", json=body)).json()["id"]
+    finished = await _wait_for(api, run_id, timeout=90)
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    # The corpus was resolved to where the link actually goes, and the topic the
+    # interpreter produced was recorded on the run rather than left implicit.
+    assert finished["params"]["sources"] == ["https://example.com/the-page"]
+    assert finished["params"]["topic"]["seed_sources"] == ["https://example.com/the-page"]
+
+    from ppn_blogger.models import ResearchDossier
+
+    dossier = ResearchDossier.model_validate_json(
+        Path(finished["result"]["dossier_path"]).read_text(encoding="utf-8")
+    )
+    assert [c.url for c in dossier.citations] == ["https://example.com/the-page"]
+
+
+@pytest.mark.asyncio
+async def test_a_brief_needs_links_and_a_topic_run_needs_a_topic(api):
+    both = await api.post(
+        "/api/runs/write", json={"topic": {"title": "t"}, "brief": "https://example.com/x"}
+    )
+    assert both.status_code == 422
+
+    neither = await api.post("/api/runs/write", json={})
+    assert neither.status_code == 422
+
+    linkless = await api.post("/api/runs/write", json={"brief": "just write something good"})
+    assert linkless.status_code == 422
+    assert "at least one link" in linkless.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_dead_link_stops_the_run_before_it_costs_anything(api, monkeypatch):
+    from ppn_blogger import tools
+
+    async def fake_probe(url):
+        if "gone" in url:
+            return {"ok": False, "status": 404, "final_url": url}
+        return {"ok": True, "status": 200, "final_url": url}
+
+    monkeypatch.setattr(tools, "probe_url", fake_probe)
+
+    body = {
+        "brief": "From https://example.com/live and https://example.com/gone",
+        "push": False,
+    }
+    refused = await api.post("/api/runs/write", json=body)
+    assert refused.status_code == 422
+    assert "https://example.com/gone" in refused.json()["detail"]
+
+    # Insisting keeps the dead link in the corpus: the crew reports what it could
+    # not read, which is honest about the post resting on less than was asked.
+    started = await api.post("/api/runs/write", json={**body, "allow_unreachable": True})
+    assert started.status_code == 202
+    finished = await _wait_for(api, started.json()["id"], timeout=90)
+    assert finished["status"] == "succeeded", finished.get("error")
+    assert finished["params"]["sources"] == [
+        "https://example.com/live",
+        "https://example.com/gone",
+    ]
 
 
 @pytest.mark.asyncio

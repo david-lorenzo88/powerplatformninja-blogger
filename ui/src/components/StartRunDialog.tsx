@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getRun, listRuns, startSuggest, startWrite } from '../api/client'
+import { ApiError, getRun, listRuns, startSuggest, startWrite } from '../api/client'
 import type { Topic } from '../api/types'
 import { field, label, primaryBtn } from '../lib/ui'
 import { Modal } from './Modal'
@@ -134,28 +134,52 @@ function SourcesForm({ onClose }: { onClose: () => void }) {
   )
 }
 
+// A convenience preview of what the server will read out of the brief, so the
+// operator can see his corpus before he spends a run on it. The server extracts
+// the links again on arrival and that list is the authoritative one — keep this
+// in step with `extract_urls` in util.py.
+const URL_RE = /https?:\/\/[^\s<>"'`\])]+/gi
+
+function extractUrls(text: string): string[] {
+  const found: string[] = []
+  for (const match of text.matchAll(URL_RE)) {
+    const url = match[0].replace(/[.,;:!?'"]+$/, '')
+    if (!found.includes(url)) found.push(url)
+  }
+  return found
+}
+
 function WriteForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
+  // Two ways to start a post. `topic` researches outward from an idea the crew
+  // proposed; `custom` is the operator's own brief, and the links in it are the
+  // entire corpus — the crew reads those pages and nothing else.
+  const [source, setSource] = useState<'topic' | 'custom'>('topic')
   const [runId, setRunId] = useState('')
   const [picked, setPicked] = useState<number | null>(null)
   const [rawJson, setRawJson] = useState('')
   const [useRaw, setUseRaw] = useState(false)
+  const [brief, setBrief] = useState('')
+  const [allowUnreachable, setAllowUnreachable] = useState(false)
   const [push, setPush] = useState(true)
   const [cover, setCover] = useState(true)
   const [translate, setTranslate] = useState(false)
   const [instructions, setInstructions] = useState('')
   const [labelText, setLabelText] = useState('')
 
+  const links = useMemo(() => extractUrls(brief), [brief])
+
   // Completed suggest runs carry a suggestions[] we can launch a write from.
   const suggestRuns = useQuery({
     queryKey: ['runs', 'succeeded'],
     queryFn: () => listRuns({ status: 'succeeded', limit: 50 }),
     select: (runs) => runs.filter((r) => r.kind === 'suggest'),
+    enabled: source === 'topic',
   })
   const runDetail = useQuery({
     queryKey: ['run', runId],
     queryFn: () => getRun(runId),
-    enabled: !!runId && !useRaw,
+    enabled: !!runId && !useRaw && source === 'topic',
   })
   const suggestions = (runDetail.data?.result?.suggestions as Topic[] | undefined) ?? []
 
@@ -167,14 +191,26 @@ function WriteForm({ onClose }: { onClose: () => void }) {
 
   const mut = useMutation({
     mutationFn: () => {
+      const common = { push, cover, translate, label: labelText }
+      if (source === 'custom') {
+        return startWrite({ brief, allow_unreachable: allowUnreachable, ...common })
+      }
       if (!topic) throw new Error('Choose a topic first.')
-      return startWrite({ topic, instructions, push, cover, translate, label: labelText })
+      return startWrite({ topic, instructions, ...common })
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['runs'] })
       onClose()
     },
   })
+
+  // The server proves every link before it queues the run. Offering the override
+  // only once that has actually happened keeps it from reading as an ordinary
+  // option: it is a decision to run on less than was asked for.
+  const unreachable =
+    mut.error instanceof ApiError &&
+    mut.error.status === 422 &&
+    mut.error.message.includes('did not resolve')
 
   return (
     <form
@@ -184,76 +220,149 @@ function WriteForm({ onClose }: { onClose: () => void }) {
       }}
       className="space-y-4"
     >
-      <div className="flex items-center justify-between">
-        <label className={label}>Topic</label>
-        <button
-          type="button"
-          onClick={() => setUseRaw((v) => !v)}
-          className="text-xs text-slate-500 hover:text-accent"
-        >
-          {useRaw ? 'pick from a suggestion' : 'paste topic JSON'}
-        </button>
+      <div className="flex flex-wrap gap-4 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+        <SourceRadio
+          checked={source === 'topic'}
+          onSelect={() => setSource('topic')}
+          title="Topic"
+          hint="One the crew proposed. It researches outward from there."
+        />
+        <SourceRadio
+          checked={source === 'custom'}
+          onSelect={() => setSource('custom')}
+          title="Custom"
+          hint="Your brief. The draft is built only from the links in it."
+        />
       </div>
 
-      {useRaw ? (
-        <textarea
-          className={`${field} h-40 resize-none font-mono text-xs`}
-          placeholder='{"title": "...", "slug": "...", "watch_area": "...", ...}'
-          value={rawJson}
-          onChange={(e) => setRawJson(e.target.value)}
-        />
-      ) : (
-        <div className="space-y-3">
-          <select className={field} value={runId} onChange={(e) => { setRunId(e.target.value); setPicked(null) }}>
-            <option value="">Select a completed discovery run…</option>
-            {suggestRuns.data?.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.label || 'Topic discovery'} — {r.finished_at?.slice(0, 16).replace('T', ' ')}
-              </option>
-            ))}
-          </select>
-          {suggestRuns.data && suggestRuns.data.length === 0 && (
-            <p className="text-xs text-slate-500">
-              No completed discovery runs yet. Run a <span className="text-accent">suggest</span> first,
-              or paste a topic JSON.
+      {source === 'custom' ? (
+        <>
+          <div>
+            <label className={label}>Brief</label>
+            <textarea
+              className={`${field} h-40 resize-none`}
+              placeholder={
+                'What the post should argue, and the pages it must be built from:\n\n' +
+                'https://learn.microsoft.com/…\nhttps://…'
+              }
+              value={brief}
+              onChange={(e) => setBrief(e.target.value)}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              No web search: the crew reads these pages and nothing else, so the post can only
+              say what they say. Anything they leave open comes back as an open question.
             </p>
-          )}
-          {runDetail.isLoading && <p className="text-xs text-slate-500">loading suggestions…</p>}
-          <div className="max-h-52 space-y-1.5 overflow-auto">
-            {suggestions.map((s, i) => (
-              <button
-                type="button"
-                key={i}
-                onClick={() => setPicked(i)}
-                className={`block w-full rounded-lg border px-3 py-2 text-left text-sm ${
-                  picked === i
-                    ? 'border-accent bg-accent/10 text-slate-100'
-                    : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'
-                }`}
-              >
-                <div className="font-medium">{String(s.title)}</div>
-                <div className="mt-0.5 text-xs text-slate-500">
-                  {'score' in s ? `score ${String(s.score)} · ` : ''}
-                  {'watch_area' in s ? String(s.watch_area) : ''}
-                </div>
-              </button>
-            ))}
           </div>
-        </div>
-      )}
+          <div>
+            <label className={label}>Sources found ({links.length})</label>
+            {links.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                Paste at least one link — it is the only thing the post can be built from.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {links.map((url) => (
+                  <li
+                    key={url}
+                    className="truncate rounded-md border border-slate-800 bg-slate-950 px-2 py-1 font-mono text-xs text-slate-400"
+                  >
+                    {url}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {unreachable && (
+            <label className="flex cursor-pointer gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-cyan-400"
+                checked={allowUnreachable}
+                onChange={(e) => setAllowUnreachable(e.target.checked)}
+              />
+              <span className="text-sm">
+                <span className="font-medium text-slate-200">Start anyway</span>
+                <span className="mt-0.5 block text-xs text-slate-500">
+                  The crew will report what it could not read instead of researching around it.
+                </span>
+              </span>
+            </label>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center justify-between">
+            <label className={label}>Topic</label>
+            <button
+              type="button"
+              onClick={() => setUseRaw((v) => !v)}
+              className="text-xs text-slate-500 hover:text-accent"
+            >
+              {useRaw ? 'pick from a suggestion' : 'paste topic JSON'}
+            </button>
+          </div>
 
-      <div>
-        <label className={label}>Instructions (optional)</label>
-        <textarea
-          className={`${field} h-20 resize-none`}
-          placeholder="Focus on the licensing impact, skip the setup walkthrough"
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-        />
-        <p className="mt-1 text-xs text-slate-500">
-          Steers what the post argues, not just how it reads.
-        </p>
-      </div>
+          {useRaw ? (
+            <textarea
+              className={`${field} h-40 resize-none font-mono text-xs`}
+              placeholder='{"title": "...", "slug": "...", "watch_area": "...", ...}'
+              value={rawJson}
+              onChange={(e) => setRawJson(e.target.value)}
+            />
+          ) : (
+            <div className="space-y-3">
+              <select className={field} value={runId} onChange={(e) => { setRunId(e.target.value); setPicked(null) }}>
+                <option value="">Select a completed discovery run…</option>
+                {suggestRuns.data?.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label || 'Topic discovery'} — {r.finished_at?.slice(0, 16).replace('T', ' ')}
+                  </option>
+                ))}
+              </select>
+              {suggestRuns.data && suggestRuns.data.length === 0 && (
+                <p className="text-xs text-slate-500">
+                  No completed discovery runs yet. Run a <span className="text-accent">suggest</span> first,
+                  or paste a topic JSON.
+                </p>
+              )}
+              {runDetail.isLoading && <p className="text-xs text-slate-500">loading suggestions…</p>}
+              <div className="max-h-52 space-y-1.5 overflow-auto">
+                {suggestions.map((s, i) => (
+                  <button
+                    type="button"
+                    key={i}
+                    onClick={() => setPicked(i)}
+                    className={`block w-full rounded-lg border px-3 py-2 text-left text-sm ${
+                      picked === i
+                        ? 'border-accent bg-accent/10 text-slate-100'
+                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="font-medium">{String(s.title)}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">
+                      {'score' in s ? `score ${String(s.score)} · ` : ''}
+                      {'watch_area' in s ? String(s.watch_area) : ''}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className={label}>Instructions (optional)</label>
+            <textarea
+              className={`${field} h-20 resize-none`}
+              placeholder="Focus on the licensing impact, skip the setup walkthrough"
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Steers what the post argues, not just how it reads.
+            </p>
+          </div>
+        </>
+      )}
 
       <div className="flex flex-wrap gap-4 border-t border-slate-800 pt-3">
         <Check label="Push to WordPress" checked={push} onChange={setPush} />
@@ -264,7 +373,7 @@ function WriteForm({ onClose }: { onClose: () => void }) {
         <label className={label}>Label (optional)</label>
         <input
           className={field}
-          placeholder="defaults to the topic title"
+          placeholder={source === 'custom' ? 'defaults to the first line of the brief' : 'defaults to the topic title'}
           value={labelText}
           onChange={(e) => setLabelText(e.target.value)}
         />
@@ -274,9 +383,37 @@ function WriteForm({ onClose }: { onClose: () => void }) {
         pending={mut.isPending}
         error={mut.error}
         label="Start write"
-        disabled={!topic}
+        disabled={source === 'custom' ? links.length === 0 : !topic}
       />
     </form>
+  )
+}
+
+function SourceRadio({
+  checked,
+  onSelect,
+  title,
+  hint,
+}: {
+  checked: boolean
+  onSelect: () => void
+  title: string
+  hint: string
+}) {
+  return (
+    <label className="flex flex-1 cursor-pointer gap-3">
+      <input
+        type="radio"
+        name="write-source"
+        className="mt-0.5 h-4 w-4 accent-[#c084fc]"
+        checked={checked}
+        onChange={onSelect}
+      />
+      <span className="text-sm">
+        <span className="font-medium text-slate-200">{title}</span>
+        <span className="mt-0.5 block text-xs text-slate-500">{hint}</span>
+      </span>
+    </label>
   )
 }
 

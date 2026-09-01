@@ -252,6 +252,31 @@ def _guess_published(html: str) -> str | None:
     return match.group(1)[:10] if match else None
 
 
+async def probe_url(url: str) -> dict[str, Any]:
+    """Does this URL resolve, and where does it end up?
+
+    A plain function rather than only the tool below, because the server asks the
+    same question before it enqueues a run built from operator-supplied links —
+    and finding out forty minutes later that one of them 404s is the failure that
+    is being designed out.
+    """
+    if url in _head_cache:
+        return _head_cache[url]
+    tier, score = classify_domain(url)
+    record: dict[str, Any] = {"ok": False, "status": None, "final_url": url,
+                              "trust_tier": tier, "trust_score": score}
+    try:
+        async with _client() as http:
+            resp = await http.get(url)
+        record["status"] = resp.status_code
+        record["final_url"] = str(resp.url)
+        record["ok"] = resp.status_code < 400
+    except Exception as exc:  # noqa: BLE001
+        record["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+    _head_cache[url] = record
+    return record
+
+
 @tool(name="check_url_reachable")
 async def check_url_reachable(
     urls: Annotated[list[str], "List of absolute URLs to verify."],
@@ -262,26 +287,8 @@ async def check_url_reachable(
     A url with ok=false must never appear in a published post.
     """
     log_tool("check_url_reachable", f"{len(urls)} urls")
-
-    async def probe(url: str) -> tuple[str, dict[str, Any]]:
-        if url in _head_cache:
-            return url, _head_cache[url]
-        tier, score = classify_domain(url)
-        record: dict[str, Any] = {"ok": False, "status": None, "final_url": url,
-                                  "trust_tier": tier, "trust_score": score}
-        try:
-            async with _client() as http:
-                resp = await http.get(url)
-            record["status"] = resp.status_code
-            record["final_url"] = str(resp.url)
-            record["ok"] = resp.status_code < 400
-        except Exception as exc:  # noqa: BLE001
-            record["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-        _head_cache[url] = record
-        return url, record
-
-    pairs = await asyncio.gather(*(probe(u) for u in urls[:30]))
-    return json.dumps(dict(pairs), ensure_ascii=False)
+    records = await asyncio.gather(*(probe_url(u) for u in urls[:30]))
+    return json.dumps(dict(zip(urls[:30], records, strict=True)), ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
