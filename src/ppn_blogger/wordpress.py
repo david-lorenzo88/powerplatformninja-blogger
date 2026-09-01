@@ -448,6 +448,23 @@ def _remembered_id(slug: str) -> int | None:
     return _load_state().get(slug)
 
 
+def remembered_posts() -> dict[str, int]:
+    """Every slug this deployment has pushed, and the post it became.
+
+    ``.ppn_state`` is on the same Azure Files mount as the drafts, so this map
+    outlives a revision — which makes it the one record of "already on
+    WordPress" for a post published before the catalog started writing that
+    down. See ``catalog._backfill_wordpress_ids``.
+    """
+    out: dict[str, int] = {}
+    for slug, post_id in _load_state().items():
+        try:
+            out[slug] = int(post_id)
+        except (TypeError, ValueError):  # a hand-edited file is not a reason to fail
+            continue
+    return out
+
+
 def _remember_id(slug: str, post_id: int) -> None:
     state = _load_state()
     state[slug] = post_id

@@ -191,8 +191,14 @@ The crew's artefacts stay as files; three DB tables (`topic_ideas`, `posts`,
 `draft_versions` in `server/db.py`) index them so the UI can browse the backlog,
 link ideas to the posts they became, and keep a version history.
 `server/catalog.py` owns the tables: it writes rows when a run finishes
-(`record_run_result`, called from `RunManager`) and reconciles existing runs and
-on-disk drafts on first start (`backfill`, idempotent — see the lifespan).
+(`record_run_result`, called from `RunManager`), when a draft is published
+(`record_publish`) or when a cover push discovers where a post lives
+(`record_cover_publish`), and reconciles existing runs and on-disk drafts on
+first start (`backfill`, idempotent — see the lifespan).
+
+`backfill` also fills in `wordpress_post_id` from `.ppn_state/wp_posts.json`
+(`_backfill_wordpress_ids`), which repairs posts published before publishing
+recorded anything. It only ever fills a blank, and needs no network.
 
 | Method | Path | Notes |
 |---|---|---|

@@ -870,6 +870,10 @@ on a post that already exists and writes nothing else. That is what the app's
 **Send to WordPress** button on the Cover tab calls, and what fixes a post whose
 art was regenerated after it was pushed.
 
+The id is resolved the same three ways `upsert_draft` resolves it — given,
+remembered, then looked up by slug — so the button works on a post the catalog
+believes was never published, and writes back what it found.
+
 Default status is `draft` (`WP_DEFAULT_STATUS`). Nothing in this system publishes
 anything.
 
