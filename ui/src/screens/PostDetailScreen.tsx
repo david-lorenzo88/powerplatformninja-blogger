@@ -418,9 +418,11 @@ function CoverPanel({
         <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
           <h3 className="text-sm font-semibold text-slate-200">Featured image on WordPress</h3>
           <p className="mt-1 text-xs text-slate-500">
-            {onWordPress
-              ? 'Uploads this image and sets it as the post’s featured image. The body is left exactly as it is on WordPress.'
-              : 'This post is not on WordPress yet — publish it first and the cover goes with it.'}
+            Uploads this image and sets it as the post’s featured image. The body is left exactly
+            as it is on WordPress.
+            {!onWordPress &&
+              ' This post has no WordPress id recorded here — the server will look it up by slug, ' +
+                'and will say so if there is nothing to attach it to.'}
           </p>
           {send.data && (
             <p className="mt-3 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
@@ -445,7 +447,7 @@ function CoverPanel({
           <div className="mt-3 flex justify-end">
             <button
               onClick={() => send.mutate()}
-              disabled={!onWordPress || send.isPending}
+              disabled={send.isPending}
               className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:border-accent disabled:opacity-40"
             >
               {send.isPending ? 'Sending…' : 'Send to WordPress'}

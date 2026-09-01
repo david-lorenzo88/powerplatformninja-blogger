@@ -170,6 +170,73 @@ async def record_cover_result(params: dict[str, Any], result: dict[str, Any]) ->
         await s.commit()
 
 
+async def record_publish(markdown_file: str, target: dict[str, Any]) -> int | None:
+    """Remember that a draft file reached WordPress. Returns the post row's id.
+
+    Publishing from the app used to tell only the browser: the endpoint returned
+    its ``PublishTarget`` and wrote nothing down, leaving ``record_write_result``
+    the only thing that could set ``wordpress_post_id`` — and that fires only
+    when the *write run itself* pushed. A post published by hand afterwards was
+    live on the blog and "not on WordPress" here, which is exactly the state that
+    disabled the cover's Send-to-WordPress button on the post that needed it.
+
+    Matching is by markdown filename, the same handle the publish endpoint takes,
+    compared in Python rather than with a LIKE — the row count is one per draft
+    version and ``_backfill_draft_files`` already reconciles paths this way.
+    """
+    post_id = target.get("post_id")
+    if not markdown_file or not post_id:
+        return None
+    async with session() as s:
+        rows = (
+            await s.execute(select(DraftVersion).where(DraftVersion.markdown_path != ""))
+        ).scalars().all()
+        version = next(
+            (v for v in rows if Path(v.markdown_path).name == markdown_file), None
+        )
+        if version is None:
+            return None
+        version.wordpress_post_id = int(post_id)
+        version.edit_link = target.get("edit_link", "") or version.edit_link
+
+        post = await s.get(Post, version.post_id)
+        if post is not None:
+            post.wordpress_post_id = int(post_id)
+            post.edit_link = target.get("edit_link", "") or post.edit_link
+            post.link = target.get("link", "") or post.link
+            # The status WordPress itself reported, not one inferred from a link
+            # being present — a draft has a link too (`/?p=1279`).
+            if target.get("status"):
+                post.status = "published" if target["status"] == "publish" else "wordpress_draft"
+            post.updated_at = utcnow()
+        await s.commit()
+        return version.post_id
+
+
+async def record_cover_publish(post_id: int, target: dict[str, Any]) -> None:
+    """Record what sending a cover discovered about where the post lives.
+
+    ``push_cover`` resolves the WordPress post by remembered id and then by slug,
+    so it succeeds on posts this catalog believes are unpublished. When it does,
+    it has just proved the row wrong — write the answer back rather than making
+    the operator publish again to correct it.
+    """
+    wp_id = target.get("post_id")
+    if not wp_id:
+        return
+    async with session() as s:
+        post = await s.get(Post, int(post_id))
+        if post is None:
+            return
+        post.wordpress_post_id = int(wp_id)
+        post.edit_link = target.get("edit_link", "") or post.edit_link
+        post.link = target.get("link", "") or post.link
+        if target.get("status"):
+            post.status = "published" if target["status"] == "publish" else "wordpress_draft"
+        post.updated_at = utcnow()
+        await s.commit()
+
+
 async def _resolve_post(s: Any, params: dict[str, Any], result: dict[str, Any]) -> Post:
     """Find or create the parent post for a write result.
 
@@ -639,13 +706,63 @@ async def backfill() -> None:
     ideas = await _backfill_suggest_runs()
     versions = await _backfill_write_runs()
     files = await _backfill_draft_files()
-    if ideas or versions or files:
+    published = await _backfill_wordpress_ids()
+    if ideas or versions or files or published:
         logger.info(
-            "catalog backfill: %d topic idea(s), %d write run(s), %d file draft(s)",
+            "catalog backfill: %d topic idea(s), %d write run(s), %d file draft(s), "
+            "%d WordPress id(s)",
             ideas,
             versions,
             files,
+            published,
         )
+
+
+async def _backfill_wordpress_ids() -> int:
+    """Fill in post ids for drafts pushed before publishing recorded them.
+
+    ``.ppn_state/wp_posts.json`` is the slug → post id map ``upsert_draft`` has
+    written all along, on the same persistent mount as the drafts. Reading it
+    back repairs every post published from the app before ``record_publish``
+    existed — no network call, and it can only fill a blank, never overwrite an
+    id that is already there.
+    """
+    from ..wordpress import remembered_posts
+
+    known = remembered_posts()
+    if not known:
+        return 0
+
+    settings = get_settings()
+    site = settings.wordpress.url
+    touched = 0
+    async with session() as s:
+        posts = (
+            await s.execute(select(Post).where(Post.wordpress_post_id.is_(None)))
+        ).scalars().all()
+        for post in posts:
+            versions = (
+                await s.execute(select(DraftVersion).where(DraftVersion.post_id == post.id))
+            ).scalars().all()
+            # A post's own slug is the *idea's*; a regeneration can change the
+            # draft's. Both are worth asking about, newest version first.
+            candidates = [post.slug] + [v.slug for v in sorted(versions, key=lambda v: -v.version)]
+            wp_id = next((known[c] for c in candidates if c and c in known), None)
+            if wp_id is None:
+                continue
+            post.wordpress_post_id = wp_id
+            if post.status == "draft":
+                # Which of draft-on-WordPress or published it is, we cannot tell
+                # from a local file. The next publish or cover push says.
+                post.status = "wordpress_draft"
+            if site and not post.edit_link:
+                post.edit_link = f"{site}/wp-admin/post.php?post={wp_id}&action=edit"
+            for v in versions:
+                if v.wordpress_post_id is None and v.slug in known:
+                    v.wordpress_post_id = known[v.slug]
+            touched += 1
+        await s.commit()
+    return touched
 
 
 async def _backfill_suggest_runs() -> int:

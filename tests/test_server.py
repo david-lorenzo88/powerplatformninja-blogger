@@ -872,6 +872,116 @@ async def test_sending_a_cover_for_an_unknown_post_is_404(api):
     assert (await api.post("/api/posts/9999/cover/wordpress")).status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_publishing_records_the_post_on_the_catalog(api, monkeypatch):
+    """A publish from the app must leave the post looking published here too.
+
+    It did not: `record_write_result` was the only writer of
+    `wordpress_post_id`, and it fires only when the write run itself pushed.
+    """
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    name = finished["result"]["markdown_path"].rsplit("/", 1)[-1]
+    post = (await api.get("/api/posts")).json()[0]
+    assert post["wordpress_post_id"] is None
+
+    from ppn_blogger import wordpress
+    from ppn_blogger.models import PublishTarget
+
+    async def fake_push(draft, *, status=None, cover=None):
+        return PublishTarget(
+            post_id=1279,
+            status="publish",
+            link="https://blog.test/p/1279",
+            edit_link="https://blog.test/wp-admin/post.php?post=1279&action=edit",
+        )
+
+    monkeypatch.setattr(wordpress, "push_draft", fake_push)
+    assert (await api.post(f"/api/drafts/{name}/publish")).status_code == 200
+
+    refreshed = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert refreshed["wordpress_post_id"] == 1279
+    assert refreshed["status"] == "published"
+    assert refreshed["link"] == "https://blog.test/p/1279"
+    assert refreshed["current_version"]["wordpress_post_id"] == 1279
+
+
+@pytest.mark.asyncio
+async def test_sending_a_cover_corrects_a_post_the_catalog_thinks_is_unpublished(
+    api, tmp_path, monkeypatch
+):
+    """The button must work on the post it exists for — one already published.
+
+    `push_cover` finds the post by slug when the catalog has no id, so the
+    request is not refused; what it learns is then written back.
+    """
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+    assert post["wordpress_post_id"] is None
+    _write_cover_for(tmp_path, finished["result"]["slug"])
+
+    from ppn_blogger import wordpress
+    from ppn_blogger.models import PublishTarget
+
+    seen = {}
+
+    async def fake_push_cover(draft, cover, *, post_id=None):
+        seen["post_id"] = post_id
+        return PublishTarget(
+            post_id=1279,
+            status="publish",
+            link="https://blog.test/p/1279",
+            edit_link="https://blog.test/wp-admin/post.php?post=1279&action=edit",
+            featured_media_id=4242,
+        )
+
+    monkeypatch.setattr(wordpress, "push_cover", fake_push_cover)
+
+    resp = await api.post(f"/api/posts/{post['id']}/cover/wordpress")
+    assert resp.status_code == 200, resp.text
+    assert seen["post_id"] is None, "a missing id must be resolved by slug, not refused"
+
+    refreshed = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert refreshed["wordpress_post_id"] == 1279
+    assert refreshed["status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_backfill_recovers_wordpress_ids_from_the_state_file(api, tmp_path, monkeypatch):
+    """Posts published before any of this was recorded are repaired on boot.
+
+    `.ppn_state/wp_posts.json` is on the same persistent mount as the drafts and
+    has always been written by `upsert_draft`, so it knows the id even when the
+    catalog does not.
+    """
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+    assert post["wordpress_post_id"] is None
+
+    from ppn_blogger import wordpress
+    from ppn_blogger.server import catalog
+    from ppn_blogger.settings import get_settings
+
+    state = tmp_path / "wp_posts.json"
+    state.write_text(json.dumps({finished["result"]["slug"]: 1279}), encoding="utf-8")
+    monkeypatch.setattr(wordpress, "STATE_FILE", state)
+    monkeypatch.setattr(get_settings().wordpress, "url", "https://blog.test")
+
+    await catalog.backfill()
+
+    refreshed = (await api.get(f"/api/posts/{post['id']}")).json()
+    assert refreshed["wordpress_post_id"] == 1279
+    assert refreshed["status"] == "wordpress_draft"
+    assert refreshed["edit_link"].endswith("post=1279&action=edit")
+
+    # Idempotent, and it never overwrites an id that is already there.
+    state.write_text(json.dumps({finished["result"]["slug"]: 999}), encoding="utf-8")
+    await catalog.backfill()
+    assert (await api.get(f"/api/posts/{post['id']}")).json()["wordpress_post_id"] == 1279
+
+
 # -- Static serving ----------------------------------------------------------
 #
 # These only make sense once `npm run build` has produced ui/dist; CI runs ruff
