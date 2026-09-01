@@ -859,7 +859,16 @@ A 400 from a create race is recovered by reading `data.term_id` out of the error
 body. Tags are capped at the first 8.
 
 The cover is uploaded to `/media` with the alt text from `CoverImage`, then set as
-`featured_media` on the post.
+`featured_media` on the post. Uploads are deduplicated by the image's own
+sha256 in `.ppn_state/wp_media.json`: every publish carries the cover, and
+publish is a button pressed more than once, so without the memo the media library
+would fill with copies of one PNG. Regenerated art has different bytes and does
+upload — which is the point.
+
+`push_cover()` is the same two steps without the first: it sets `featured_media`
+on a post that already exists and writes nothing else. That is what the app's
+**Send to WordPress** button on the Cover tab calls, and what fixes a post whose
+art was regenerated after it was pushed.
 
 Default status is `draft` (`WP_DEFAULT_STATUS`). Nothing in this system publishes
 anything.

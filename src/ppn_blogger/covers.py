@@ -282,13 +282,38 @@ def _dimensions(png: bytes) -> tuple[int, int]:
         return (0, 0)
 
 
+def cover_alt_text(title: str) -> str:
+    """The alt text a cover carries, wherever it is read from.
+
+    Shared with ``saved_cover`` so a cover rebuilt off disk uploads under the
+    same alt text the generated one would have had — the front matter does not
+    record it, and two spellings of the same sentence in the media library is a
+    difference nobody meant to make.
+    """
+    return f"Cover artwork for the article \u201c{title}\u201d"
+
+
+def saved_cover(slug: str, title: str = "", settings: Settings | None = None) -> CoverImage | None:
+    """The cover already on disk for this slug, as the model WordPress takes.
+
+    There is one cover per post, written to ``covers/<slug>.png`` and overwritten
+    in place, so the slug is the whole lookup. Returns None when nothing was ever
+    generated — the callers treat that as "no image to attach", not an error.
+    """
+    settings = settings or get_settings()
+    path = settings.run.output_dir / "covers" / f"{slug}.png"
+    if not path.exists():
+        return None
+    return CoverImage(path=str(path), alt_text=cover_alt_text(title or slug))
+
+
 async def build_cover(draft: Draft, settings: Settings | None = None) -> CoverImage:
     """Generate the cover. Never raises — failures land in ``error``."""
     settings = settings or get_settings()
     prompt = build_prompt(draft, settings)
     cover = CoverImage(
         prompt=prompt,
-        alt_text=f"Cover artwork for the article “{draft.title}”",
+        alt_text=cover_alt_text(draft.title),
         model=settings.cover.model,
     )
 

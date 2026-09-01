@@ -766,8 +766,14 @@ def wp_push(
         markdown=body,
         word_count=front.get("word_count") or word_count(body),
     )
-    target = asyncio.run(push_draft(draft, status=status))
+    from .covers import saved_cover
+
+    target = asyncio.run(
+        push_draft(draft, status=status, cover=saved_cover(draft.slug, draft.title))
+    )
     console.print(f"[green]{target.status}[/] → {target.edit_link}")
+    if target.featured_media_id:
+        console.print(f"[dim]Featured image: media #{target.featured_media_id}[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -865,16 +871,17 @@ def cover(
     console.print(f"[dim]{result.prompt[:400]}[/]")
 
     if push:
-        from .wordpress import WordPressClient
+        from .wordpress import WordPressError, push_cover
 
-        media_id = asyncio.run(
-            WordPressClient().upload_media(
-                Path(result.path), alt_text=result.alt_text, title=draft.title
-            )
+        try:
+            target = asyncio.run(push_cover(draft, result))
+        except WordPressError as exc:
+            console.print(f"[red]Could not attach the cover:[/] {exc}")
+            raise typer.Exit(1) from exc
+        console.print(
+            f"[green]Featured image set[/] → post #{target.post_id}, "
+            f"media #{target.featured_media_id}"
         )
-        if media_id:
-            console.print(f"[green]Uploaded[/] → media #{media_id}. "
-                          "Re-run `ppn wp push` on the draft to attach it as featured image.")
 
 
 @app.command()

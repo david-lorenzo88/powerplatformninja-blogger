@@ -633,14 +633,26 @@ async def get_cover(name: str) -> FileResponse:
 
 
 @router.post("/drafts/{name}/publish")
-async def publish_draft(name: str, status: str = "draft") -> dict[str, Any]:
-    from ..wordpress import push_draft
+async def publish_draft(name: str, status: str = "draft", cover: bool = True) -> dict[str, Any]:
+    """Push a draft file to WordPress, cover and all.
+
+    The cover is sent by default. It used to be left out entirely — the pipeline
+    passed one and this endpoint did not — so every post published from the app
+    arrived with ``featured_media: 0`` and no image, whatever the Cover tab was
+    showing. ``cover=false`` is the escape hatch for a post whose featured image
+    was set by hand in WordPress.
+    """
+    from ..wordpress import WordPressError, push_draft
 
     try:
         draft = drafts.draft_to_model(drafts._safe_path(name))
+        art = drafts.cover_image(name) if cover else None
     except FileNotFoundError as exc:
         raise HTTPException(404, "No such draft") from exc
-    target = await push_draft(draft, status=status)
+    try:
+        target = await push_draft(draft, status=status, cover=art)
+    except WordPressError as exc:
+        raise HTTPException(502, str(exc)) from exc
     return target.model_dump(mode="json")
 
 
@@ -783,6 +795,40 @@ async def regenerate_cover(post_id: int, body: CoverInstructions) -> dict[str, s
         f"Cover · {post.get('title') or post.get('slug')}"[:300],
     )
     return {"id": run_id, "run_id": run_id}
+
+
+@router.post("/posts/{post_id}/cover/wordpress")
+async def push_cover_to_wordpress(post_id: int) -> dict[str, Any]:
+    """Send this post's cover to WordPress as its featured image.
+
+    Generating a cover only writes a PNG; publishing is what carries it across.
+    So a cover regenerated after the post was pushed — the common case, since the
+    art is what you iterate on — never reached the blog without re-publishing the
+    body too. This updates the image and nothing else, which is what makes it
+    safe to press on a post already edited in WordPress.
+    """
+    from ..wordpress import WordPressError, push_cover
+
+    post = await catalog.get_post(post_id)
+    if post is None:
+        raise HTTPException(404, "No such post")
+    version = post.get("current_version") or {}
+    name = version.get("markdown_file") or ""
+    if not name:
+        raise HTTPException(422, "This post has no draft file.")
+    try:
+        art = drafts.cover_image(name)
+        draft = drafts.draft_to_model(drafts._safe_path(name))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "No such draft") from exc
+    if art is None:
+        raise HTTPException(422, "This post has no cover image yet — generate one first.")
+
+    try:
+        target = await push_cover(draft, art, post_id=post.get("wordpress_post_id"))
+    except WordPressError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return target.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

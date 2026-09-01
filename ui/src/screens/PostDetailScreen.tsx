@@ -5,6 +5,7 @@ import {
   draftCoverUrl,
   getDraft,
   getPost,
+  pushCoverToWordPress,
   putDraft,
   regenerateCover,
   regeneratePost,
@@ -172,7 +173,13 @@ function PostDetail({ post }: { post: Post }) {
         </aside>
 
         {selected ? (
-          <VersionView key={selected.id} version={selected} versions={versions} postId={post.id} />
+          <VersionView
+            key={selected.id}
+            version={selected}
+            versions={versions}
+            postId={post.id}
+            onWordPress={post.wordpress_post_id != null}
+          />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
             This post has no versions yet.
@@ -202,10 +209,12 @@ function VersionView({
   version,
   versions,
   postId,
+  onWordPress,
 }: {
   version: DraftVersion
   versions: DraftVersion[]
   postId: number
+  onWordPress: boolean
 }) {
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('read')
@@ -343,7 +352,12 @@ function VersionView({
             )}
           </div>
         ) : (
-          <CoverPanel postId={postId} name={name} hasCover={version.has_cover} />
+          <CoverPanel
+            postId={postId}
+            name={name}
+            hasCover={version.has_cover}
+            onWordPress={onWordPress}
+          />
         )}
       </div>
     </div>
@@ -354,10 +368,12 @@ function CoverPanel({
   postId,
   name,
   hasCover,
+  onWordPress,
 }: {
   postId: number
   name: string
   hasCover: boolean
+  onWordPress: boolean
 }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -371,6 +387,14 @@ function CoverPanel({
       qc.invalidateQueries({ queryKey: ['post', postId] })
       navigate(`/runs/${res.id}`)
     },
+  })
+
+  // Generating a cover only writes a PNG on the server. This is what puts it on
+  // the blog — separate because it writes to the live site, and because the art
+  // is usually regenerated a few times before one is worth sending.
+  const send = useMutation({
+    mutationFn: () => pushCoverToWordPress(postId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['post', postId] }),
   })
 
   const showImage = hasCover && !broken
@@ -388,6 +412,46 @@ function CoverPanel({
         <p className="mb-6 rounded-lg border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
           No cover yet. Generate one below.
         </p>
+      )}
+
+      {showImage && (
+        <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <h3 className="text-sm font-semibold text-slate-200">Featured image on WordPress</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {onWordPress
+              ? 'Uploads this image and sets it as the post’s featured image. The body is left exactly as it is on WordPress.'
+              : 'This post is not on WordPress yet — publish it first and the cover goes with it.'}
+          </p>
+          {send.data && (
+            <p className="mt-3 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+              Featured image set — media #{send.data.featured_media_id}.{' '}
+              {send.data.edit_link && (
+                <a
+                  href={send.data.edit_link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  Open in WordPress ↗
+                </a>
+              )}
+            </p>
+          )}
+          {send.error != null && (
+            <p className="mt-3 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              {send.error instanceof Error ? send.error.message : String(send.error)}
+            </p>
+          )}
+          <div className="mt-3 flex justify-end">
+            <button
+              onClick={() => send.mutate()}
+              disabled={!onWordPress || send.isPending}
+              className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:border-accent disabled:opacity-40"
+            >
+              {send.isPending ? 'Sending…' : 'Send to WordPress'}
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">

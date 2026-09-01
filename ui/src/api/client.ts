@@ -320,6 +320,20 @@ export const regenerateCover = (id: number, instructions: string) =>
     body: JSON.stringify({ instructions }),
   })
 
+export interface CoverPushResult {
+  post_id: number | null
+  status: string
+  link: string
+  edit_link: string
+  featured_media_id: number | null
+}
+
+// Sends the cover already on disk to WordPress as the featured image, without
+// touching the body — the counterpart to regenerating one, which only writes a
+// PNG on the server.
+export const pushCoverToWordPress = (id: number) =>
+  request<CoverPushResult>(`/posts/${id}/cover/wordpress`, { method: 'POST' })
+
 // -- Web Push ---------------------------------------------------------------
 
 export interface PushSubscriptionBody {

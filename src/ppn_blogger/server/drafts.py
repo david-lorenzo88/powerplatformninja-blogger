@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..models import Draft
+from ..covers import saved_cover
+from ..models import CoverImage, Draft
 from ..settings import get_settings
 from ..storage import split_front_matter
 from ..util import slugify, strip_h1, word_count
@@ -78,6 +79,18 @@ def cover_path(name: str) -> Path | None:
     front, _ = split_front_matter(path.read_text(encoding="utf-8"))
     candidate = _dir() / "covers" / f"{front.get('slug', path.stem)}.png"
     return candidate if candidate.exists() else None
+
+
+def cover_image(name: str) -> CoverImage | None:
+    """The draft's cover as the model the WordPress client takes, or None.
+
+    The front matter records no alt text, so it is rebuilt the same way
+    generation spells it — see ``covers.cover_alt_text``.
+    """
+    path = _safe_path(name)
+    front, body = split_front_matter(path.read_text(encoding="utf-8"))
+    slug = front.get("slug") or path.stem
+    return saved_cover(slug, front.get("title") or strip_h1(body)[0] or slug)
 
 
 def draft_to_model(path: Path, concept: str = "") -> Draft:
