@@ -31,9 +31,9 @@ export function SourceReviewsScreen() {
           <BlogSubNav />
         </div>
         <p className="mt-3 max-w-3xl text-xs text-slate-500">
-          Start a run with <span className="text-slate-300">Search the whole web</span> and the
-          scouts range beyond the curated feeds. They stop here, with every site they read, so you
-          can decide which ones the blog is allowed to use.
+          Start a run from the <span className="text-slate-300">Sources</span> tab and the scouts
+          range beyond the curated feeds. They stop here, with every site they read, so you can
+          decide which ones the blog is allowed to use.
         </p>
       </div>
 

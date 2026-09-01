@@ -350,7 +350,7 @@ Adding a blog you trust to `community_trusted` is how you let the Researcher lea
 on it.
 
 Adding domains by hand is one way in. The other is **exploration mode**: run
-`ppn suggest --explore` (or tick *Search the whole web* in the UI), and every site
+`ppn suggest --explore` (or the *Sources* tab of the UI's start-run dialog), and every site
 the scouts read comes back for approval with a tier dropdown. Approving one appends
 it here as a new config version. See
 [HOW-IT-WORKS](HOW-IT-WORKS.md#workflow-1b--exploration-mode-and-the-source-review).
