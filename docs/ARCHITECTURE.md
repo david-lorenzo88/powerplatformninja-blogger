@@ -179,9 +179,11 @@ reference, but edit through the UI.
 ### Drafts
 
 `GET /drafts` · `GET /drafts/{name}` (markdown + review report) ·
-`PUT /drafts/{name}` · `GET /drafts/{name}/cover` · `POST /drafts/{name}/publish`
+`PUT /drafts/{name}` · `GET /drafts/{name}/cover` ·
+`POST /drafts/{name}/publish?status=&cover=`
 
-Paths are resolved inside `drafts/` and rejected otherwise.
+Paths are resolved inside `drafts/` and rejected otherwise. A publish sends the
+cover as the featured image unless `cover=false`.
 
 ### Catalog — topic ideas, posts, versions
 
@@ -200,6 +202,8 @@ on-disk drafts on first start (`backfill`, idempotent — see the lifespan).
 | `GET` | `/posts/{id}` | post + linked `topic_idea` + all `versions` |
 | `GET` | `/posts/{id}/versions` · `GET /draft-versions/{id}` | version rows; `markdown_file` resolves through `/drafts/{name}` |
 | `POST` | `/posts/{id}/regenerate` | `{instructions, reuse_research, push, cover}` → **202 {id}**; enqueues a `write` run that appends a new version |
+| `POST` | `/posts/{id}/cover` | `{instructions}` → **202 {id}**; enqueues a `cover` run that overwrites `covers/<slug>.png` |
+| `POST` | `/posts/{id}/cover/wordpress` | uploads that image and sets it as the post's featured image → `PublishTarget`. Synchronous, and it **reports failures** (502) rather than swallowing them — nothing is at risk here and someone is waiting for the answer |
 
 A regeneration reuses the `write` run kind: with `reuse_research` it loads the
 saved dossier and skips the source check (`write_post_from_dossier`), otherwise it

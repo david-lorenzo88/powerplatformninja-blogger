@@ -767,6 +767,111 @@ async def test_record_cover_result_marks_versions(api):
     assert all(v["has_cover"] for v in still["versions"]), "a failed cover wiped the good one"
 
 
+# -- Covers on WordPress -----------------------------------------------------
+#
+# A cover reaches the blog in two ways and both were broken: publishing sent no
+# cover at all, and regenerating one only wrote a PNG. A post could show art in
+# the app and `featured_media: 0` on the site.
+
+
+def _write_cover_for(api_settings_dir, slug: str) -> None:
+    """A 1x1 PNG where the covers directory expects this post's art."""
+    directory = api_settings_dir / "covers"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{slug}.png").write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+            "01f15c4890000000a49444154789c6300010000050001"
+            "0d0a2db40000000049454e44ae426082"
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_publishing_a_draft_sends_its_cover(api, tmp_path, monkeypatch):
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    name = finished["result"]["markdown_path"].rsplit("/", 1)[-1]
+    slug = finished["result"]["slug"]
+    _write_cover_for(tmp_path, slug)
+
+    from ppn_blogger import wordpress
+    from ppn_blogger.models import PublishTarget
+
+    seen = {}
+
+    async def fake_push(draft, *, status=None, cover=None):
+        seen["cover"] = cover
+        return PublishTarget(post_id=1279, status=status or "draft", featured_media_id=99)
+
+    monkeypatch.setattr(wordpress, "push_draft", fake_push)
+
+    resp = await api.post(f"/api/drafts/{name}/publish?status=draft")
+    assert resp.status_code == 200, resp.text
+    assert seen["cover"] is not None, "publish went out without the cover again"
+    assert seen["cover"].path.endswith(f"{slug}.png")
+    assert seen["cover"].alt_text
+
+    # The escape hatch for a featured image set by hand in WordPress.
+    await api.post(f"/api/drafts/{name}/publish?cover=false")
+    assert seen["cover"] is None
+
+
+@pytest.mark.asyncio
+async def test_cover_can_be_sent_to_an_existing_wordpress_post(api, tmp_path, monkeypatch):
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+
+    # No image on disk yet: nothing to send, and it says so rather than 500ing.
+    assert (await api.post(f"/api/posts/{post['id']}/cover/wordpress")).status_code == 422
+
+    _write_cover_for(tmp_path, finished["result"]["slug"])
+
+    from ppn_blogger import wordpress
+    from ppn_blogger.models import PublishTarget
+
+    seen = {}
+
+    async def fake_push_cover(draft, cover, *, post_id=None):
+        seen["slug"] = draft.slug
+        seen["path"] = cover.path
+        seen["post_id"] = post_id
+        return PublishTarget(post_id=1279, status="publish", featured_media_id=4242)
+
+    monkeypatch.setattr(wordpress, "push_cover", fake_push_cover)
+
+    resp = await api.post(f"/api/posts/{post['id']}/cover/wordpress")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["featured_media_id"] == 4242
+    assert seen["slug"] == finished["result"]["slug"]
+    assert seen["path"].endswith(".png")
+
+
+@pytest.mark.asyncio
+async def test_sending_a_cover_reports_wordpress_failures(api, tmp_path, monkeypatch):
+    topics = await _suggest(api)
+    finished = await _write(api, topics[0])
+    post = (await api.get("/api/posts")).json()[0]
+    _write_cover_for(tmp_path, finished["result"]["slug"])
+
+    from ppn_blogger import wordpress
+
+    async def boom(draft, cover, *, post_id=None):
+        raise wordpress.WordPressError("No WordPress post found for 'x'.")
+
+    monkeypatch.setattr(wordpress, "push_cover", boom)
+
+    resp = await api.post(f"/api/posts/{post['id']}/cover/wordpress")
+    assert resp.status_code == 502
+    assert "No WordPress post found" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sending_a_cover_for_an_unknown_post_is_404(api):
+    assert (await api.post("/api/posts/9999/cover/wordpress")).status_code == 404
+
+
 # -- Static serving ----------------------------------------------------------
 #
 # These only make sense once `npm run build` has produced ui/dist; CI runs ruff

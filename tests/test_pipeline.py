@@ -156,6 +156,44 @@ def test_no_image_path_in_the_converter():
     assert 'wp:image {"className"' not in blocks
 
 
+@pytest.mark.asyncio
+async def test_a_cover_uploads_once_per_image(tmp_path, monkeypatch):
+    """Publishing twice must not fill the media library with the same PNG.
+
+    Every publish now carries the cover, and publish is a button pressed more
+    than once on the same post. The memo is keyed by the image's own bytes, so a
+    regenerated cover does upload — that is the case the whole feature exists for.
+    """
+    from ppn_blogger import wordpress
+    from ppn_blogger.models import CoverImage
+    from ppn_blogger.settings import get_settings
+
+    settings = get_settings()
+    for attr, value in (("url", "https://blog.test"), ("username", "u"), ("app_password", "p")):
+        monkeypatch.setattr(settings.wordpress, attr, value)
+    monkeypatch.setattr(wordpress, "MEDIA_STATE_FILE", tmp_path / "wp_media.json")
+
+    uploads = []
+
+    async def fake_upload(self, path, *, alt_text="", title="", strict=False):
+        uploads.append(path.read_bytes())
+        return 100 + len(uploads)
+
+    monkeypatch.setattr(wordpress.WordPressClient, "upload_media", fake_upload)
+
+    art = tmp_path / "post.png"
+    art.write_bytes(b"first-image")
+    client = wordpress.WordPressClient()
+
+    assert await client.ensure_media("post", CoverImage(path=str(art))) == 101
+    assert await client.ensure_media("post", CoverImage(path=str(art))) == 101
+    assert len(uploads) == 1, "the same image was uploaded twice"
+
+    art.write_bytes(b"regenerated-image")
+    assert await client.ensure_media("post", CoverImage(path=str(art))) == 102
+    assert len(uploads) == 2, "new art did not reach WordPress"
+
+
 def test_rules_load_and_are_non_empty():
     settings = get_settings()
     rules = settings.all_rules()

@@ -57,7 +57,8 @@ export function PublishDialog({
           </p>
           <p className="text-xs text-slate-500">
             “WordPress draft” updates the post in place and leaves it unpublished for review.
-            “Publish live” makes it public immediately.
+            “Publish live” makes it public immediately. The cover goes with it as the featured
+            image.
           </p>
           {pub.error != null && (
             <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">

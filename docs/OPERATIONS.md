@@ -183,8 +183,10 @@ ppn cover drafts/2026-07-28-my-post.md
 ppn cover drafts/2026-07-28-my-post.md --concept "isometric neon lattice of connected environments" --push
 ```
 
-`--push` uploads to the media library and prints the media id; attach it with
-`ppn wp push`.
+`--push` uploads the image and sets it as the post's featured image, in place —
+the body is not re-sent, so anything edited in WordPress since survives. The post
+is found by slug the same way `ppn wp push` finds it, so the draft has to be on
+WordPress already.
 
 #### `ppn translate`
 

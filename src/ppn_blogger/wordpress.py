@@ -13,6 +13,7 @@ than one lump of classic HTML.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -27,6 +28,7 @@ from .util import strip_h1
 logger = logging.getLogger("ppn.wordpress")
 
 STATE_FILE = ROOT / ".ppn_state" / "wp_posts.json"
+MEDIA_STATE_FILE = ROOT / ".ppn_state" / "wp_media.json"
 
 
 class WordPressError(RuntimeError):
@@ -233,14 +235,19 @@ class WordPressClient:
         return None
 
     async def upload_media(
-        self, path: Path, *, alt_text: str = "", title: str = ""
+        self, path: Path, *, alt_text: str = "", title: str = "", strict: bool = False
     ) -> int | None:
         """Upload an image to the media library and return its id.
 
         Returns None rather than raising: a missing cover is not a reason to lose
-        a finished post.
+        a finished post. ``strict`` inverts that for the one caller where it is
+        wrong — an operator who pressed a button labelled "send this image to
+        WordPress" is owed the reason it did not happen, not a silent no-op and a
+        line in a log they cannot read.
         """
         if not path.exists():
+            if strict:
+                raise WordPressError(f"The cover image is not on disk: {path}")
             logger.warning("cover file missing, skipping upload: %s", path)
             return None
         data = path.read_bytes()
@@ -260,10 +267,18 @@ class WordPressClient:
                 resp = await http.post("/media", content=data)
             if resp.status_code >= 400:
                 logger.error("media upload failed (%s): %s", resp.status_code, resp.text[:300])
+                if strict:
+                    raise WordPressError(
+                        f"WordPress rejected the image ({resp.status_code}): {resp.text[:300]}"
+                    )
                 return None
             media_id = int(resp.json()["id"])
+        except WordPressError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error("media upload failed: %s", exc)
+            if strict:
+                raise WordPressError(f"Uploading the image failed: {exc}") from exc
             return None
 
         if alt_text or title:
@@ -278,6 +293,61 @@ class WordPressClient:
 
         logger.info("uploaded cover to media library: id=%s", media_id)
         return media_id
+
+    async def ensure_media(
+        self, slug: str, cover: CoverImage, *, title: str = "", strict: bool = False
+    ) -> int | None:
+        """The media id for this cover, uploading only when the bytes are new.
+
+        Every publish carries the cover, and a publish is a button an operator
+        presses several times on the same post — without this, each press would
+        upload another identical PNG and the media library would fill with
+        copies of the same artwork. The memo is keyed by the *content* digest,
+        so regenerating the cover genuinely does upload a new image and the
+        featured image changes, while re-publishing an unchanged one does not.
+        """
+        if cover.media_id:
+            return cover.media_id
+        path = Path(cover.path)
+        if not path.exists():
+            if strict:
+                raise WordPressError(f"The cover image is not on disk: {path}")
+            return None
+
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        remembered = _remembered_media(slug, digest)
+        if remembered is not None:
+            cover.media_id = remembered
+            return remembered
+
+        media_id = await self.upload_media(
+            path, alt_text=cover.alt_text, title=title, strict=strict
+        )
+        if media_id:
+            cover.media_id = media_id
+            _remember_media(slug, digest, media_id)
+        return media_id
+
+    async def set_featured_media(self, post_id: int, media_id: int) -> dict[str, Any]:
+        """Point an existing post at a media item, touching nothing else.
+
+        Deliberately not a body update: the cover is the one thing being changed,
+        and re-sending the content would overwrite whatever was edited in the
+        WordPress editor since the draft was pushed.
+        """
+        async with self._http() as http:
+            resp = await http.post(f"/posts/{post_id}", json={"featured_media": media_id})
+        if resp.status_code >= 400:
+            raise WordPressError(
+                f"WordPress rejected the featured image ({resp.status_code}): {resp.text[:300]}"
+            )
+        return resp.json()
+
+    async def resolve_post_id(self, slug: str, post_id: int | None = None) -> int | None:
+        """Which WordPress post this draft is, by id, then memory, then slug."""
+        if post_id:
+            return int(post_id)
+        return _remembered_id(slug) or await self._find_by_slug(slug)
 
     async def _find_by_slug(self, slug: str) -> int | None:
         async with self._http() as http:
@@ -325,9 +395,7 @@ class WordPressClient:
 
         media_id: int | None = None
         if cover is not None and cover.ok and get_settings().cover.upload_to_wordpress:
-            media_id = cover.media_id or await self.upload_media(
-                Path(cover.path), alt_text=cover.alt_text, title=draft.title
-            )
+            media_id = await self.ensure_media(draft.slug, cover, title=draft.title)
             if media_id:
                 cover.media_id = media_id
                 payload["featured_media"] = media_id
@@ -387,10 +455,83 @@ def _remember_id(slug: str, post_id: int) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def _load_media_state() -> dict[str, dict[str, Any]]:
+    if not MEDIA_STATE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(MEDIA_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _remembered_media(slug: str, digest: str) -> int | None:
+    """The media id already uploaded for exactly these bytes, if any.
+
+    A separate file from ``wp_posts.json`` rather than a second value in it: that
+    file is already on disk in every environment with a ``{slug: int}`` shape, and
+    widening it in place would make an existing one unreadable. A miss here costs
+    one duplicate upload, never a wrong image, which is why this can live in a
+    file the container may lose rather than needing a database column.
+    """
+    entry = _load_media_state().get(slug)
+    if isinstance(entry, dict) and entry.get("digest") == digest:
+        media_id = entry.get("media_id")
+        return int(media_id) if media_id else None
+    return None
+
+
+def _remember_media(slug: str, digest: str, media_id: int) -> None:
+    state = _load_media_state()
+    state[slug] = {"digest": digest, "media_id": int(media_id)}
+    MEDIA_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MEDIA_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
 async def push_draft(
     draft: Draft, *, status: str | None = None, cover: CoverImage | None = None
 ) -> PublishTarget:
     return await WordPressClient().upsert_draft(draft, status=status, cover=cover)
+
+
+async def push_cover(
+    draft: Draft, cover: CoverImage, *, post_id: int | None = None
+) -> PublishTarget:
+    """Send a cover to a post that already exists and make it the featured image.
+
+    The counterpart to ``push_draft`` for the case the pipeline cannot cover: the
+    art was regenerated after the post was pushed, so the words on WordPress are
+    right and only the image is stale. Nothing but ``featured_media`` is written.
+
+    Unlike the pipeline's push this **raises**. The doctrine that a WordPress
+    failure must never sink a run is about work that would otherwise be lost;
+    here there is nothing to lose and someone is waiting for an answer, so a
+    failure has to be reportable rather than swallowed.
+    """
+    client = WordPressClient()
+    target_id = await client.resolve_post_id(draft.slug, post_id)
+    if target_id is None:
+        raise WordPressError(
+            f"No WordPress post found for '{draft.slug}'. Publish the draft first, "
+            "then send the image."
+        )
+
+    media_id = await client.ensure_media(draft.slug, cover, title=draft.title, strict=True)
+    if media_id is None:  # pragma: no cover - strict=True raises instead
+        raise WordPressError("The cover could not be uploaded to the media library.")
+
+    data = await client.set_featured_media(target_id, media_id)
+    _remember_id(draft.slug, target_id)
+    logger.info("featured image set: post=%s media=%s", target_id, media_id)
+
+    return PublishTarget(
+        platform="wordpress",
+        post_id=target_id,
+        status=data.get("status", ""),
+        link=data.get("link", ""),
+        edit_link=f"{client.cfg.url}/wp-admin/post.php?post={target_id}&action=edit",
+        featured_media_id=media_id,
+    )
 
 
 def preview_blocks(markdown_path: Path) -> str:
