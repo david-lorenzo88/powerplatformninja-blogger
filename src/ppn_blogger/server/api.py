@@ -653,6 +653,10 @@ async def publish_draft(name: str, status: str = "draft", cover: bool = True) ->
         target = await push_draft(draft, status=status, cover=art)
     except WordPressError as exc:
         raise HTTPException(502, str(exc)) from exc
+    # Write down where it landed. Without this the catalog only ever learned
+    # about a push the write run made itself, so a post published from here was
+    # live on the blog and "not on WordPress" on this screen.
+    await catalog.record_publish(name, target.model_dump(mode="json"))
     return target.model_dump(mode="json")
 
 
@@ -828,6 +832,11 @@ async def push_cover_to_wordpress(post_id: int) -> dict[str, Any]:
         target = await push_cover(draft, art, post_id=post.get("wordpress_post_id"))
     except WordPressError as exc:
         raise HTTPException(502, str(exc)) from exc
+    # push_cover resolves the post by remembered id and then by slug, so it can
+    # succeed on a row that says the post was never published. When it does, it
+    # has proved the row wrong — correct it here rather than making the operator
+    # publish again to fix a field.
+    await catalog.record_cover_publish(post_id, target.model_dump(mode="json"))
     return target.model_dump(mode="json")
 
 
