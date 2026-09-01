@@ -137,7 +137,7 @@ driven against real Azure.**
   tier as a new config version, so it is trusted by later topic runs *and* by the
   Researcher and Source Checker on later drafts. Refused new sites go to
   `declined_domains` and are never offered again.
-- **UI**: a *Search the whole web* toggle on the suggest dialog, a **Sources**
+- **UI**: a *Sources* tab on the start-run dialog, a **Sources**
   section (pending count badged in the nav) with per-site checkboxes, trust-tier
   dropdowns and the findings behind each site, and a banner on a finished sweep
   linking straight to its review.

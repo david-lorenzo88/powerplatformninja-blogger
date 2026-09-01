@@ -5,14 +5,14 @@ import type { Topic } from '../api/types'
 import { field, label, primaryBtn } from '../lib/ui'
 import { Modal } from './Modal'
 
-type Mode = 'suggest' | 'write'
+type Mode = 'suggest' | 'write' | 'sources'
 
 export function StartRunDialog({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<Mode>('suggest')
   return (
     <Modal title="Start a run" onClose={onClose} width="max-w-xl">
       <div className="mb-4 flex gap-1 rounded-lg bg-slate-950 p-1">
-        {(['suggest', 'write'] as Mode[]).map((m) => (
+        {(['suggest', 'write', 'sources'] as Mode[]).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -24,11 +24,9 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
           </button>
         ))}
       </div>
-      {mode === 'suggest' ? (
-        <SuggestForm onClose={onClose} />
-      ) : (
-        <WriteForm onClose={onClose} />
-      )}
+      {mode === 'suggest' && <SuggestForm onClose={onClose} />}
+      {mode === 'write' && <WriteForm onClose={onClose} />}
+      {mode === 'sources' && <SourcesForm onClose={onClose} />}
     </Modal>
   )
 }
@@ -37,9 +35,8 @@ function SuggestForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const [instruction, setInstruction] = useState('')
   const [labelText, setLabelText] = useState('')
-  const [explore, setExplore] = useState(false)
   const mut = useMutation({
-    mutationFn: () => startSuggest({ instruction, label: labelText, explore }),
+    mutationFn: () => startSuggest({ instruction, label: labelText }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['runs'] })
       onClose()
@@ -66,32 +63,72 @@ function SuggestForm({ onClose }: { onClose: () => void }) {
         <label className={label}>Label (optional)</label>
         <input
           className={field}
-          placeholder={explore ? 'Source exploration' : 'Topic discovery'}
+          placeholder="Topic discovery"
           value={labelText}
           onChange={(e) => setLabelText(e.target.value)}
         />
       </div>
-      <label className="flex cursor-pointer gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-        <input
-          type="checkbox"
-          className="mt-0.5 h-4 w-4 accent-cyan-400"
-          checked={explore}
-          onChange={(e) => setExplore(e.target.checked)}
-        />
-        <span className="text-sm">
-          <span className="font-medium text-slate-200">Search the whole web</span>
-          <span className="mt-0.5 block text-xs text-slate-500">
-            The scouts range beyond the curated feeds and stop with a list of every site they
-            read. You approve the sites before any topic is proposed, and the ones you approve
-            are added to the blog&rsquo;s trusted sources for future runs.
-          </span>
-        </span>
-      </label>
       <FormFooter
         onClose={onClose}
         pending={mut.isPending}
         error={mut.error}
-        label={explore ? 'Start sweep' : 'Start discovery'}
+        label="Start discovery"
+      />
+    </form>
+  )
+}
+
+// The same endpoint as a discovery run, with `explore` set: the server turns
+// that into its own run kind and its own graph. A sweep always ranges beyond the
+// curated feeds — that is what makes it a sweep — so the tab carries no choice
+// about it, only the brief.
+function SourcesForm({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient()
+  const [instruction, setInstruction] = useState('')
+  const [labelText, setLabelText] = useState('')
+  const mut = useMutation({
+    mutationFn: () => startSuggest({ instruction, label: labelText, explore: true }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['runs'] })
+      onClose()
+    },
+  })
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        mut.mutate()
+      }}
+      className="space-y-4"
+    >
+      <p className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-500">
+        The scouts range beyond the curated feeds and stop with a list of every site they read.
+        You approve the sites before any topic is proposed, and the ones you approve are added to
+        the blog&rsquo;s trusted sources for future runs.
+      </p>
+      <div>
+        <label className={label}>Instruction (optional)</label>
+        <textarea
+          className={`${field} h-24 resize-none`}
+          placeholder="Find what is worth writing about right now, wherever it lives…"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+        />
+      </div>
+      <div>
+        <label className={label}>Label (optional)</label>
+        <input
+          className={field}
+          placeholder="Source exploration"
+          value={labelText}
+          onChange={(e) => setLabelText(e.target.value)}
+        />
+      </div>
+      <FormFooter
+        onClose={onClose}
+        pending={mut.isPending}
+        error={mut.error}
+        label="Start sweep"
       />
     </form>
   )
