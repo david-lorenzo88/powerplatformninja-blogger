@@ -85,7 +85,6 @@ async def test_creating_with_every_field_the_form_can_send(api) -> None:
             "timezone": "Europe/Madrid",
             "lookback_hours": 72,
             "max_items": 8,
-            "min_items": 2,
             "max_per_feed": 2,
             "audience": "practitioners",
             "tone": "dry",

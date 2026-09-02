@@ -281,36 +281,51 @@ class TelegramChannel:
         return get_settings().telegram.status_detail
 
     async def send(self, issue: IssuePayload, target: RecipientRef) -> DeliveryResult:
-        import httpx
-
-        settings = get_settings().telegram
         if not target.address:
             return DeliveryResult(False, error="no chat id", permanent=True)
+        # Markdown is safe here and only here: the digest is produced by
+        # `newsletter_render.render_short`, which is ours. See `send_telegram`.
+        return await send_telegram(target.address, issue.short, markdown=True)
 
-        text = issue.short[:TELEGRAM_LIMIT]
-        try:
-            async with httpx.AsyncClient(timeout=20) as http:
-                response = await http.post(
-                    f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
-                    json={
-                        "chat_id": target.address,
-                        "text": text,
-                        "parse_mode": "Markdown",
-                        "disable_web_page_preview": True,
-                    },
-                )
-        except Exception as exc:  # noqa: BLE001
-            return DeliveryResult(False, error=f"{type(exc).__name__}: {exc}"[:400])
 
-        if response.status_code == 200:
-            body = response.json()
-            return DeliveryResult(
-                True, provider_message_id=str(body.get("result", {}).get("message_id", ""))
+async def send_telegram(chat_id: str, text: str, *, markdown: bool = False) -> DeliveryResult:
+    """One message to one chat. Never raises; shared with the article relay.
+
+    ``markdown`` defaults to **off**, and that default is the point. Telegram
+    parses ``*``, ``_`` and ``[`` when a parse mode is set and answers a 400 —
+    which this code maps to *permanent* — if they do not balance. An article
+    headline is arbitrary text from somebody else's feed, so a stray underscore
+    in a product name would silently cost that article its message. Only text
+    this project generated may be sent as Markdown.
+    """
+    import httpx
+
+    settings = get_settings().telegram
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text[:TELEGRAM_LIMIT],
+        "disable_web_page_preview": True,
+    }
+    if markdown:
+        payload["parse_mode"] = "Markdown"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            response = await http.post(
+                f"https://api.telegram.org/bot{settings.bot_token}/sendMessage", json=payload
             )
-        detail = _describe_http(response)
-        # 400 "chat not found" and 403 "bot was blocked" never fix themselves.
-        permanent = response.status_code in (400, 403)
-        return DeliveryResult(False, error=detail, permanent=permanent)
+    except Exception as exc:  # noqa: BLE001
+        return DeliveryResult(False, error=f"{type(exc).__name__}: {exc}"[:400])
+
+    if response.status_code == 200:
+        body = response.json()
+        return DeliveryResult(
+            True, provider_message_id=str(body.get("result", {}).get("message_id", ""))
+        )
+    detail = _describe_http(response)
+    # 400 "chat not found" and 403 "bot was blocked" never fix themselves.
+    permanent = response.status_code in (400, 403)
+    return DeliveryResult(False, error=detail, permanent=permanent)
 
 
 class WhatsAppChannel:

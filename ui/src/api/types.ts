@@ -597,7 +597,6 @@ export interface NewsletterSummary {
   timezone: string
   lookback_hours: number
   max_items: number
-  min_items: number
   max_per_feed: number
   audience: string
   tone: string
@@ -653,7 +652,6 @@ export interface NewsletterPreview {
   window_to: string
   candidates: { id: number; title: string; url: string; source: string; published: string }[]
   already_used?: number
-  min_items?: number
   max_items?: number
   enough?: boolean
   reason?: string

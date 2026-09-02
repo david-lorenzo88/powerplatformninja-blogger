@@ -21,6 +21,14 @@ than not buzzing at all, and the article is still in the stream either way.
 **A noisy feed cannot spam.** Caps per feed and per tick collapse a flood into a
 single summary. Quiet hours suppress the send *without* stamping, so nothing is
 lost — the first tick after they end rolls the backlog up under the same caps.
+
+A watched feed can also be **relayed to Telegram**, one message per article,
+which is the un-composed counterpart to a newsletter: no model is called, no
+issue is stored, and the message carries the headline and the link exactly as
+the feed gave them. It rides on the same set of un-notified articles rather than
+on a column of its own, so "watched" keeps its single meaning — tell me when
+this publishes — and the same stamp covers both announcements. Which feeds are
+watched is therefore also which feeds are relayed.
 """
 
 from __future__ import annotations
@@ -135,8 +143,17 @@ async def _notify() -> int:
         return 0
 
     # Everything about to be announced is stamped first, in one statement,
-    # whatever shape the announcement takes.
+    # whatever shape the announcement takes — the relay included.
     await _mark_notified([a.id for _, articles in batches for a in articles])
+
+    # Before the push, and in its own guard: the two announcements are
+    # independent, and a push service having a bad afternoon must not cost the
+    # relay its articles, which are stamped either way.
+    relayed = 0
+    try:
+        relayed = await relay_to_telegram(batches)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram relay failed")
 
     if len(batches) > settings.realtime_max_per_tick:
         # More feeds than notifications allowed: one line for the lot beats
@@ -148,7 +165,7 @@ async def _notify() -> int:
             "ppn-watch",
         )
         logger.info("watch: rolled %d article(s) into one notification", total)
-        return 1 if sent else 0
+        return relayed + (1 if sent else 0)
 
     sent_count = 0
     for feed, articles in batches:
@@ -166,7 +183,77 @@ async def _notify() -> int:
             sent_count += 1
 
     logger.info("watch: %d article(s) announced from %d feed(s)", total, len(batches))
-    return sent_count
+    return relayed + sent_count
+
+
+async def relay_to_telegram(batches: list[tuple[Feed, list[Article]]]) -> int:
+    """Post every new article to the relay chats. Returns messages sent.
+
+    One message per article, because that is what was asked for: a raw feed, not
+    a digest. The cap is a throttle rather than a filter — Telegram limits a
+    group to roughly twenty messages a minute, and a feed's first poll can carry
+    a hundred articles — so anything past it travels as a single digest message.
+    Nothing is dropped, and the count of what was rolled up is stated.
+
+    Never raises. Every failure is a logged line, because the articles are
+    already stamped and a retry would be a duplicate rather than a repair.
+    """
+    settings = get_settings().telegram
+    if not settings.relays:
+        return 0
+
+    items = [(feed, article) for feed, articles in batches for article in articles]
+    cap = max(1, settings.relay_max_per_tick)
+    head, tail = items[:cap], items[cap:]
+
+    sent = 0
+    for chat_id in settings.relay_chat_ids:
+        for feed, article in head:
+            if await _relay_one(chat_id, _article_text(feed, article)):
+                sent += 1
+        if tail and await _relay_one(chat_id, _digest_text(tail)):
+            sent += 1
+
+    logger.info(
+        "relay: %d article(s) to %d chat(s)%s",
+        len(items),
+        len(settings.relay_chat_ids),
+        f", {len(tail)} of them as one digest" if tail else "",
+    )
+    return sent
+
+
+async def _relay_one(chat_id: str, text: str) -> bool:
+    from .channels import send_telegram
+
+    result = await send_telegram(chat_id, text)
+    if not result.ok:
+        logger.warning("relay to %s failed: %s", chat_id, result.error)
+    return result.ok
+
+
+def _article_text(feed: Feed, article: Article) -> str:
+    """Plain text, never Markdown — see ``channels.send_telegram``."""
+    source = feed.name or feed.title or feed.home_domain or article.domain
+    title = (article.title or "").strip() or article.url
+    lines = [title]
+    if source:
+        lines.append(source)
+    lines.append(article.url)
+    return "\n".join(lines)
+
+
+def _digest_text(items: list[tuple[Feed, Article]]) -> str:
+    """The overflow, as one message that says how much it is carrying."""
+    lines = [f"{len(items)} more new articles:", ""]
+    for _, article in items:
+        entry = f"• {(article.title or '').strip() or article.url}\n{article.url}"
+        # Truncating honestly beats a 4096-character wall the API would refuse.
+        if sum(len(line) + 1 for line in lines) + len(entry) > 3900:
+            lines.append(f"…and {len(items) - (len(lines) - 2)} not listed.")
+            break
+        lines.append(entry)
+    return "\n".join(lines)
 
 
 async def _mark_notified(article_ids: list[int]) -> None:
@@ -198,5 +285,6 @@ __all__ = [
     "notify_new_articles",
     "parse_quiet_hours",
     "pending_articles",
+    "relay_to_telegram",
     "unnotified_count",
 ]

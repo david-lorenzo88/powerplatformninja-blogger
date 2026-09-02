@@ -158,7 +158,7 @@ async def test_the_publisher_drops_what_it_was_not_given(store, monkeypatch) -> 
 
     group = await _feed_with_articles(monkeypatch, count=5)
     letter = await newsletters.create(
-        "Gate test", group_ids=[group["id"]], max_per_feed=10, min_items=1
+        "Gate test", group_ids=[group["id"]], max_per_feed=10
     )
 
     real = wf.compose_issue
@@ -187,7 +187,7 @@ async def test_the_publisher_drops_what_it_was_not_given(store, monkeypatch) -> 
 
 
 async def test_a_quiet_week_skips_without_calling_a_model(store, monkeypatch) -> None:
-    """Below min_items the graph ends at the builder — no tokens are spent.
+    """An empty window ends the graph at the builder — no tokens are spent.
 
     Asserted on *generation*, not on the agent factory: the graph is constructed
     before the builder decides anything, and building an Agent object costs
@@ -198,10 +198,8 @@ async def test_a_quiet_week_skips_without_calling_a_model(store, monkeypatch) ->
     from ppn_blogger.server.newsletter_runs import compose_and_store
     from ppn_blogger.testing import StubChatClient, stub_clients
 
-    group = await _feed_with_articles(monkeypatch, count=2)
-    letter = await newsletters.create(
-        "Strict", group_ids=[group["id"]], min_items=5, max_per_feed=10
-    )
+    group = await _feed_with_articles(monkeypatch, count=0)
+    letter = await newsletters.create("Strict", group_ids=[group["id"]], max_per_feed=10)
 
     generated: list[str] = []
     original = StubChatClient._payload
@@ -223,13 +221,41 @@ async def test_a_quiet_week_skips_without_calling_a_model(store, monkeypatch) ->
     result = await compose_and_store(letter["id"])
 
     assert result["skipped"] is True
-    assert "below the minimum" in result["reason"]
+    assert "no unused articles" in result["reason"]
     assert generated == []  # the editor never ran
 
     # The skip is recorded rather than silent — a quiet week should look like a
     # decision, not like an issue that mysteriously never appeared.
     issues = await newsletters.list_issues(letter["id"])
     assert issues[0]["status"] == "skipped"
+
+
+async def test_one_article_is_enough_for_an_issue(store, monkeypatch) -> None:
+    """The minimum is gone: one article that landed today ships today.
+
+    Holding a thin week for company only makes it stale, and a floor was a
+    second, silent way for an issue never to happen.
+    """
+    from ppn_blogger import workflows as wf
+    from ppn_blogger.server.newsletter_runs import compose_and_store
+    from ppn_blogger.testing import stub_clients
+
+    group = await _feed_with_articles(monkeypatch, count=1)
+    letter = await newsletters.create("Thin", group_ids=[group["id"]], max_per_feed=10)
+
+    material = await newsletters.candidates(letter["id"])
+    assert len(material["candidates"]) == 1 and material["enough"] is True
+
+    real = wf.compose_issue
+
+    async def stubbed(newsletter, candidates, **kw):
+        kw.setdefault("clients", stub_clients(exercise_loops=False))
+        return await real(newsletter, candidates, **kw)
+
+    monkeypatch.setattr(wf, "compose_issue", stubbed)
+
+    result = await compose_and_store(letter["id"])
+    assert result["skipped"] is False and result["item_count"] == 1
 
 
 async def test_auto_send_queues_the_delivery_the_operator_would_have_pressed(
@@ -265,14 +291,14 @@ async def test_auto_send_queues_the_delivery_the_operator_would_have_pressed(
     monkeypatch.setattr(wf, "compose_issue", stubbed)
 
     quiet = await newsletters.create(
-        "Read it first", group_ids=[group["id"]], max_per_feed=10, min_items=1
+        "Read it first", group_ids=[group["id"]], max_per_feed=10
     )
     result = await compose_and_store(quiet["id"])
     assert result["auto_send"] is False
     assert queued == [], "off by default: nothing reaches an audience unattended"
 
     eager = await newsletters.create(
-        "Send it", group_ids=[group["id"]], max_per_feed=10, min_items=1, auto_send=True
+        "Send it", group_ids=[group["id"]], max_per_feed=10, auto_send=True
     )
     result = await compose_and_store(eager["id"])
     assert result["auto_send"] is True

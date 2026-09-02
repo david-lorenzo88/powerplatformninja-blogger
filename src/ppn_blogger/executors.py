@@ -1666,11 +1666,17 @@ class ComposedIssue:
 class IssueBuilder(Executor):
     """Turns candidate articles into a brief. Makes the only branch in the graph.
 
-    If there are fewer candidates than the newsletter's `min_items`, the run ends
-    here and **no model is called at all**. That is what "no routing decision is
-    made by a model" looks like in this pipeline: the sole decision point is an
-    integer comparison, and a quiet week costs nothing rather than producing a
-    padded issue.
+    With nothing new in the window the run ends here and **no model is called at
+    all**. That is what "no routing decision is made by a model" looks like in
+    this pipeline: the sole decision point is whether the candidate list is
+    empty, and a quiet week costs nothing.
+
+    There used to be a `min_items` floor here as well, so that a thin week became
+    a skip rather than a two-line issue. It is gone deliberately. A minimum is a
+    second, silent way for an issue never to happen, and it fails in the
+    direction that costs the operator news: one article that landed today is
+    worth sending today, and holding it for company only makes it stale. The
+    column survives on the row, unread, because `create_all` never ALTERs.
     """
 
     def __init__(self, id: str = "issue_builder") -> None:
@@ -1686,13 +1692,9 @@ class IssueBuilder(Executor):
     ) -> None:
         self.request = request
         newsletter = request.newsletter
-        minimum = int(newsletter.get("min_items", 3) or 0)
 
-        if len(request.candidates) < minimum:
-            reason = (
-                f"only {len(request.candidates)} article(s) in the window, "
-                f"below the minimum of {minimum}"
-            )
+        if not request.candidates:
+            reason = "no unused articles in the window"
             logger.info("skipping issue: %s", reason)
             self.skipped = ComposedIssue(
                 newsletter_id=int(newsletter.get("id", 0)),

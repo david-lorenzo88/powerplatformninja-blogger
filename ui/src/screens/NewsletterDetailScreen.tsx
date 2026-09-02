@@ -116,7 +116,7 @@ export function NewsletterDetailScreen() {
                 {preview.data?.candidates.length === 1 ? '' : 's'}
               </span>{' '}
               in the last {n.lookback_hours}h
-              {preview.data?.enough === false && ` — below the minimum of ${n.min_items}, so a run would skip`}
+              {preview.data?.enough === false && ' — nothing new, so a run would skip'}
             </p>
             <ul className="mt-2 flex flex-col gap-1">
               {(preview.data?.candidates ?? []).slice(0, 5).map((c) => (

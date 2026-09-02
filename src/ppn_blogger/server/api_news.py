@@ -377,7 +377,6 @@ class NewsletterBody(BaseModel):
     timezone: str | None = None
     lookback_hours: int | None = None
     max_items: int | None = None
-    min_items: int | None = None
     max_per_feed: int | None = None
     audience: str | None = None
     tone: str | None = None

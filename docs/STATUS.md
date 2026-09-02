@@ -285,8 +285,9 @@ recipient before the mechanism for it has been reviewed on its own.
   screen with history and rollback, no deploy.
 - **One agent between two code gates** (`build_newsletter_workflow`):
   `IssueBuilder → newsletter_editor → IssuePublisher`.
-  - The **only branch in the graph is an integer comparison**: below
-    `min_items` the run finishes `skipped` and **no model is called at all**.
+  - The **only branch in the graph is whether there is anything to send**: with
+    an empty window the run finishes `skipped` and **no model is called at all**.
+    (There was a `min_items` floor here until the relay work below removed it.)
   - **`IssuePublisher` is the anti-fabrication gate.** The editor refers to
     articles by id and is never given a URL; anything it names that was not in
     the candidate list is dropped, as is any section outside the taxonomy. An
@@ -653,6 +654,54 @@ version of each document a run read.
 
 ---
 
+## Every article straight to Telegram (new)
+
+Two changes, one for each half of "I want every article in my Telegram, and no
+minimum before it sends".
+
+**The newsletter minimum is gone.** `IssueBuilder`'s branch was
+`len(candidates) < min_items`; it is now `not candidates`. A floor is a second,
+silent way for an issue never to happen and it fails in the direction that costs
+the operator news — one article that landed today is worth sending today, and
+holding it for company only makes it stale. The `min_items` column stays mapped
+and unread: `create_all` never ALTERs, so removing it would leave a NOT NULL
+column with no server default on every existing database and break every INSERT
+there while passing on a fresh one. It is off the API, the CLI line and the UI.
+
+**A watched feed can now be relayed to Telegram**, one message per article, the
+moment the poll finds it — the un-composed counterpart to a newsletter: no model
+call, no issue stored, headline and link exactly as the feed gave them.
+
+- **It rides on the watch set**, not on a column of its own. `notified_at` is
+  already stamped before anything is announced, so the same stamp covers both
+  the browser push and the relay, and "watched" keeps its single meaning. Which
+  feeds are relayed is which feeds are `realtime`. A new column would not have
+  reached an existing database anyway.
+- **The relay chats are named in the environment** (`PPN_TELEGRAM_RELAY_CHAT_ID`),
+  never taken from the recipient list. Recipients receive composed issues;
+  somebody who subscribed to a weekly letter has not asked for forty raw
+  headlines a day. Empty means off.
+- **Plain text, never Markdown.** Telegram answers a 400 — which this code maps
+  to *permanent* — when `*`, `_` or `[` do not balance under a parse mode, and a
+  headline is arbitrary text from somebody else's feed. `channels.send_telegram`
+  now takes `markdown=`, defaulting to off; only `render_short`, which is ours,
+  passes `True`.
+- **A flood becomes a digest, not a drop.** Telegram throttles a group at about
+  twenty messages a minute and a feed's first poll can carry a hundred articles,
+  so past `PPN_TELEGRAM_RELAY_MAX_PER_TICK` the tail travels as one message that
+  says how many it is carrying.
+- **It cannot raise and cannot block the push**, which runs after it: the
+  articles are stamped either way, so a failure is a logged line rather than a
+  duplicate the next tick.
+- Quiet hours still apply to both announcements — during the window nothing is
+  stamped, so the backlog rolls up at 07:00 rather than being lost. Set
+  `PPN_REALTIME_QUIET_HOURS=` to switch that off.
+
+- **Tests**: 5 new (4 relay, 1 for a one-article issue); the quiet-week test now
+  asserts the empty-window skip.
+
+---
+
 ## Still open / not yet exercised
 
 - **A corpus run against real pages** — `write-brief` and the Custom mode are
@@ -662,6 +711,8 @@ version of each document a run read.
 - **The Translator** — wired, unit-tested against the stub, never run for real.
 - **`ppn write --dossier` (resume)** — unit-tested, never used to rescue a real run.
 - **`ppn preflight`** — never run against the deployment.
+- **The Telegram relay against the real API** — covered offline only; the send
+  path is shared with the delivery channel, but no live chat has received one.
 - **Cost figures against a real bill** — the accounting has never metered a live
   model call, so it has not been reconciled with Azure Cost Management.
 - **The Outliner against a real model** — the whole outline stage is exercised
