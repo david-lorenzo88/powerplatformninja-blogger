@@ -359,6 +359,14 @@ class NewsSettings:
         default_factory=lambda: _env_int("PPN_REALTIME_MAX_PER_TICK", 6)
     )
     quiet_hours: str = field(default_factory=lambda: _env("PPN_REALTIME_QUIET_HOURS", "22:00-07:00"))
+    # Anything first seen longer ago than this is stamped without being
+    # announced. Watching a feed that already has months of history in the
+    # database would otherwise announce all of it: the first tick after 24 feeds
+    # were marked watched had 2,632 un-notified articles waiting. A relay is for
+    # what is new, and the backlog was never new — it was already read.
+    realtime_max_age_hours: int = field(
+        default_factory=lambda: _env_int("PPN_REALTIME_MAX_AGE_HOURS", 24)
+    )
 
     # The scheduler checks for due newsletters on this cadence, and only once a
     # newsletter actually has a due time. Kept here rather than in the scheduler

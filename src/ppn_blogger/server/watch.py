@@ -34,13 +34,13 @@ watched is therefore also which feeds are relayed.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import select, true, update
 
 from ..settings import get_settings
-from .db import Article, Feed, session, utcnow
+from .db import Article, Feed, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.watch")
 
@@ -134,6 +134,17 @@ async def _notify() -> int:
     if not batches:
         return 0
 
+    batches, stale = _drop_backlog(batches, settings.realtime_max_age_hours)
+    if stale:
+        # Stamped, not announced, and stamped even during quiet hours: it is not
+        # a backlog worth holding. Marking a feed watched must not replay its
+        # entire history into a chat.
+        await _mark_notified([a.id for a in stale])
+        logger.info("watch: %d article(s) older than %dh marked read, not announced",
+                    len(stale), settings.realtime_max_age_hours)
+    if not batches:
+        return 0
+
     total = sum(len(articles) for _, articles in batches)
 
     if in_quiet_hours(_local_now(), parse_quiet_hours(settings.quiet_hours)):
@@ -184,6 +195,31 @@ async def _notify() -> int:
 
     logger.info("watch: %d article(s) announced from %d feed(s)", total, len(batches))
     return relayed + sent_count
+
+
+def _drop_backlog(
+    batches: list[tuple[Feed, list[Article]]], max_age_hours: int
+) -> tuple[list[tuple[Feed, list[Article]]], list[Article]]:
+    """Split what is new from what was merely never announced.
+
+    Measured on ``fetched_at`` — when this system first saw the article — rather
+    than on the feed's own published date, which is frequently missing and
+    occasionally a lie. A brand-new feed's first poll is therefore all "new",
+    which is right: nobody has seen it here before.
+    """
+    if max_age_hours <= 0:
+        return batches, []
+    cutoff = utcnow() - timedelta(hours=max_age_hours)
+    fresh: list[tuple[Feed, list[Article]]] = []
+    stale: list[Article] = []
+    for feed, articles in batches:
+        keep = []
+        for article in articles:
+            seen = as_utc(article.fetched_at)
+            (keep if seen is None or seen >= cutoff else stale).append(article)
+        if keep:
+            fresh.append((feed, keep))
+    return fresh, stale
 
 
 async def relay_to_telegram(batches: list[tuple[Feed, list[Article]]]) -> int:

@@ -759,6 +759,36 @@ To recover a parked recipient: toggle it off and on in Recipients, which clears
 
 ---
 
+## Remove was a 500, and a watched feed replayed its history (new)
+
+Both found in production logs, in the same session as the digest fix.
+
+**`DELETE /api/news/recipients/{id}` returned 500.** `deliveries.recipient_id` is
+a real foreign key, so deleting the recipient row alone is *547 The DELETE
+statement conflicted with the REFERENCE constraint* on SQL Server. The delivery
+rows now go with the recipient: nulling the column would make them read as
+broadcast rows, which is a lie about what was sent. What is lost is the
+per-recipient history of a recipient that no longer exists.
+
+This one is *not* a case of SQLite hiding a SQL Server behaviour —
+`db._enforce_sqlite_foreign_keys` turns `PRAGMA foreign_keys` on, so the new test
+fails on either backend. What hid it was that no test had ever deleted a
+recipient that had been sent to.
+
+**A newly watched feed announced everything it had.** Marking 24 feeds watched
+left **2,632** un-notified articles waiting for the first tick — months of
+history that had simply never been anybody's notification. Articles first seen
+longer ago than `PPN_REALTIME_MAX_AGE_HOURS` (24) are now stamped *without* being
+announced, and stamped even during quiet hours, because a backlog like that is
+not worth holding. Measured on `fetched_at` rather than the feed's published
+date, which is often missing and occasionally a lie — so a brand-new feed's
+first poll is still entirely "new", which is right.
+
+- **Tests**: 2 new — removing a recipient that has deliveries, and a watched
+  feed not replaying its history.
+
+---
+
 ## Still open / not yet exercised
 
 - **A corpus run against real pages** — `write-brief` and the Custom mode are
