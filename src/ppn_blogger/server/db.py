@@ -164,7 +164,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     # suggest | explore | shortlist | write | cover | ingest | newsletter | deliver
-    #   | discover
+    #   | discover | learn
     kind: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     label: Mapped[str] = mapped_column(String(300), default="")
@@ -875,6 +875,227 @@ class DeclinedFeed(Base):
 Index("ix_declined_feeds_hash", DeclinedFeed.url_hash, unique=True)
 
 
+# ---------------------------------------------------------------------------
+# Supervised delta learning
+#
+# What the crew wrote, what the author published, and what that difference is
+# worth teaching. Five tables rather than columns on `draft_versions`, because
+# `create_all` never alters: a new table appears on the next boot, a new column
+# needs hand-run DDL against Azure SQL. The same reasoning as `run_usage`.
+# ---------------------------------------------------------------------------
+
+
+class DeltaPair(Base):
+    """One draft, and the version of it the author actually published.
+
+    The baseline is snapshotted here rather than read from the file when needed,
+    because ``server/drafts.py:write_draft`` rewrites the draft body in place —
+    the crew's original is gone the moment the author saves their first edit, and
+    with it the only evidence of what changed.
+
+    ``final_text`` is filled when the post is published, so a pair sits in
+    ``awaiting_final`` for as long as the author takes. A draft never published
+    stays there for good, which is correct: it is not evidence about anything.
+
+    Identical text is stored too, and matters most. Those are the posts that
+    shipped untouched, and they are the golden set every proposed rule is tested
+    against — a rule that fires on one of them is a false positive by definition.
+    """
+
+    __tablename__ = "delta_pairs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("posts.id"), nullable=True, index=True
+    )
+    draft_version_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("draft_versions.id"), nullable=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runs.id"), nullable=True, index=True
+    )
+    wordpress_post_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    slug: Mapped[str] = mapped_column(String(200), default="", index=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    # Lessons are language-scoped: a phrasing habit learned from Spanish output
+    # is not evidence about English output, and applying it anyway is how a
+    # multilingual crew learns to write neither language properly.
+    language: Mapped[str] = mapped_column(String(16), default="en", index=True)
+    # awaiting_final | captured | analysed | discarded
+    status: Mapped[str] = mapped_column(String(16), default="awaiting_final", index=True)
+    # in_app | wordpress | manual — which adapter produced the final text.
+    capture_source: Mapped[str] = mapped_column(String(16), default="in_app")
+
+    agent_text: Mapped[str] = mapped_column(Text, default="")
+    final_text: Mapped[str] = mapped_column(Text, default="")
+
+    # Per mille, so the SQLite/SQL Server seam never sees a float where a
+    # comparison matters. `edit_rate` on the API is this divided by 1000.
+    edit_rate: Mapped[int] = mapped_column(Integer, default=0)
+    overlap: Mapped[int] = mapped_column(Integer, default=1000)
+    changed_blocks: Mapped[int] = mapped_column(Integer, default=0)
+    total_blocks: Mapped[int] = mapped_column(Integer, default=0)
+    identical: Mapped[bool] = mapped_column(Boolean, default=False)
+    diff: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    discard_reason: Mapped[str] = mapped_column(String(200), default="")
+
+    # Which configuration produced the draft. Three integers rather than
+    # `Run.config_version`, which is a 95-character token stored in a String(64)
+    # column and therefore truncated mid-name — it cannot answer this.
+    validation_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    style_guide_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Declared now, unused in v1. The translated post is a separate WordPress
+    # post whose path never reaches `draft_versions`, so capturing its edits
+    # needs these columns to exist — and `create_all` never alters.
+    translation_path: Mapped[str] = mapped_column(Text, default="")
+    translation_post_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    analysed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# One pair per draft version: a re-publish updates the final text rather than
+# filing a second opinion about the same draft.
+Index("ix_delta_pairs_version", DeltaPair.draft_version_id, unique=True)
+Index("ix_delta_pairs_recent", DeltaPair.status, DeltaPair.created_at.desc())
+
+
+class DeltaObservation(Base):
+    """One classified difference, from one pair.
+
+    A table rather than a JSON blob on the pair, because the whole point is to
+    count a pattern *across* pairs: clustering queries by fingerprint, and a JSON
+    scan is poor on SQL Server. Same reasoning as `run_usage` being its own table.
+    """
+
+    __tablename__ = "delta_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pair_id: Mapped[int] = mapped_column(Integer, ForeignKey("delta_pairs.id"), index=True)
+    post_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    edit_kind: Mapped[str] = mapped_column(String(32), index=True)
+    target: Mapped[str] = mapped_column(String(32), index=True)
+    language: Mapped[str] = mapped_column(String(16), default="en")
+    signature: Mapped[str] = mapped_column(String(200), default="")
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    before_text: Mapped[str] = mapped_column(Text, default="")
+    after_text: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_delta_obs_fingerprint", DeltaObservation.fingerprint)
+
+
+class LearningCandidate(Base):
+    """A recurring pattern, accruing evidence until it earns a proposal.
+
+    Recurrence is counted in ``distinct_posts``, never in ``occurrences``. One
+    post edited the same way four times is one opinion; four posts edited that
+    way once each is a habit. Without that distinction, regenerating a draft
+    manufactures a pattern out of nothing.
+    """
+
+    __tablename__ = "learning_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    edit_kind: Mapped[str] = mapped_column(String(32), index=True)
+    target: Mapped[str] = mapped_column(String(32), index=True)
+    language: Mapped[str] = mapped_column(String(16), default="en")
+    label: Mapped[str] = mapped_column(String(300), default="")
+    # accruing | proposed | rejected_by_gate | pending_review | applied
+    status: Mapped[str] = mapped_column(String(24), default="accruing", index=True)
+    occurrences: Mapped[int] = mapped_column(Integer, default=0)
+    distinct_posts: Mapped[int] = mapped_column(Integer, default=0)
+    post_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    examples: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # The typed proposal, exactly as the diagnostician returned it. Never
+    # document text: the rendered diff lives on the review row.
+    proposal: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    proposal_kind: Mapped[str] = mapped_column(String(24), default="")
+    allocated_rule_id: Mapped[str] = mapped_column(String(8), default="")
+    # passed | failed | skipped — `skipped` exists from day one so a model replay
+    # can land later without a schema change.
+    gate_status: Mapped[str] = mapped_column(String(16), default="")
+    gate_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # A plain Integer, not a ForeignKey: reviews point at candidates and this
+    # points back, and a cycle of FKs is what `Post.current_version_id` avoids.
+    review_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_learning_candidates_fp", LearningCandidate.fingerprint, unique=True)
+Index(
+    "ix_learning_candidates_recent",
+    LearningCandidate.status,
+    LearningCandidate.last_seen_at.desc(),
+)
+
+
+class LearningReview(Base):
+    """Proposed configuration changes, paused for the author's verdict.
+
+    Shaped like ``FeedDiscoveryReview`` on purpose, down to the ordering rule in
+    ``decide``: write the config first, then close the review. A crash between
+    the two leaves a review that can be decided again, which is recoverable; the
+    other order leaves a decided review that changed nothing, which is not.
+
+    ``proposals`` carries the rendered diff and the gate's report verbatim, so
+    the screen the author approves from shows exactly what was tested.
+    """
+
+    __tablename__ = "learning_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runs.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    generated_on: Mapped[str] = mapped_column(String(32), default="")
+    candidate_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    proposals: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    decisions: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    applied: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    applied_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index("ix_learning_reviews_recent", LearningReview.status, LearningReview.created_at.desc())
+
+
+class DeclinedLearning(Base):
+    """A pattern the author refused. Never proposed again.
+
+    A separate table rather than a status on ``learning_candidates``, for the
+    same reason ``DeclinedFeed`` is separate: the cluster keeps accruing evidence
+    after the refusal — the author goes on making the same edit, because they
+    still prefer it that way — and a status field would be overwritten by the
+    next aggregation pass. The refusal has to outlive the row it refused.
+    """
+
+    __tablename__ = "declined_learnings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    edit_kind: Mapped[str] = mapped_column(String(32), default="")
+    target: Mapped[str] = mapped_column(String(32), default="")
+    label: Mapped[str] = mapped_column(String(300), default="")
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+Index("ix_declined_learnings_fp", DeclinedLearning.fingerprint, unique=True)
+
+
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -965,12 +1186,17 @@ __all__ = [
     "Base",
     "ConfigDocument",
     "DeclinedFeed",
+    "DeclinedLearning",
+    "DeltaObservation",
+    "DeltaPair",
     "Delivery",
     "DraftVersion",
     "Feed",
     "FeedGroup",
     "FeedDiscoveryReview",
     "FeedGroupMember",
+    "LearningCandidate",
+    "LearningReview",
     "Newsletter",
     "NewsletterGroup",
     "NewsletterIssue",

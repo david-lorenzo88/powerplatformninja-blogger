@@ -45,7 +45,13 @@ async def record_run_result(
         # An `explore` run has no suggestions to record — it stops at a review.
         await upsert_topic_ideas(run_id, result.get("suggestions", []), result.get("generated_on", ""))
     elif kind == "write":
-        await record_write_result(run_id, params, result)
+        version_id = await record_write_result(run_id, params, result)
+        # Snapshot the draft exactly as the crew wrote it, while the file still
+        # holds it: the Drafts editor rewrites the body in place, so the author's
+        # first save destroys the only copy of what the crew produced.
+        from . import delta_store
+
+        await delta_store.capture_baseline(version_id, result)
     elif kind == "cover":
         await record_cover_result(params, result)
 
@@ -210,7 +216,17 @@ async def record_publish(markdown_file: str, target: dict[str, Any]) -> int | No
                 post.status = "published" if target["status"] == "publish" else "wordpress_draft"
             post.updated_at = utcnow()
         await s.commit()
-        return version.post_id
+        post_id = version.post_id
+
+    # The file now holds what the author actually decided to publish, which is
+    # the other half of the pair. Bookkeeping, so it must never sink a publish.
+    try:
+        from . import delta_store
+
+        await delta_store.capture_final(markdown_file)
+    except Exception:  # noqa: BLE001 - a lost data point beats a lost publish
+        logger.exception("could not capture the delta for %s", markdown_file)
+    return post_id
 
 
 async def record_cover_publish(post_id: int, target: dict[str, Any]) -> None:

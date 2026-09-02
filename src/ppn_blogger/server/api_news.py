@@ -719,9 +719,10 @@ async def pending_counts() -> dict[str, int]:
     every 15 seconds, and three separate polls would wake the serverless
     database three times as often for no more information.
     """
-    from . import discovery, reviews
+    from . import discovery, learning_reviews, reviews
 
     return {
         "source_reviews": await reviews.pending_count(),
         "feed_reviews": await discovery.pending_count(),
+        "learning_reviews": await learning_reviews.pending_count(),
     }

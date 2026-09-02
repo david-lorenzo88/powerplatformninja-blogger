@@ -45,13 +45,14 @@ from .db import SchedulerJob, as_utc, session, utcnow
 
 logger = logging.getLogger("ppn.server.scheduler")
 
-FETCH, WATCH, PRUNE, LETTERS, RETRIES, PRICES = (
+FETCH, WATCH, PRUNE, LETTERS, RETRIES, PRICES, LEARN = (
     "fetch",
     "watch",
     "prune",
     "newsletters",
     "retry_deliveries",
     "prices",
+    "learn",
 )
 
 # Azure list prices move a few times a year. Weekly is already far more often
@@ -266,6 +267,31 @@ async def _any_bound_meters() -> bool:
     )
 
 
+async def _run_learn() -> str:
+    """Enqueue a learning sweep as an ordinary run, like the feed fetch."""
+    from .runs import manager
+
+    run_id = await manager().enqueue("learn", {}, "Learning sweep")
+    return f"run {run_id}"
+
+
+async def _any_captured_pairs() -> bool:
+    """False until the author has actually published something that was edited.
+
+    Two conditions, both required. The feature has to be switched on, and there
+    has to be at least one captured pair nobody has read yet — a weekly job that
+    wakes a serverless database to discover there is nothing to learn is exactly
+    the cost this scheduler exists to avoid.
+    """
+    from ..settings import get_settings as _settings
+
+    if not _settings().learning.enabled:
+        return False
+    from . import delta_store
+
+    return await delta_store.unanalysed_count() > 0
+
+
 async def _always() -> bool:
     return True
 
@@ -305,6 +331,13 @@ def _jobs() -> list[Job]:
             lambda: PRICE_REFRESH_MINUTES,
             _run_prices,
             _any_bound_meters,
+        ),
+        Job(
+            LEARN,
+            "Learn from the author's edits",
+            lambda: get_settings().learning.interval_minutes,
+            _run_learn,
+            _any_captured_pairs,
         ),
     ]
 

@@ -34,6 +34,18 @@ const TopicIdeasScreen = lazy(() =>
 const TopicIdeaDetailScreen = lazy(() =>
   import('./screens/TopicIdeaDetailScreen').then((m) => ({ default: m.TopicIdeaDetailScreen })),
 )
+const LearningScreen = lazy(() =>
+  import('./screens/LearningScreen').then((m) => ({ default: m.LearningScreen })),
+)
+const DeltaPairScreen = lazy(() =>
+  import('./screens/LearningScreen').then((m) => ({ default: m.DeltaPairScreen })),
+)
+const LearningReviewsScreen = lazy(() =>
+  import('./screens/LearningReviewScreen').then((m) => ({ default: m.LearningReviewsScreen })),
+)
+const LearningReviewScreen = lazy(() =>
+  import('./screens/LearningReviewScreen').then((m) => ({ default: m.LearningReviewScreen })),
+)
 const SourceReviewsScreen = lazy(() =>
   import('./screens/SourceReviewsScreen').then((m) => ({ default: m.SourceReviewsScreen })),
 )
@@ -88,6 +100,10 @@ export const router = createBrowserRouter([
       { path: 'spend', element: <SpendScreen /> },
       { path: 'topic-ideas', element: <TopicIdeasScreen /> },
       { path: 'topic-ideas/:id', element: <TopicIdeaDetailScreen /> },
+      { path: 'learning', element: <LearningScreen /> },
+      { path: 'learning/pairs/:id', element: <DeltaPairScreen /> },
+      { path: 'learning-reviews', element: <LearningReviewsScreen /> },
+      { path: 'learning-reviews/:id', element: <LearningReviewScreen /> },
       { path: 'source-reviews', element: <SourceReviewsScreen /> },
       { path: 'source-reviews/:id', element: <SourceReviewScreen /> },
       { path: 'config', element: <ConfigScreen /> },

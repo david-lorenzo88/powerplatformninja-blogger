@@ -493,3 +493,168 @@ class FeedSuggestion(BaseModel):
 class FeedSuggestionSet(BaseModel):
     suggestions: list[FeedSuggestion] = Field(default_factory=list)
     notes: str = Field("", description="Anything the operator should know about the sweep")
+
+
+# ---------------------------------------------------------------------------
+# Supervised delta learning
+#
+# The signal is the difference between the draft the crew wrote and the version
+# the author actually published. Two agents read it, and neither is allowed to
+# decide anything: the Analyst *classifies* each edit into a closed vocabulary,
+# and the Diagnostician fills a *typed* proposal. Code does the clustering, the
+# rule-id allocation, the rendering and the gating.
+#
+# The vocabularies are closed for a mechanical reason. Clustering happens in
+# Python, and free text cannot be grouped — a model asked to reuse its own
+# earlier phrasing invents a synonym by the third post, and the recurrence
+# threshold then never fires. Same shape as the newsletter editor's article ids.
+#
+# Note what `EditTarget` cannot name: honesty rules and sources. A learner that
+# could weaken the fabrication gate could learn its way out of it, so the
+# protection is in the type rather than only in a check downstream.
+# ---------------------------------------------------------------------------
+
+
+EditKind = Literal[
+    "tighten",
+    "expand",
+    "delete_sentence",
+    "rewrite_opening",
+    "reword_phrase",
+    "replace_term",
+    "fix_punctuation",
+    "change_heading",
+    "reorder_sections",
+    "add_example",
+    "remove_hedge",
+    "remove_claim",
+    "change_link",
+    "change_code",
+    "other",
+]
+
+EditTarget = Literal[
+    "voice_rule",
+    "typography_rule",
+    "content_rule",
+    "structure_rule",
+    "seo_rule",
+    "focus_rule",
+    "style_guide",
+    "blog_profile_structure",
+    "writer_guidance",
+    "none",
+]
+
+
+class EditObservation(BaseModel):
+    """One classified difference between the draft and what was published."""
+
+    edit_kind: EditKind
+    target: EditTarget
+    signature: str = Field(
+        ...,
+        description=(
+            "Under 80 characters. The recurring SHAPE of this edit, not this instance: "
+            "no names, no numbers, and no phrases lifted from this post. Two posts fixed "
+            "the same way must produce the same signature."
+        ),
+    )
+    before: str = Field("", description="The crew's text, verbatim, at most 200 characters")
+    after: str = Field(
+        "", description="What the author published instead, verbatim, at most 200 characters"
+    )
+    rationale: str = Field("", description="One sentence: what the editor was correcting")
+    confidence: int = Field(..., ge=1, le=5)
+
+
+class DeltaAnalysis(BaseModel):
+    """The Delta Analyst's whole output. Bound as its response_format."""
+
+    post_slug: str = ""
+    one_off: bool = Field(
+        False,
+        description=(
+            "True when this was a rushed pass or a typo sweep rather than editorial "
+            "judgement. Nothing is learned from a pair marked one_off."
+        ),
+    )
+    observations: list[EditObservation] = Field(default_factory=list)
+    unexplained: str = Field("", description="Edits you could not classify, in one sentence")
+
+
+ProposalKind = Literal["rule", "style_note", "profile_scalar", "guidance", "none"]
+
+# The only agents that can be given learned guidance. The validators are absent
+# deliberately: a learner able to coach the checker can teach it to accept the
+# writer's mistakes, which is the point at which a loop like this eats itself.
+GuidanceAgent = Literal["writer", "outliner"]
+
+# honesty_rules is deliberately absent: the learner may never add to the family
+# that stops a draft fabricating things, and the evidence it works from — what a
+# human changed while polishing prose — is not evidence about fabrication.
+RuleGroup = Literal[
+    "typography_rules",
+    "voice_rules",
+    "content_rules",
+    "focus_rules",
+    "structure_rules",
+    "seo_rules",
+]
+
+
+class LearningProposal(BaseModel):
+    """One typed change. NEVER document text — code renders the document.
+
+    A single flat model rather than a three-way union: Azure's strict structured
+    output expresses ``anyOf`` badly, and the code has to check the discriminator
+    anyway. Fields outside the chosen ``kind`` are ignored by the renderer.
+
+    ``rule_id`` is absent on purpose. Allocating it is code's job, checked against
+    every existing id and against ``detectors.COMPUTED_RULES`` — the same reason
+    the newsletter editor is handed article ids rather than asked to supply URLs.
+    """
+
+    kind: ProposalKind
+    summary: str = Field(..., description="One sentence the operator reads first")
+    evidence_note: str = Field(
+        "", description="Why the recurring edit implies this specific change"
+    )
+
+    # kind == "rule"
+    rule_group: RuleGroup = "voice_rules"
+    rule_text: str = Field("", description="The rule as it will read. Imperative, one or two sentences.")
+    severity: Severity = "minor"
+    detector: str = Field(
+        "",
+        description=(
+            "A Python regex, or empty when the rule needs judgement. No nested "
+            "quantifiers and no backreferences; a leading (?i) is fine."
+        ),
+    )
+    prose_scoped: bool = Field(
+        False,
+        description="True when the detector must not see fenced code, links or list markers",
+    )
+    check_hint: str = ""
+    fix_hint: str = ""
+
+    # kind == "style_note"
+    anchor: str = Field(
+        "", description="An existing heading from the style guide, verbatim, including its ## marker"
+    )
+    note_markdown: str = Field("", description="What to add beneath it. At most six lines.")
+
+    # kind == "profile_scalar"
+    profile_key: str = Field(
+        "", description="A dotted key from the whitelist you were given. Nothing else is accepted."
+    )
+    profile_value: str = Field(
+        "", description="The new value as a string; code coerces it to the key's type and range-checks it."
+    )
+
+    # kind == "guidance"
+    guidance_agent: GuidanceAgent = "writer"
+    guidance_text: str = Field(
+        "", description="One standing instruction for that agent. Imperative, one or two sentences."
+    )

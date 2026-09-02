@@ -28,6 +28,7 @@ from typing import Any
 
 import yaml
 
+from . import config_edit
 from .models import ScoutReport, SourceCandidate, SourceDecision
 from .tools import classify_domain, domain_of
 
@@ -184,39 +185,14 @@ def merge_into_yaml_text(text: str, decisions: list[SourceDecision]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def _meaningful(line: str) -> bool:
-    stripped = line.strip()
-    return bool(stripped) and not stripped.startswith("#")
-
-
-def _child_key(lines: list[str], start: int, end: int, key: str) -> int | None:
-    """Index of ``key:`` among the direct children of a block.
-
-    "Direct child" is the shallowest meaningful indent in the range rather than a
-    hard-coded two spaces, so reindenting the document does not break this.
-    """
-    indents = [_indent(lines[i]) for i in range(start, end) if _meaningful(lines[i])]
-    if not indents:
-        return None
-    base = min(indents)
-    for i in range(start, end):
-        line = lines[i]
-        if _meaningful(line) and _indent(line) == base and line.strip().startswith(f"{key}:"):
-            return i
-    return None
-
-
-def _block_end(lines: list[str], key_index: int, end: int) -> int:
-    """First line after ``key_index`` that is no longer inside its block."""
-    indent = _indent(lines[key_index])
-    for i in range(key_index + 1, end):
-        if _meaningful(lines[i]) and _indent(lines[i]) <= indent:
-            return i
-    return end
+# The path-generic half of this module's line surgery now lives in
+# ``config_edit``, which the delta learner also needs — the *editors* below stay
+# here, because they handle scalar sequence items and do not generalise to the
+# mapping-in-a-sequence shape a validation rule has.
+_indent = config_edit.indent_of
+_meaningful = config_edit.meaningful
+_child_key = config_edit.child_key
+_block_end = config_edit.block_end
 
 
 def _sequence_lines(lines: list[str], start: int, end: int) -> list[int]:
@@ -259,18 +235,7 @@ _DECLINED_HEADER = [
 ]
 
 
-def _locate(lines: list[str], path: list[str]) -> tuple[int, int, int] | None:
-    """Resolve a key path to ``(key_index, block_start, block_end)``."""
-    start, end = 0, len(lines)
-    key_index: int | None = None
-    for key in path:
-        key_index = _child_key(lines, start, end, key)
-        if key_index is None:
-            return None
-        end = _block_end(lines, key_index, end)
-        start = key_index + 1
-    assert key_index is not None
-    return key_index, start, end
+_locate = config_edit.locate
 
 
 def _rewrite_sequence(

@@ -1005,6 +1005,150 @@ the English post.
 
 ---
 
+## Learning from what you actually published
+
+Every post leaves the crew as a draft and reaches the blog as something a human
+finished. That difference is the highest-quality editorial feedback this system
+will ever get, and until this feature it was destroyed: `server/drafts.py`
+`write_draft` rewrites the body in place, so the first save in the Drafts editor
+overwrote the only copy of what the crew produced.
+
+Nine stages, of which only two involve a model, and neither of those decides
+anything.
+
+### 1-2. Capture
+
+Both halves ride call sites that already existed, so nothing new has to be
+instrumented and nothing can be missed by forgetting to call it.
+`catalog.record_write_result` has just written the draft file and knows where it
+is — the body is pristine at that instant, and it is copied into `delta_pairs`.
+`catalog.record_publish`, which fires when you publish from the app, records what
+the file says now.
+
+Posts published untouched are captured too, and matter most. Those are the golden
+set: a proposed rule that fires on one of them would be flagging a finished
+article.
+
+### 3. Diff and score — no model at all
+
+`delta.py` is pure. Both sides go through the *same* normaliser, so formatting
+that round-tripped through an editor cancels instead of being reported as an edit.
+Front matter and the H1 come off first — neither reaches WordPress, and leaving
+them in reports a deletion of both on every pair. (The front matter is stripped
+textually as well as by parsing, because `split_front_matter` returns the whole
+document when the block does not parse, and a title containing a colon is enough
+to do that.)
+
+Then three measurements:
+
+- the **H2 structure diff**, which is the most legible thing on the page. "The
+  fifth section always goes" is far more actionable than a thousand word tweaks.
+- **block-level hunks**, at paragraph granularity, with fenced code kept whole.
+- the **word-level edit rate**. Word-level, not character-level: character
+  distance is dominated by trivial rewording. This is the metric machine
+  translation settled on decades ago, and it is what makes the loop's success
+  measurable without asking a model for a score.
+
+Alongside it, **lexical overlap**, which routes an edit in code before any model
+sees it: a high edit rate with high overlap is you rephrasing, which a style rule
+can address; a high edit rate with low overlap means the content changed, which is
+a research failure and not a prompt problem.
+
+### 4. Classify — the first model, and it only labels
+
+The **Delta Analyst** (fast tier, no tools) is shown the two versions and the
+computed differences, and returns observations drawn from a **closed** vocabulary
+of edit kinds and targets. Closed for a mechanical reason: clustering happens in
+Python, and a model asked to reuse its own earlier phrasing invents a synonym by
+the third post — after which the recurrence threshold never fires and nothing is
+ever learned.
+
+`honesty_rule` and `sources` are absent from the target vocabulary. The learner
+cannot even *name* the rules that stop a draft fabricating things.
+
+The pair is data, not instructions, and the prompt says so: a published post can
+contain anything, including material the researcher quoted from a page.
+
+### 5. Aggregate — code
+
+Observations are grouped by a fingerprint over `(kind, target, language,
+stemmed signature)`. Recurrence is counted in **distinct posts**, never in
+observations: one post edited the same way four times is one opinion, and
+regenerating a draft would otherwise manufacture a pattern out of nothing.
+
+Below `PPN_LEARN_MIN_POSTS` (three), nothing is proposed.
+
+### 6-7. Diagnose and render
+
+The **Diagnostician** (reasoning tier) is given one cluster and returns a *typed
+proposal* — a rule, a style-guide note, a whitelisted number, or a line of agent
+guidance. Which shape it is asked for is decided by code from the cluster's
+target, and the rule id is allocated by code, checked against every existing id
+and against `COMPUTED_RULES`.
+
+It never writes document text. `config_edit.py` renders the edit, preserving every
+comment, and there is **no `safe_dump` fallback** for a hand-written document:
+`validation_rules.yaml` is 26 KB of which most is explanation, and losing that to
+a bookkeeping failure is worse than losing the proposal. A failure is a discard
+with a reason.
+
+Anchors in the style guide are resolved against fence-masked text. Section 8 holds
+`## Contents` and `## Sources` inside a fenced skeleton the Writer copies
+literally, and inserting policy there would reproduce it as prose in every post.
+
+### 8. The gate — the reason this works
+
+Four floors, and the second is the one that matters:
+
+1. it fires on the drafts that motivated it;
+2. **it fires on nothing you published**;
+3. there is enough published work to have tested it at all;
+4. no *other* rule's verdict changes on any published post.
+
+Floor 2 is what makes the system self-learning rather than self-suggesting: the
+evidence is already in hand, so the check is a genuine counterfactual rather than
+an opinion. Floor 4 catches a structure number quietly rewriting how every past
+draft would have scored, because S02, C04 and F03-F05 read those numbers.
+
+Detectors run in a **separate process** under a wall-clock timeout, with `spawn`
+forced rather than the platform default. Python's `re` has no timeout, a thread
+running a catastrophic pattern cannot be killed, and forking a process that is
+already running an event loop copies locks in whatever state they were in — a
+deadlock that would appear only in the container.
+
+A style note or a rule with no detector cannot be measured this way, and the
+review says exactly that rather than implying evidence that does not exist.
+
+### 9. Review and apply
+
+Survivors reach a queue shaped like the feed-discovery review, down to the
+ordering: **write the configuration first, then close the review**. A crash
+between the two leaves a review you can decide again; the other order leaves a
+decided review that changed nothing.
+
+Approving writes an ordinary config version, so the existing rollback works.
+Declining is remembered by fingerprint in a table of its own — you go on making
+the same edit, so the cluster keeps accruing evidence, and a status field would be
+overwritten by the next aggregation pass. The refusal has to outlive the row it
+refused.
+
+`learning_reviews.decide` is the only path to `config_store.save_document`, and a
+test parses `learning.py` to be sure it cannot reach one. "Nothing auto-applies"
+is a property of the code, not a promise about how it is called.
+
+### What is deliberately not here
+
+A **model replay** — re-running the Writer under the proposed configuration — is
+designed and unbuilt. It belongs in a separate process, as a CLI command, because
+`config_store._source` is a module singleton that `save_document` mutates in
+place: swapping it would let an ordinary config edit change the configuration a
+replay is running under, and every concurrent run's with it. `gate_status` already
+carries `skipped` so it lands without a schema change.
+
+And no **LLM quality score**, anywhere. Optimising a rubric number is the
+documented way a loop like this learns to game itself; the edit rate against what
+you published is objective, free, and hard to argue with.
+
 ## The tools agents can call
 
 All in `tools.py`. Every one is `async`, and **none of them ever raise** — failures

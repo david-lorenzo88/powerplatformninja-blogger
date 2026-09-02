@@ -18,7 +18,13 @@ from typing import Any
 import yaml
 from sqlalchemy import select
 
-from ..config_source import DOCUMENTS, MappingConfigSource, filename_for, set_config_source
+from ..config_source import (
+    DOCUMENTS,
+    MappingConfigSource,
+    config_stamp,
+    filename_for,
+    set_config_source,
+)
 from ..settings import CONFIG_DIR
 from .db import ConfigDocument, session, utcnow
 
@@ -175,11 +181,17 @@ _source = MappingConfigSource()
 
 
 async def refresh_active_source() -> MappingConfigSource:
-    """Load the newest version of every document and publish it to Settings."""
+    """Load the newest version of every document and publish it to Settings.
+
+    The token doubles as the stamp recorded on every run, so there is one name
+    for a configuration state rather than two that can drift. It used to be
+    ``name:version|...``, which is 112 characters against a String(64) column and
+    was stored truncated — see ``config_source.config_stamp``.
+    """
     newest = await latest_versions()
     documents = {name: _parse(row) for name, row in newest.items()}
-    token = "|".join(f"{name}:{row.version}" for name, row in sorted(newest.items()))
-    _source.replace(documents, token or "empty")
+    token = config_stamp({name: row.version for name, row in newest.items()})
+    _source.replace(documents, token)
     set_config_source(_source)
     return _source
 

@@ -299,6 +299,29 @@ price never rewrites history.
 
 ---
 
+### `ppn learn` — what your edits taught the crew
+
+```bash
+ppn learn status            # published unchanged, mean edit rate, where edits land
+ppn learn pairs             # every captured pair, most edited first
+ppn learn show <id>         # one diff, with the observations drawn from it
+ppn learn run --dry-run     # analyse, cluster, propose and gate — offline
+ppn learn run --yes         # approve every surviving proposal without prompting
+```
+
+`status` and `pairs` call no model and touch nothing. `run` is the whole loop in
+one process: the server splits it across a run and a review because a worker
+cannot be held open for a human, and the CLI can simply ask — the same shape as
+`suggest --explore` and `news discover`.
+
+What `run` prints before asking is the point. For each surviving proposal it shows
+**what the gate measured** — "fires on 3 drafts and on none of the 4 posts you
+published" — above the change itself, because that is the evidence. `?N` expands
+one; Enter accepts the ticks.
+
+A proposal that fires on something you published is discarded before you see it.
+If nothing survives, that is the normal outcome early on and the reason is printed.
+
 ## A normal week
 
 ```bash

@@ -42,8 +42,8 @@ const NAV = [
     label: 'Blog',
     short: 'Blog',
     icon: '◆',
-    paths: ['/topic-ideas', '/drafts', '/source-reviews'],
-    badge: 'source-reviews' as const,
+    paths: ['/topic-ideas', '/drafts', '/source-reviews', '/learning', '/learning-reviews'],
+    badge: 'blog-pending' as const,
   },
   { to: '/config', label: 'Config', short: 'Config', icon: '⚙', paths: ['/config'] },
 ]
@@ -154,6 +154,9 @@ export function AppShell() {
   const badges: Record<string, number> = {
     'source-reviews': pending?.source_reviews ?? 0,
     'feed-reviews': pending?.feed_reviews ?? 0,
+    // The Blog tab covers two queues now, so its badge is their sum — a tab that
+    // showed only one of them would go quiet while the other waited.
+    'blog-pending': (pending?.source_reviews ?? 0) + (pending?.learning_reviews ?? 0),
   }
   const { pathname } = useLocation()
   const [healthOpen, setHealthOpen] = useState(false)

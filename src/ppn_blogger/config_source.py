@@ -15,7 +15,9 @@ Both return exactly the same shapes, so nothing downstream changes.
 
 from __future__ import annotations
 
+import hashlib
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,12 +32,74 @@ DOCUMENTS: dict[str, str] = {
     "validation_rules": "yaml",
     "newsletters": "yaml",
     "model_prices": "yaml",
+    "agent_guidance": "yaml",
     "style_guide": "markdown",
 }
 
 
 def filename_for(name: str) -> str:
     return f"{name}.md" if DOCUMENTS.get(name) == "markdown" else f"{name}.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Naming a configuration in 64 characters
+#
+# `Run.config_version` is String(64), and it used to hold
+# `"|".join(f"{name}:{version}")` truncated to fit. That string is 112 characters
+# with the documents above, so the slice threw away four of them — including
+# `validation_rules`, the one that answers the only question the column is worth
+# asking. Worse, the cut point moved with the number of digits in a version, so
+# the stored value was not even stable in shape.
+#
+# The fix keeps the column at String(64) — widening it means hand-run DDL against
+# Azure SQL, since `create_all` never alters — and drops the names, which are the
+# part that does not fit. Versions go in a fixed order, and a digest of the
+# document *names* rides along so a stamp written before a document was added or
+# renamed is detectably from a different set rather than silently misaligned by
+# one position.
+# ---------------------------------------------------------------------------
+
+_STAMP_PREFIX = "cfg1"
+#: The widest stamp the column can hold. Pinned by a test against `DOCUMENTS`.
+STAMP_MAX_LENGTH = 64
+
+
+def _names_digest(names: list[str]) -> str:
+    return hashlib.sha256("|".join(names).encode("utf-8")).hexdigest()[:8]
+
+
+def config_stamp(versions: Mapping[str, int]) -> str:
+    """A compact, decodable name for one configuration state.
+
+    ``cfg1:<digest of the document names>:<version per document, in name order>``
+    """
+    names = sorted(DOCUMENTS)
+    body = ".".join(str(int(versions.get(name, 0) or 0)) for name in names)
+    return f"{_STAMP_PREFIX}:{_names_digest(names)}:{body}"
+
+
+def read_config_stamp(stamp: str) -> dict[str, int] | None:
+    """The versions a stamp records, or None when it cannot be read as one.
+
+    None rather than a best guess, deliberately. It is returned for a stamp
+    written before this encoding existed, and for one written against a different
+    set of documents — and in both cases the honest answer is "unknown". Lining
+    up seven old versions against eight current names would produce a confident
+    reading of the wrong ruleset, which is the failure this encoding replaced.
+    """
+    parts = (stamp or "").split(":")
+    if len(parts) != 3 or parts[0] != _STAMP_PREFIX:
+        return None
+    names = sorted(DOCUMENTS)
+    if parts[1] != _names_digest(names):
+        return None
+    numbers = parts[2].split(".")
+    if len(numbers) != len(names):
+        return None
+    try:
+        return {name: int(value) for name, value in zip(names, numbers, strict=True)}
+    except ValueError:
+        return None
 
 
 class ConfigSource(Protocol):
