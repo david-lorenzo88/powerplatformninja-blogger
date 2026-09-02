@@ -4,7 +4,7 @@ Project instructions for Claude Code. Read this first; it is the map.
 
 ## What this is
 
-A crew of eleven LLM agents that drafts blog posts for **powerplatformninja.com**,
+A crew of thirteen LLM agents that drafts blog posts for **powerplatformninja.com**,
 orchestrated with **Microsoft Agent Framework** (`agent_framework` 1.12+) on
 **Azure AI Foundry**, publishing into WordPress as unpublished drafts.
 
@@ -45,6 +45,8 @@ src/ppn_blogger/
   usage.py          token metering (agent middleware) + pure pricing arithmetic
   wordpress.py      REST client + Markdown → Gutenberg block conversion
   sources.py        harvest sites from a wide sweep; file the operator's verdict
+  delta.py          pure: normalise, diff and score a draft against what shipped
+  config_edit.py    pure: render a typed proposal into a config edit, under an allowlist
   news.py           news feeds, pure: canonicalise, conditional GET, parse, discover
   newsletter_render.py  one composed issue -> markdown, email HTML, plain text
   storage.py        drafts, dossiers, review reports, package JSON
@@ -56,9 +58,10 @@ src/ppn_blogger/
                     scheduler (scheduler.py), watch notifications (watch.py) and
                     newsletters (newsletters.py, newsletter_runs.py), delivery
                     (channels.py, delivery.py), feed discovery (discovery.py)
-                    and cost (usage_store.py, prices.py)
+                    and cost (usage_store.py, prices.py), and supervised delta
+                    learning (delta_store.py, learning.py, learning_reviews.py)
 config/             editorial policy — the thing you actually tune
-tests/              332 tests, offline; conftest.py picks the DB backend
+tests/              438 tests, offline; conftest.py picks the DB backend
 ui/                 React management UI (Vite + React + TS) — Stage 2; see ui/README.md
 ```
 
@@ -71,7 +74,7 @@ the same way, so they can never disagree. Keep them in lockstep.
 ## Commands
 
 ```bash
-pytest                      # 332 tests, ~50s, no network, no credentials
+pytest                      # 438 tests, ~90s, no network, no credentials
                             # (SQLite locally; CI runs the same suite on SQL Server)
 ruff check src tests        # must pass; line-length 110, E/F/I/UP/B
 ppn doctor                  # config + live WordPress check
@@ -86,6 +89,9 @@ ppn news discover "<brief>" # search the web for feeds matching a brief, then ap
 ppn news poll               # fetch every enabled feed; run twice to see the 304s
 ppn news list | ppn news read
 ppn newsletter list|preview|generate   # preview calls no model
+ppn learn status            # what your edits to finished drafts add up to
+ppn learn pairs | ppn learn show <id>   # every draft-vs-published diff
+ppn learn run --dry-run     # propose improvements offline, gate and all
 ppn cost                    # what the server-side runs have spent
 ppn cost prices --bind gpt-5   # find the retail meters that price a model
 ppn cost prices --refresh      # compare bound prices against Azure
@@ -171,6 +177,26 @@ and drops anything that was not offered, along with any section outside the
 configured taxonomy. An email cannot be un-sent, which is why this is stricter
 than the blog side. The offline stub deliberately returns one fabricated id and
 one invented section, so every dry run exercises the gate.
+
+**What the author published is the golden set, and it is what the learner is
+tested against.** Every post is finished by a human before it ships, and that
+difference is the best editorial feedback this system gets — so `delta.py` scores
+it, one agent classifies each edit into a *closed* vocabulary, and code clusters
+the results. A pattern earns a proposal only after recurring across three
+**distinct posts**; a proposed rule is then run over every draft the crew wrote
+*and* every version that was published, and **a rule that fires on something the
+author published is a false positive by construction** and is discarded before a
+human sees it. That one check is what makes this self-learning rather than
+self-suggesting. Nothing auto-applies: `learning_reviews.decide` is the only path
+to `config_store.save_document`, and a test parses `learning.py` to keep it so.
+
+Two consequences worth keeping. The model never writes a document — it fills a
+typed proposal and `config_edit.py` renders the edit under an allowlist, with no
+`safe_dump` fallback, because losing 26 KB of explanation from
+`validation_rules.yaml` to a bookkeeping failure is worse than losing the
+proposal. And the baseline is snapshotted at `record_write_result`, not read
+later: `drafts.write_draft` rewrites the body in place, so the author's first save
+destroys the only copy of what the crew produced.
 
 **The source review is code, never judgement.** In exploration mode the candidate
 list is harvested from the scouts' own reported URLs by `sources.py`, so what the
@@ -292,6 +318,19 @@ through the entire suite. Three things guard this seam now, and all three matter
 
 Use `== true()` / `== false()` for boolean predicates, and `db.as_utc()` before
 comparing any stored timestamp in Python.
+
+**A String(64) column and a name-and-version token do not fit together.**
+`Run.config_version` used to hold `"|".join(f"{name}:{version}")` sliced to
+64 characters. That string is 112 characters with the documents this project
+ships, so the slice discarded four of them — `validation_rules` among them,
+which is the only thing the column is really worth asking about — and the cut
+point moved as version numbers gained digits, so the stored value was not even
+stable in shape. It is now `config_source.config_stamp()`:
+`cfg1:<digest of the document names>:<version per document>`, 30 characters
+today and 45 at three-digit versions, decodable by `read_config_stamp()`. The
+digest is why a stamp written before a document was added reads as *unknown*
+rather than being misaligned by one position into a confident wrong answer.
+Widening the column was the alternative, and `create_all` never alters.
 
 **Date truncation has no portable spelling, and both wrong answers differ.** This
 one reached `main`: `func.date(x)` is SQLite's, and SQL Server has no such

@@ -37,6 +37,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 def _load_yaml(name: str) -> dict[str, Any]:
     """Kept for callers that want a file read regardless of the active source."""
     path = CONFIG_DIR / name
@@ -525,6 +533,45 @@ class SchedulerSettings:
 
 
 @dataclass(slots=True)
+class LearningSettings:
+    """Supervised delta learning: how much evidence is needed before anything
+    is proposed, and how hard the gate leans on it.
+
+    Off by default. The loop's clock is the author's publishing cadence, so the
+    capture half is worth running long before the proposing half has anything to
+    say, and turning this on before there is a corpus only produces noise.
+    """
+
+    enabled: bool = field(default_factory=lambda: _env_bool("PPN_LEARN_ENABLED", False))
+    # Recurrence, not statistics. At the sample sizes a single-author blog
+    # produces, a significance test on a hundred-case set can only detect a
+    # fifteen-point swing; "the same edit in three separate posts" is a far more
+    # robust signal, and it is what the literature recommends at small n.
+    min_distinct_posts: int = field(default_factory=lambda: _env_int("PPN_LEARN_MIN_POSTS", 3))
+    # Once the crew's drafts are barely edited, a new rule is more likely to fire
+    # on text that was already right than to catch a fault. The lesson automatic
+    # post-editing learned expensively.
+    clean_rate: float = field(default_factory=lambda: _env_float("PPN_LEARN_CLEAN_RATE", 0.05))
+    # A pair whose conversion looks unreliable is dropped rather than learned
+    # from; past this share of drops the run proposes nothing and says why,
+    # because discovering conversion noise through a bad rule is far dearer.
+    max_discard_rate: float = field(
+        default_factory=lambda: _env_float("PPN_LEARN_MAX_DISCARD_RATE", 0.5)
+    )
+    max_pairs_per_run: int = field(default_factory=lambda: _env_int("PPN_LEARN_MAX_PAIRS", 20))
+    # A ruleset that grows without bound is the real long-run failure: enough
+    # minor deductions push honest drafts under the threshold and buy revision
+    # rounds nobody asked for.
+    max_learned_rules: int = field(default_factory=lambda: _env_int("PPN_LEARN_MAX_RULES", 10))
+    # Wall-clock ceiling for one candidate detector, run in its own process.
+    regex_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("PPN_LEARN_REGEX_TIMEOUT", 5.0)
+    )
+    interval_minutes: int = field(default_factory=lambda: _env_int("PPN_LEARN_INTERVAL_MINUTES", 10080))
+    timeout_minutes: int = field(default_factory=lambda: _env_int("PPN_LEARN_TIMEOUT_MINUTES", 20))
+
+
+@dataclass(slots=True)
 class Settings:
     foundry: FoundrySettings = field(default_factory=FoundrySettings)
     wordpress: WordPressSettings = field(default_factory=WordPressSettings)
@@ -539,17 +586,27 @@ class Settings:
     telegram: TelegramSettings = field(default_factory=TelegramSettings)
     whatsapp: WhatsAppSettings = field(default_factory=WhatsAppSettings)
     delivery: DeliverySettings = field(default_factory=DeliverySettings)
+    learning: LearningSettings = field(default_factory=LearningSettings)
 
     # Config documents are pulled from the active ConfigSource (YAML files by
     # default, the database when the server is running) and cached until that
     # source reports a new version token.
+    #
+    # `source` overrides that per instance, and exists for one caller: scoring a
+    # proposed config change against history without touching the process-wide
+    # source. `config_store._source` is a module singleton that `save_document`
+    # mutates in place, so swapping it globally would let an operator's ordinary
+    # config edit silently change the configuration a scoring pass is running
+    # under — and every concurrent run's along with it. An instance field cannot
+    # do that to anyone.
+    source: Any | None = field(default=None, repr=False)
     _cache: dict[str, Any] = field(default_factory=dict, repr=False)
     _cache_token: str = field(default="", repr=False)
 
     def _document(self, name: str, *, text: bool = False) -> Any:
         from .config_source import get_config_source
 
-        source = get_config_source()
+        source = self.source or get_config_source()
         token = source.version_token()
         if token != self._cache_token:
             self._cache = {}
@@ -608,6 +665,35 @@ class Settings:
     @property
     def newsletter_render(self) -> dict[str, Any]:
         return dict(self.newsletters.get("render", {}))
+
+    @property
+    def agent_guidance(self) -> dict[str, Any]:
+        """Lessons the delta learner has taken from the author's own edits.
+
+        A document rather than lines in ``prompts.py`` because the learner must
+        never write Python: an approved lesson is an ordinary config version,
+        with history and a rollback, and it reaches the next run with no deploy.
+        Empty is the normal state until something has actually been learned.
+        """
+        return self._document("agent_guidance")
+
+    def learned_guidance(self, agent: str) -> list[str]:
+        """The guidance lines for one agent, in the blog's own language.
+
+        Language-scoped by construction: a phrasing lesson taken from Spanish
+        output is not evidence about English output, and applying it anyway is
+        how a multilingual agent learns to write neither language properly.
+        """
+        agents = self.agent_guidance.get("agents") or {}
+        entries = (agents.get(agent) or {}).get("guidance") or []
+        language = self.language
+        return [
+            str(entry["text"]).strip()
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("text")
+            and str(entry.get("language", language)) == language
+        ]
 
     @property
     def style_guide(self) -> str:

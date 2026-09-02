@@ -1,0 +1,44 @@
+# Learned guidance
+# =============================================================================
+#
+# Lessons the delta learner has taken from edits the author made to finished
+# drafts, and which the author approved. Everything here is injected into an
+# agent's instructions as a <learned_guidance> block at the moment the agent is
+# built, so an entry takes effect on the next run with no deploy.
+#
+# Why this file exists at all. Prompts are Python (`prompts.py`), and the learner
+# must never write Python. Giving learned guidance its own versioned document
+# means a lesson is an ordinary config edit: it appears in the Config screen, it
+# carries history, and it can be rolled back like any other version.
+#
+# Two agents, and only two. The Writer and the Outliner shape what a post says
+# and how it is built, which is what the author's edits are evidence about. The
+# validators are deliberately absent: letting the learner coach the checker would
+# let it teach the checker to accept the writer's mistakes, which is the point at
+# which a learning loop starts eating itself.
+#
+# Entries are appended by code with a code-allocated id, never written by a
+# model, and never edited in place by the learner. Prune by hand, or roll back.
+#
+# Each entry:
+#   id           G01, G02, ... allocated by code, unique within the agent
+#   text         one instruction, imperative, a sentence or two
+#   language     the language the lesson was learned from; never applied to another
+#   added        ISO date
+#   learned_from the delta pair ids that are the evidence, so a lesson is traceable
+#   review       the learning review that approved it
+#
+# `max_entries` is a ceiling per agent. An instruction block that grows without
+# bound degrades the very output it is meant to improve, so the learner refuses
+# to propose past it and the author prunes instead.
+
+meta:
+  version: 1
+  max_entries: 8
+
+agents:
+  writer:
+    guidance: []
+
+  outliner:
+    guidance: []

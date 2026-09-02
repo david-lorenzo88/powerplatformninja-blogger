@@ -134,6 +134,31 @@ the config. It returns `409` for a review that was already answered or a domain 
 was not in it, and `404` for an unknown review. `run_id` is empty when
 `start_shortlist` is false or nothing was approved.
 
+### Learning — what your edits taught the crew
+
+Nothing here applies a change. `POST /learning-reviews/{id}/decide` is the only
+write, and it takes a human's verdict.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/learning/metrics` | Share published unchanged, mean edit rate, the trend, edits by section, discard rate. All arithmetic over stored pairs — no model produces a figure. |
+| GET | `/api/delta-pairs` | Every captured draft-and-published pair. `?status=` filters. |
+| GET | `/api/delta-pairs/{id}` | One pair with its hunks, section diff, observations and the config versions the run read. The hunks are computed once on the server; the client renders and never diffs. |
+| GET | `/api/learning/candidates` | Patterns accruing evidence, with their recurrence and gate status. |
+| GET | `/api/learning/declined` | Patterns refused, which are never offered again. |
+| POST | `/api/learning/sweep` | 202, `{id, run_id}` — enqueues a `learn` run. |
+| GET | `/api/learning-reviews` | Pending and decided reviews. |
+| GET | `/api/learning-reviews/{id}` | The proposals, each with its rendered document, the gate's report and the edits that motivated it. |
+| POST | `/api/learning-reviews/{id}/decide` | `{decisions: [{fingerprint, approved, reason}]}`. 404 unknown, 409 already decided or naming something the review did not offer. Approving writes a new config version; declining is remembered. |
+| POST | `/api/learning-reviews/{id}/cancel` | `{cancelled}`. |
+
+`GET /api/news/pending` gains `learning_reviews`, so the nav badge is still one
+poll for every queue.
+
+A run now also carries `config_versions`: the decoded version of each config
+document it read, or `null` when the stamp predates the encoding. See the
+`Run.config_version` note in `docs/STATUS.md`.
+
 ### The event stream
 
 `GET /runs/{id}/events?after=<seq>` **replays from `after`, then follows live.**

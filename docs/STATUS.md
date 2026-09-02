@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-08-13. The React management UI (Stage 2) is **built, verified
+Last updated: 2026-09-02. The React management UI (Stage 2) is **built, verified
 and merged into `main`** (PR #1). Read this before starting anything.
 
 ---
@@ -553,6 +553,103 @@ full `ppn write-brief --dry-run` walks the whole pipeline.
 **Not yet done:** never run against a real model or real pages. The first live run
 is the interesting one — what a corpus-only dossier looks like when the pages are
 thin is exactly what cannot be learned from the stub.
+
+---
+
+## Supervised delta learning (new)
+
+Every post is finished by hand before it ships, and until now that difference was
+thrown away — `server/drafts.py:write_draft` rewrites the draft body in place, so
+the crew's original was destroyed by the first save. The loop now captures it,
+scores it, and turns what recurs into reviewable configuration changes.
+**Built and tested offline; never run against a real model.**
+
+- **Two pure modules.** `delta.py` normalises both sides through one function,
+  diffs H2 structure and blocks, and reports a **word-level edit rate** — the
+  metric machine translation settled on decades ago. `config_edit.py` renders a
+  typed proposal into a document edit under an allowlist. No LLM score appears
+  anywhere: a rubric number would be the thing to optimise, and optimising it is
+  how a loop like this games itself. A model classifies *what kind* of edit
+  happened; arithmetic decides *how much*.
+- **Capture rides two call sites that already existed.** `record_write_result`
+  snapshots the pristine draft; `record_publish` records what was published.
+  Posts published untouched are kept too — they are the positive class, and the
+  golden set every proposal is tested against.
+- **Five tables** (`server/db.py`): `delta_pairs`, `delta_observations`,
+  `learning_candidates`, `learning_reviews`, `declined_learnings`. A refusal has
+  its own table rather than a status, for the same reason `declined_feeds` does:
+  the cluster keeps accruing evidence afterwards and a status would be overwritten.
+- **The gate is the point.** A proposed rule runs against every draft the crew
+  wrote *and* every version published. **A rule that fires on something the author
+  published is a false positive by construction** and is discarded before a human
+  sees it. Structure numbers get the same treatment through S02/C04/F03-F05.
+  Detectors run in a **separate process under a wall-clock timeout** — Python's
+  `re` has no timeout and a thread running a catastrophic pattern cannot be killed.
+- **Nothing auto-applies.** `learning_reviews.decide` is the only path to
+  `config_store.save_document`; a test parses `learning.py` to keep it that way.
+  Honesty rules and `sources` are closed to the learner in the *type*, a learned
+  rule is capped at `minor`, existing rules are immutable, and the ceiling on
+  learned rules is configurable.
+- **A new versioned document**, `config/agent_guidance.yaml`, so learned guidance
+  for the Writer and Outliner is an ordinary config version with history and
+  rollback — prompts stay Python, because the learner must never write Python.
+  The validators deliberately get none: a learner that can coach the checker can
+  teach it to accept the writer's mistakes.
+- **UI**: a *Learning* screen under Blog with the metrics the spec asks for
+  (share published unchanged, mean edit rate, edits by section), a per-post diff
+  viewer, and a review screen that puts the gate's four counts **above** the diff.
+- **CLI**: `ppn learn status | pairs | show <id> | run [--dry-run]`.
+- **Tests**: 106 new; suite is **438 passing**, ruff clean, `tsc` and the UI build
+  clean.
+
+**Verified end to end offline and in the browser** (2026-09-02): four seeded posts,
+three edited the same way and one published untouched; the sweep analysed 4 pairs,
+found 2 clusters, proposed 2 and **1 survived** — the stub's deliberately bad
+proposal (a detector matching ordinary prose) was discarded by the gate. Approving
+in the browser wrote `validation_rules v2` with rule `V17`, allocated by code, and
+**all 72 comment lines survived**.
+
+**Three real bugs this turned up:**
+
+- **`detectors._PROSE_SCOPED` is a hardcoded id set.** Any rule id allocated after
+  that module was written — by hand or by the learner — was in neither list, so its
+  detector ran against raw markdown and fired inside code fences, inline spans and
+  URLs: exactly the T01/T02 false positives the masking layer exists to prevent.
+  Rules can now declare `prose_only`; the shipped 61 are unaffected.
+- **`config/style_guide.md` §8 holds `## Contents` and `## Sources` inside a fenced
+  skeleton** the Writer copies literally. Matching an anchor without masking fences
+  would have spliced editorial policy into that template, and into every post.
+- **`sources.merge_into_yaml_text` does not generalise** to a mapping in a sequence,
+  which is what a validation rule is, and its `safe_dump` fallback would have
+  stripped 26 KB of explanation from the ruleset. The path-generic helpers were
+  promoted to `config_edit.py`; the fallback is a refusal there.
+
+**Not yet done:** the model replay (tier 2 validation) is designed and deliberately
+unbuilt — see the plan. `gate_status` already carries `skipped` so it lands without
+a schema change. It belongs in a **separate process**, as a CLI command, because
+`config_store._source` is a module singleton that `save_document` mutates in place.
+
+**The honest caveat:** the loop's clock is the publishing cadence. At three distinct
+posts per pattern, roughly ten published posts are needed before the first proposal
+exists. The capture half costs nothing and should run long before the rest is
+switched on — `PPN_LEARN_ENABLED` is off by default.
+
+## `Run.config_version` was truncated, and is now decodable (new)
+
+The column is `String(64)` and held `"|".join(f"{name}:{version}")` sliced to fit.
+That token is **112 characters** with the documents this project ships, so the
+slice threw away four of them — including `validation_rules`, the one thing the
+column is really worth asking about — and the cut point moved as version numbers
+gained digits, so the value was not even stable in shape.
+
+`config_source.config_stamp()` now encodes it as
+`cfg1:<digest of the document names>:<version per document>` — 30 characters today,
+45 at three-digit versions, and decodable with `read_config_stamp()`. The digest is
+load-bearing: a stamp written before a document was added reads as **unknown**
+rather than being silently misaligned by one position into a confident wrong
+answer, and rows written before the encoding read as unknown too. The column stays
+`String(64)`, so no hand-run DDL against Azure SQL. Run detail now shows which
+version of each document a run read.
 
 ---
 

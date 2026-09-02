@@ -75,6 +75,24 @@ _PROSE_SCOPED = {
     "F01",
 }
 
+
+def _is_prose_scoped(rule: dict[str, Any]) -> bool:
+    """Scope declared on the rule, falling back to the ids shipped with v2.
+
+    The set above was written when every rule id in the ruleset was known here.
+    A rule added later — by hand, or by the delta learner allocating the next
+    free id in a group — is in neither list, so it would run against the raw
+    markdown and fire inside fenced code, inline spans, URLs and list bullets:
+    exactly the T01/T02 false-positive class ``prose_only`` exists to prevent,
+    reintroduced through the back door.
+
+    Declaring ``prose_only`` on the rule itself is how a new rule says which it
+    is. The 61 rules shipped today declare nothing and are unaffected.
+    """
+    if "prose_only" in rule:
+        return bool(rule["prose_only"])
+    return rule["id"] in _PROSE_SCOPED
+
 # Rules decided here in code with no regex behind them, because the check is a
 # comparison against a configured number rather than a pattern in the text.
 #
@@ -401,7 +419,7 @@ def run_detectors(
             continue
         rid = rule["id"]
         pattern = _compiled(rule["detector"])
-        target = prose if rid in _PROSE_SCOPED else markdown
+        target = prose if _is_prose_scoped(rule) else markdown
 
         # H03 — number traceability. Deterministic, so computed in code.
         if rid == "H03":

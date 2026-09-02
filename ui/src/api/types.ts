@@ -81,6 +81,9 @@ export interface Run {
   result: Record<string, unknown> | null
   error: string | null
   config_version: string | null
+  /** The stamp decoded on the server, or null when it predates the encoding
+   * or names a different set of documents — unknown, not empty. */
+  config_versions: Record<string, number> | null
   queued_at: string | null
   started_at: string | null
   finished_at: string | null
@@ -759,4 +762,163 @@ export interface FeedDecision {
 export interface PendingCounts {
   source_reviews: number
   feed_reviews: number
+  learning_reviews: number
+}
+
+// -- Supervised delta learning -----------------------------------------------
+//
+// The hunks and the rate are computed once in `delta.py` and shipped here.
+// Nothing on this side diffs anything, so unlike the run canvas there is no port
+// to keep in lockstep — the screen and the learner cannot disagree about what
+// changed.
+
+export interface DeltaHunk {
+  op: 'equal' | 'replace' | 'insert' | 'delete'
+  before: string
+  after: string
+  section: string
+}
+
+export interface DeltaSectionChange {
+  op: 'equal' | 'replace' | 'insert' | 'delete'
+  before: string
+  after: string
+}
+
+export interface DeltaPairSummary {
+  id: number
+  post_id: number | null
+  draft_version_id: number | null
+  run_id: string | null
+  slug: string
+  title: string
+  language: string
+  status: 'awaiting_final' | 'captured' | 'analysed' | 'discarded'
+  capture_source: string
+  /** Word-level, 0–1. The field calls this HTER. */
+  edit_rate: number
+  overlap: number
+  changed_blocks: number
+  total_blocks: number
+  identical: boolean
+  discard_reason: string
+  created_at: string | null
+  captured_at: string | null
+  analysed_at: string | null
+}
+
+export interface DeltaObservation {
+  id: number
+  edit_kind: string
+  target: string
+  signature: string
+  before: string
+  after: string
+  rationale: string
+  confidence: number
+  fingerprint: string
+}
+
+export interface DeltaPair extends DeltaPairSummary {
+  agent_text: string
+  final_text: string
+  diff: { hunks?: DeltaHunk[]; sections?: DeltaSectionChange[] }
+  wordpress_post_id: number | null
+  edit_link: string
+  link: string
+  config: {
+    validation_rules: number | null
+    style_guide: number | null
+    blog_profile: number | null
+  }
+  observations: DeltaObservation[]
+}
+
+export interface LearningMetrics {
+  pairs: number
+  awaiting_final: number
+  discarded: number
+  /** The share published untouched — more sensitive than the mean, and the one
+   * an author recognises. */
+  clean_rate: number
+  mean_edit_rate: number
+  discard_rate: number
+  trend: { slug: string; at: string | null; edit_rate: number }[]
+  by_section: Record<string, number>
+}
+
+export interface GateReport {
+  status: 'passed' | 'failed' | 'skipped'
+  reason: string
+  evidence_hits: number
+  draft_hits: number
+  final_hits: number
+  drafts: number
+  finals: number
+  regressions: number
+}
+
+export interface LearningProposalView {
+  candidate_id: number
+  fingerprint: string
+  label: string
+  edit_kind: string
+  target: string
+  distinct_posts: number
+  occurrences: number
+  kind: 'rule' | 'style_note' | 'profile_scalar' | 'guidance' | 'none'
+  summary: string
+  evidence_note: string
+  rule_id: string
+  document: string
+  content: string
+  proposal: Record<string, unknown>
+  gate: GateReport
+  examples: { before: string; after: string; rationale: string }[]
+}
+
+export interface LearningReviewSummary {
+  id: number
+  run_id: string | null
+  status: 'pending' | 'approved' | 'cancelled'
+  generated_on: string
+  proposal_count: number
+  applied_count: number
+  created_at: string | null
+  decided_at: string | null
+}
+
+export interface LearningReview extends LearningReviewSummary {
+  proposals: LearningProposalView[]
+  decisions: { fingerprint: string; approved: boolean; reason?: string }[]
+  applied: { document: string; version: number; summary: string; rule_id: string }[]
+  candidate_ids: number[]
+}
+
+export interface LearningDecision {
+  fingerprint: string
+  approved: boolean
+  reason?: string
+}
+
+export interface LearningCandidate {
+  id: number
+  fingerprint: string
+  edit_kind: string
+  target: string
+  language: string
+  label: string
+  status: string
+  occurrences: number
+  distinct_posts: number
+  post_ids: number[]
+  examples: { before: string; after: string; rationale: string }[]
+  proposal_kind: string
+  allocated_rule_id: string
+  gate_status: string
+  gate_report: GateReport | null
+  review_id: number | null
+  config_version: number | null
+  first_seen_at: string
+  last_seen_at: string
 }

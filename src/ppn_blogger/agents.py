@@ -15,8 +15,10 @@ from . import prompts, tools
 from .clients import ClientBundle, hosted_web_search_tools
 from .models import (
     AuthorClaimSet,
+    DeltaAnalysis,
     Draft,
     FeedSuggestionSet,
+    LearningProposal,
     NewsletterIssueDraft,
     PostOutline,
     ResearchDossier,
@@ -44,6 +46,8 @@ SOURCE_CHECKER = "source_checker"
 TRANSLATOR = "translator"
 NEWSLETTER_EDITOR = "newsletter_editor"
 FEED_DISCOVERY_SCOUT = "feed_discovery_scout"
+DELTA_ANALYST = "delta_analyst"
+LEARNING_DIAGNOSTICIAN = "learning_diagnostician"
 
 
 def _opts(response_format: type, temperature: float | None = None) -> dict:
@@ -359,4 +363,62 @@ def build_feed_discovery_scout(
         tools=_searchable([tools.web_search, tools.fetch_page, tools.today_tool], clients.fast),
         default_options=_opts(FeedSuggestionSet),
         middleware=_meter(FEED_DISCOVERY_SCOUT, fast=True),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Supervised delta learning
+# ---------------------------------------------------------------------------
+
+
+def build_delta_analyst(settings: Settings, clients: ClientBundle) -> Agent:
+    """Classifies the author's edits to a finished draft. Decides nothing.
+
+    On the fast tier deliberately. This is labelling against a closed vocabulary
+    with the differences already computed in code, not judgement — and it runs
+    once per published post forever, so the expensive model would be paying for
+    confidence the pipeline does not rely on. What it produces is counted across
+    many posts before it can influence anything, and a human approves the result.
+
+    No tools at all. Everything it needs is in the message, and a web search here
+    would let a post's own content send it looking things up — the pair it is
+    reading is untrusted content by construction.
+    """
+    return Agent(
+        clients.fast,
+        prompts.delta_analyst_instructions(settings),
+        id=DELTA_ANALYST,
+        name=DELTA_ANALYST,
+        description="Classifies how a published post differs from the draft the crew wrote.",
+        tools=[],
+        default_options=_opts(DeltaAnalysis),
+        middleware=_meter(DELTA_ANALYST, fast=True),
+    )
+
+
+def build_learning_diagnostician(
+    settings: Settings, clients: ClientBundle, *, shape: str, context_block: str = ""
+) -> Agent:
+    """Proposes one typed configuration change from a recurring pattern.
+
+    The reasoning tier, because this is the one judgement in the loop: which
+    single change would stop a habit recurring, stated precisely enough to survive
+    being run against every draft and every published post.
+
+    ``shape`` is chosen by code from the cluster's target, not by the model — the
+    same reason the newsletter editor is handed article ids. Each shape binds the
+    same response model with different instructions, so the fields the renderer
+    will read are the fields the agent was told to fill.
+    """
+    return Agent(
+        clients.reasoning,
+        prompts.learning_diagnostician_instructions(
+            settings, shape=shape, context_block=context_block
+        ),
+        id=LEARNING_DIAGNOSTICIAN,
+        name=LEARNING_DIAGNOSTICIAN,
+        description="Turns a recurring edit into one reviewable configuration change.",
+        tools=[],
+        default_options=_opts(LearningProposal),
+        middleware=_meter(LEARNING_DIAGNOSTICIAN),
     )

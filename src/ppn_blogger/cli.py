@@ -1845,5 +1845,249 @@ def newsletter_generate(
     asyncio.run(run())
 
 
+# ---------------------------------------------------------------------------
+# Supervised delta learning
+# ---------------------------------------------------------------------------
+
+learn_app = typer.Typer(
+    help="Learn from the differences between what the crew drafted and what you published."
+)
+app.add_typer(learn_app, name="learn")
+
+
+@learn_app.command("status")
+def learn_status() -> None:
+    """What has been captured so far, and what it says."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server import delta_store
+
+        figures = await delta_store.metrics()
+        if not figures["pairs"] and not figures["awaiting_final"]:
+            console.print(
+                "[yellow]Nothing captured yet.[/] A pair is recorded when a write run "
+                "finishes, and completed when you publish the draft from the app."
+            )
+            return
+
+        console.print(
+            f"[bold]{figures['pairs']}[/] published pair(s), "
+            f"{figures['awaiting_final']} draft(s) not yet published, "
+            f"{figures['discarded']} discarded."
+        )
+        console.print(
+            f"Published unchanged: [bold]{round(figures['clean_rate'] * 100)}%[/]  ·  "
+            f"mean words changed: [bold]{round(figures['mean_edit_rate'] * 100, 1)}%[/]"
+        )
+        if figures["by_section"]:
+            table = Table(title="Where the edits land")
+            table.add_column("section")
+            table.add_column("share of blocks changed", justify="right")
+            for name, share in sorted(figures["by_section"].items(), key=lambda kv: -kv[1])[:10]:
+                table.add_row(name, f"{round(share * 100)}%")
+            console.print(table)
+
+    asyncio.run(run())
+
+
+@learn_app.command("pairs")
+def learn_pairs(limit: int = typer.Option(20, help="How many to list.")) -> None:
+    """Every captured draft-and-published pair, most edited first."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server import delta_store
+
+        pairs = await delta_store.list_pairs(limit=limit)
+        if not pairs:
+            console.print("[yellow]Nothing captured yet.[/]")
+            return
+        table = Table(title=f"{len(pairs)} pair(s)")
+        table.add_column("id", justify="right")
+        table.add_column("post")
+        table.add_column("changed", justify="right")
+        table.add_column("blocks", justify="right")
+        table.add_column("status")
+        for pair in sorted(pairs, key=lambda p: -p["edit_rate"]):
+            changed = "unchanged" if pair["identical"] else f"{round(pair['edit_rate'] * 100)}%"
+            table.add_row(
+                str(pair["id"]),
+                pair["title"] or pair["slug"],
+                changed,
+                f"{pair['changed_blocks']}/{pair['total_blocks']}",
+                pair["status"],
+            )
+        console.print(table)
+
+    asyncio.run(run())
+
+
+@learn_app.command("show")
+def learn_show(pair_id: int = typer.Argument(..., help="A pair id from `ppn learn pairs`.")) -> None:
+    """The differences in one pair, as the analyst is shown them."""
+
+    async def run() -> None:
+        await _news_ready()
+        from .server import delta_store
+
+        pair = await delta_store.get_pair(pair_id)
+        if pair is None:
+            console.print(f"[red]No pair {pair_id}.[/]")
+            raise typer.Exit(1)
+
+        console.print(f"[bold]{pair['title'] or pair['slug']}[/]  ·  {pair['status']}")
+        console.print(
+            f"{round(pair['edit_rate'] * 100)}% of words changed across "
+            f"{pair['changed_blocks']} of {pair['total_blocks']} blocks."
+        )
+        sections = [s for s in (pair["diff"] or {}).get("sections", []) if s["op"] != "equal"]
+        for change in sections:
+            console.print(
+                f"  [cyan]{change['op']}[/] section: "
+                f"{change['before'] or '—'} -> {change['after'] or '—'}"
+            )
+        for hunk in [h for h in (pair["diff"] or {}).get("hunks", []) if h["op"] != "equal"]:
+            console.print(f"\n[dim]{hunk['op']} · {hunk['section'] or '(no section)'}[/]")
+            if hunk["before"]:
+                console.print(f"  [red]- {hunk['before'][:300]}[/]")
+            if hunk["after"]:
+                console.print(f"  [green]+ {hunk['after'][:300]}[/]")
+        for observation in pair["observations"]:
+            console.print(
+                f"\n[magenta]{observation['edit_kind']} -> {observation['target']}[/]: "
+                f"{observation['signature']}"
+            )
+
+    asyncio.run(run())
+
+
+@learn_app.command("run")
+def learn_run(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Use the offline stub client."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Approve every surviving proposal."),
+) -> None:
+    """Read the captured pairs, and propose what recurs often enough to be worth it.
+
+    The server splits this across a run and a review because a worker cannot be
+    held open for a human. The CLI has one process and can simply ask — the same
+    shape as `suggest --explore` and `news discover`.
+    """
+    setup_logging()
+
+    async def run() -> None:
+        await _news_ready()
+        from .server import config_store, learning, learning_reviews
+
+        await config_store.seed_from_yaml_if_empty()
+        await config_store.refresh_active_source()
+
+        outcome = await learning.sweep(clients=_clients(dry_run) if dry_run else None)
+        if not outcome.get("awaiting_learning_approval"):
+            console.print(f"[yellow]Nothing proposed.[/] {outcome.get('reason', '')}")
+            console.print(f"[dim]{outcome.get('analysed', 0)} pair(s) read.[/]")
+            return
+
+        review_id = int(outcome["review_id"])
+        review = await learning_reviews.get(review_id)
+        proposals = review["proposals"]
+        console.print(
+            f"[bold]{len(proposals)}[/] proposal(s) survived the gate "
+            f"(of {outcome['proposed']} tested)."
+        )
+        decisions = _approve_learnings(proposals, approve_all=yes)
+        result = await learning_reviews.decide(review_id, decisions)
+        for entry in result["applied"]:
+            console.print(
+                f"[green]applied[/] {entry['document']} v{entry['version']}: {entry['summary']}"
+            )
+        if result["declined"]:
+            console.print(f"[dim]{result['declined']} declined and never offered again.[/]")
+
+    asyncio.run(run())
+
+
+def _approve_learnings(proposals: list[dict], *, approve_all: bool) -> list[dict]:
+    """Approve proposals one at a time in the terminal.
+
+    Deliberately shows the gate's numbers before the change itself. "Fires on
+    four of your drafts and none of the twelve posts you published" is the thing
+    worth reading; the diff is only how it is spelled.
+    """
+    chosen = {str(p["fingerprint"]): bool(approve_all) for p in proposals}
+    while True:
+        table = Table(title="Proposed improvements")
+        table.add_column("#", justify="right")
+        table.add_column("apply", justify="center")
+        table.add_column("change")
+        table.add_column("evidence")
+        table.add_column("tested")
+        for n, proposal in enumerate(proposals, 1):
+            gate = proposal.get("gate", {})
+            tested = {
+                "passed": f"[green]fires on {gate.get('draft_hits', 0)} draft(s), "
+                          f"none of {gate.get('finals', 0)} published[/]",
+                "skipped": "[yellow]not mechanically testable[/]",
+            }.get(gate.get("status", ""), "[red]failed[/]")
+            table.add_row(
+                str(n),
+                "[green]yes[/]" if chosen[str(proposal["fingerprint"])] else "[dim]no[/]",
+                f"{proposal['summary']}\n[dim]{proposal['document']} · {proposal['kind']}[/]",
+                f"{proposal['distinct_posts']} posts",
+                tested,
+            )
+        console.print(table)
+        if approve_all:
+            break
+        answer = typer.prompt(
+            "Toggle (number), 'a' all, 'n' none, '?N' to see the change, Enter to accept",
+            default="",
+            show_default=False,
+        ).strip()
+        if not answer:
+            break
+        if answer.lower() == "a":
+            chosen = dict.fromkeys(chosen, True)
+        elif answer.lower() == "n":
+            chosen = dict.fromkeys(chosen, False)
+        elif answer.startswith("?") and answer[1:].isdigit():
+            index = int(answer[1:]) - 1
+            if 0 <= index < len(proposals):
+                _show_learning(proposals[index])
+        elif answer.isdigit():
+            index = int(answer) - 1
+            if 0 <= index < len(proposals):
+                key = str(proposals[index]["fingerprint"])
+                chosen[key] = not chosen[key]
+
+    return [
+        {"fingerprint": fingerprint, "approved": approved}
+        for fingerprint, approved in chosen.items()
+    ]
+
+
+def _show_learning(proposal: dict) -> None:
+    console.print(f"\n[bold]{proposal['summary']}[/]")
+    console.print(f"[dim]{proposal.get('evidence_note', '')}[/]")
+    gate = proposal.get("gate", {})
+    console.print(f"[dim]gate: {gate.get('status')} — {gate.get('reason', '')}[/]")
+    for example in proposal.get("examples", []):
+        console.print(f"  [red]- {example['before'][:200]}[/]")
+        console.print(f"  [green]+ {example['after'][:200]}[/]")
+    detail = proposal.get("proposal") or {}
+    if proposal["kind"] == "rule":
+        console.print(f"\n  [cyan]{proposal.get('rule_id')}[/] ({detail.get('severity')}): "
+                      f"{detail.get('rule_text')}")
+        if detail.get("detector"):
+            console.print(f"  detector: [dim]{detail['detector']}[/]")
+    elif proposal["kind"] == "style_note":
+        console.print(f"\n  under [cyan]{detail.get('anchor')}[/]:\n{detail.get('note_markdown')}")
+    elif proposal["kind"] == "profile_scalar":
+        console.print(f"\n  [cyan]{detail.get('profile_key')}[/] -> {detail.get('profile_value')}")
+    elif proposal["kind"] == "guidance":
+        console.print(f"\n  to the [cyan]{detail.get('guidance_agent')}[/]: {detail.get('guidance_text')}")
+    console.print("")
+
+
 if __name__ == "__main__":
     app()

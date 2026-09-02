@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 
+from ..config_source import read_config_stamp
 from ..models import SourceDecision
 from ..settings import get_settings
 from . import catalog, config_store, drafts, prices, push, reviews, usage_store
@@ -282,6 +283,11 @@ def _run_dict(run: Run) -> dict[str, Any]:
         "result": run.result,
         "error": run.error,
         "config_version": run.config_version,
+        # Decoded here rather than in the browser: the encoding is keyed to
+        # `DOCUMENTS`, and a client that decoded it would be a second copy of that
+        # ordering to keep in step. `null` means the stamp predates this encoding
+        # or names a different set of documents — unknown, not empty.
+        "config_versions": read_config_stamp(run.config_version),
         "queued_at": run.queued_at.isoformat() if run.queued_at else None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -649,6 +655,124 @@ async def decide_source_review(review_id: int, body: DecideRequest) -> dict[str,
 @router.post("/source-reviews/{review_id}/cancel")
 async def cancel_source_review(review_id: int) -> dict[str, bool]:
     return {"cancelled": await reviews.cancel(review_id)}
+
+
+# ---------------------------------------------------------------------------
+# Supervised delta learning
+#
+# What the crew wrote against what the author published, what that difference
+# recurs as, and the configuration changes it earns. Nothing here applies a
+# change: `/decide` is the only write, and it takes a human's verdict.
+# ---------------------------------------------------------------------------
+
+
+class LearningDecision(BaseModel):
+    fingerprint: str
+    approved: bool = False
+    reason: str = ""
+
+
+class DecideLearning(BaseModel):
+    decisions: list[LearningDecision] = Field(default_factory=list)
+
+
+@router.get("/learning/metrics")
+async def learning_metrics() -> dict[str, Any]:
+    from . import delta_store
+
+    return await delta_store.metrics()
+
+
+@router.get("/delta-pairs")
+async def list_delta_pairs(
+    status: str | None = None, limit: int = Query(50, le=200)
+) -> list[dict[str, Any]]:
+    from . import delta_store
+
+    return await delta_store.list_pairs(status, limit)
+
+
+@router.get("/delta-pairs/{pair_id}")
+async def get_delta_pair(pair_id: int) -> dict[str, Any]:
+    from . import delta_store
+
+    pair = await delta_store.get_pair(pair_id)
+    if pair is None:
+        raise HTTPException(404, "No such delta pair")
+    return pair
+
+
+@router.get("/learning/candidates")
+async def list_learning_candidates(
+    status: str | None = None, limit: int = Query(100, le=200)
+) -> list[dict[str, Any]]:
+    from . import learning
+
+    return await learning.list_candidates(status, limit)
+
+
+@router.get("/learning/candidates/{candidate_id}")
+async def get_learning_candidate(candidate_id: int) -> dict[str, Any]:
+    from . import learning
+
+    candidate = await learning.get_candidate(candidate_id)
+    if candidate is None:
+        raise HTTPException(404, "No such learning candidate")
+    return candidate
+
+
+@router.get("/learning/declined")
+async def list_declined_learnings(limit: int = Query(100, le=200)) -> list[dict[str, Any]]:
+    from . import learning_reviews
+
+    return await learning_reviews.list_declined(limit)
+
+
+@router.post("/learning/sweep", status_code=202)
+async def start_learning_sweep() -> dict[str, str]:
+    run_id = await manager().enqueue("learn", {}, "Learning sweep")
+    return {"id": run_id, "run_id": run_id}
+
+
+@router.get("/learning-reviews")
+async def list_learning_reviews(
+    status: str | None = None, limit: int = Query(50, le=200)
+) -> list[dict[str, Any]]:
+    from . import learning_reviews
+
+    return await learning_reviews.list_reviews(status, limit)
+
+
+@router.get("/learning-reviews/{review_id}")
+async def get_learning_review(review_id: int) -> dict[str, Any]:
+    from . import learning_reviews
+
+    review = await learning_reviews.get(review_id)
+    if review is None:
+        raise HTTPException(404, "No such learning review")
+    return review
+
+
+@router.post("/learning-reviews/{review_id}/decide")
+async def decide_learning_review(review_id: int, body: DecideLearning) -> dict[str, Any]:
+    """Apply what the author approved. The only path to a learned config write."""
+    from . import learning_reviews
+
+    try:
+        return await learning_reviews.decide(
+            review_id, [d.model_dump() for d in body.decisions]
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/learning-reviews/{review_id}/cancel")
+async def cancel_learning_review(review_id: int) -> dict[str, bool]:
+    from . import learning_reviews
+
+    return {"cancelled": await learning_reviews.cancel(review_id)}
 
 
 # ---------------------------------------------------------------------------

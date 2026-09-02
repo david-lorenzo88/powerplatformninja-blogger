@@ -147,6 +147,24 @@ computed as `40 + 10 × (max_source_rounds + max_revision_rounds)`.
 | `PPN_VAPID_PRIVATE_KEY` | *(unset)* | Web Push. **Secret.** Any of the three unset disables notifications. |
 | `PPN_VAPID_SUBJECT` | *(unset)* | Web Push contact, e.g. `mailto:you@example.com`. |
 
+### Supervised delta learning
+
+Off by default. The capture half runs regardless — a pair is recorded whenever a
+write run finishes and completed when the draft is published — but nothing is
+analysed or proposed until this is switched on.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PPN_LEARN_ENABLED` | `false` | Whether the scheduler's weekly learning job exists at all. |
+| `PPN_LEARN_MIN_POSTS` | `3` | How many **distinct posts** a correction must appear in before it is proposed. Recurrence rather than statistics: at this sample size a significance test on a hundred cases can only detect a fifteen-point swing. |
+| `PPN_LEARN_CLEAN_RATE` | `0.05` | Below this mean edit rate nothing is proposed. Once drafts ship nearly untouched, a new rule is likelier to flag work that was already right than to catch a fault. |
+| `PPN_LEARN_MAX_DISCARD_RATE` | `0.5` | Past this share of discarded pairs the run proposes nothing and says why — a rule learned from what survives would be learned from noise. |
+| `PPN_LEARN_MAX_PAIRS` | `20` | Pairs analysed per run. The cost ceiling. |
+| `PPN_LEARN_MAX_RULES` | `10` | Learned rules the ruleset may carry. A ruleset that grows without bound pushes honest drafts under the approval threshold. |
+| `PPN_LEARN_REGEX_TIMEOUT` | `5.0` | Seconds a candidate detector may run, in its own process. Python's `re` has no timeout and a thread running a catastrophic pattern cannot be killed. |
+| `PPN_LEARN_INTERVAL_MINUTES` | `10080` | Weekly. Anything under an hour stops Azure SQL auto-pausing — see the cadence note in `CLAUDE.md`. |
+| `PPN_LEARN_TIMEOUT_MINUTES` | `20` | Wall-clock ceiling for one learning run. |
+
 > VAPID identifies *this application* to whichever push service the browser
 > happens to use (Google's, Apple's, Mozilla's) — it is not a third-party
 > account, which is why the variables carry the `PPN_` prefix rather than a

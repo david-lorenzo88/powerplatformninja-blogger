@@ -241,8 +241,18 @@ class RunManager:
 
     async def enqueue(self, kind: str, params: dict[str, Any], label: str = "") -> str:
         run_id = str(uuid.uuid4())
+        from ..config_source import STAMP_MAX_LENGTH
         from .config_store import active_source
 
+        # This used to be `version_token()[:64]`, and the token was 112 characters
+        # of `name:version|...` — so the slice silently discarded four documents,
+        # `validation_rules` among them, and moved as version numbers gained
+        # digits. It is now a compact stamp that fits, and a test pins that.
+        #
+        # Recorded as unknown rather than cut if it ever stops fitting: an empty
+        # string says "we do not know which config this ran under", and a
+        # truncated one reads exactly like an answer.
+        stamp = active_source().version_token()
         async with session() as s:
             s.add(
                 Run(
@@ -251,7 +261,7 @@ class RunManager:
                     status=QUEUED,
                     label=label[:300],
                     params=params,
-                    config_version=active_source().version_token()[:64],
+                    config_version=stamp if len(stamp) <= STAMP_MAX_LENGTH else "",
                     queued_at=utcnow(),
                 )
             )
@@ -769,6 +779,21 @@ class RunManager:
                     only_due=bool(params.get("only_due")),
                 ),
                 timeout=settings.news.ingest_timeout_minutes * 60,
+            )
+
+        if kind == "learn":
+            # Reads what the author changed about finished drafts and, when a
+            # correction has recurred across enough separate posts, files a
+            # review proposing one configuration change. It can never apply one.
+            #
+            # Its own timeout, like every other server-side kind: the manager
+            # wraps nothing, so without this a stalled model call holds a worker
+            # for good.
+            from .learning import sweep
+
+            return await asyncio.wait_for(
+                sweep(run_id=run_id),
+                timeout=settings.learning.timeout_minutes * 60,
             )
 
         raise ValueError(f"Unknown run kind: {kind}")

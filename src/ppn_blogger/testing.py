@@ -32,8 +32,10 @@ from .models import (
     AuthorClaimSet,
     Citation,
     Claim,
+    DeltaAnalysis,
     Draft,
     FeedSuggestionSet,
+    LearningProposal,
     NewsletterIssueDraft,
     OutlineSection,
     PostOutline,
@@ -693,6 +695,95 @@ def _feed_suggestions() -> FeedSuggestionSet:
     )
 
 
+def _delta_analysis(n: int) -> DeltaAnalysis:
+    """How the author edited a draft, as the analyst would report it.
+
+    Two observations sharing one signature across calls, so a dry run that walks
+    several pairs actually reaches the recurrence threshold and produces a
+    cluster — a stub that returned a different signature each time would prove
+    only that nothing ever clusters.
+
+    The third observation is the one that must *not* survive: a correction to a
+    single fact, which is a research failure and not a rule anybody should write.
+    """
+    from .models import DeltaAnalysis, EditObservation
+
+    return DeltaAnalysis(
+        post_slug=f"stub-post-{n}",
+        one_off=False,
+        observations=[
+            EditObservation(
+                edit_kind="tighten",
+                target="voice_rule",
+                signature="cuts the hedging adverb before a claim",
+                before="This is arguably the fastest route.",
+                after="This is the fastest route.",
+                rationale="The author removes hedging before a claim they are willing to make.",
+                confidence=5,
+            ),
+            EditObservation(
+                edit_kind="delete_sentence",
+                target="style_guide",
+                signature="drops the summary sentence closing a section",
+                before="In short, the policy blocks the endpoint.",
+                after="",
+                rationale="Sections are left to end on their last real point.",
+                confidence=4,
+            ),
+            EditObservation(
+                edit_kind="replace_term",
+                target="none",
+                signature="corrects a version number this post got wrong",
+                before="version 2.3",
+                after="version 2.4",
+                rationale="A fact, not a habit. Nothing to learn.",
+                confidence=5,
+            ),
+        ],
+    )
+
+
+def _learning_proposal(n: int) -> LearningProposal:
+    """One good proposal and one that the gate must throw away.
+
+    Same doctrine as `_feed_suggestions` and `_newsletter_issue`: the stub walks
+    the gate rather than the happy path. The second proposal carries a detector
+    that matches ordinary prose — it fires on the very posts the author published
+    — so every dry run proves the discard happens, rather than proving a
+    well-behaved model would have been fine.
+    """
+    from .models import LearningProposal
+
+    if n % 2 == 1:
+        return LearningProposal(
+            kind="rule",
+            summary="Flag hedging adverbs before a claim.",
+            evidence_note="The author cut one in each of three separate posts.",
+            rule_group="voice_rules",
+            rule_text=(
+                "Do not hedge a claim you are willing to make. Cut 'arguably', "
+                "'perhaps' and 'somewhat' before an assertion, or drop the assertion."
+            ),
+            severity="minor",
+            detector=r"(?i)\b(?:arguably|perhaps|somewhat)\b",
+            prose_scoped=True,
+            check_hint="Search the prose for the hedging adverbs named in the rule.",
+            fix_hint="Delete the adverb, or say plainly that the point is uncertain.",
+        )
+    return LearningProposal(
+        kind="rule",
+        summary="Flag sentences that begin with a capital letter.",
+        evidence_note="Deliberately terrible: this fires on everything the author shipped.",
+        rule_group="voice_rules",
+        rule_text="Sentences should not begin with a capital letter.",
+        severity="minor",
+        detector=r"(?m)^[A-Z]",
+        prose_scoped=True,
+        check_hint="Never reaches a human: the gate discards it.",
+        fix_hint="—",
+    )
+
+
 class StubChatClient(BaseChatClient):
     """Returns schema-valid canned responses. No network, no credentials."""
 
@@ -753,6 +844,10 @@ class StubChatClient(BaseChatClient):
             return _newsletter_issue(full)
         if model is FeedSuggestionSet:
             return _feed_suggestions()
+        if model is DeltaAnalysis:
+            return _delta_analysis(self._bump("delta"))
+        if model is LearningProposal:
+            return _learning_proposal(self._bump("proposal"))
         if model in (ValidationReport, ValidationReportDraft):
             n = self._bump("validation")
             validator = "design" if "Structure & Design" in full or n % 2 == 0 else "content"

@@ -71,6 +71,7 @@ export function BlogSubNav() {
         { to: '/topic-ideas', label: 'Ideas' },
         { to: '/drafts', label: 'Drafts' },
         { to: '/source-reviews', label: 'Sources', badge: data?.source_reviews ?? 0 },
+        { to: '/learning', label: 'Learning', badge: data?.learning_reviews ?? 0 },
       ]}
     />
   )

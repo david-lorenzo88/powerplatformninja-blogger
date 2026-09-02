@@ -84,6 +84,19 @@ export function RunDetailScreen() {
           )}
           <StreamPill streamStatus={streamStatus} terminal={!!terminalStatus} />
         </div>
+        {run.data?.config_versions && (
+          // Which configuration produced this. The column used to hold a
+          // truncated token that had lost validation_rules entirely, so there
+          // was nothing worth showing.
+          <div
+            className="mt-1 font-mono text-xs text-slate-600"
+            title="The version of each config document this run read"
+          >
+            {Object.entries(run.data.config_versions)
+              .map(([name, version]) => `${name} v${version}`)
+              .join(' · ')}
+          </div>
+        )}
         {run.data && <RunResult run={run.data} />}
       </div>
 

@@ -12,9 +12,16 @@ import type {
   ConfigVersion,
   DecideRequest,
   DecideResult,
+  DeltaPair,
+  DeltaPairSummary,
   Draft,
   DraftListItem,
   DraftVersion,
+  LearningCandidate,
+  LearningDecision,
+  LearningMetrics,
+  LearningReview,
+  LearningReviewSummary,
   Feed,
   FeedCreateRequest,
   FeedGroup,
@@ -538,3 +545,32 @@ export const runScheduledJob = (key: string) =>
   request<{ key: string; detail: string }>(`/news/schedule/${key}/run`, { method: 'POST' })
 
 export type { RunEvent }
+
+// -- Supervised delta learning -----------------------------------------------
+
+export const getLearningMetrics = () => request<LearningMetrics>('/learning/metrics')
+
+export const listDeltaPairs = (status?: string) =>
+  request<DeltaPairSummary[]>(`/delta-pairs${status ? `?status=${status}` : ''}`)
+
+export const getDeltaPair = (id: number) => request<DeltaPair>(`/delta-pairs/${id}`)
+
+export const listLearningCandidates = (status?: string) =>
+  request<LearningCandidate[]>(`/learning/candidates${status ? `?status=${status}` : ''}`)
+
+export const startLearningSweep = () =>
+  request<{ id: string; run_id: string }>('/learning/sweep', { method: 'POST' })
+
+export const listLearningReviews = (status?: string) =>
+  request<LearningReviewSummary[]>(`/learning-reviews${status ? `?status=${status}` : ''}`)
+
+export const getLearningReview = (id: number) => request<LearningReview>(`/learning-reviews/${id}`)
+
+export const decideLearningReview = (id: number, body: { decisions: LearningDecision[] }) =>
+  request<{ review_id: number; applied: { document: string; version: number }[]; declined: number }>(
+    `/learning-reviews/${id}/decide`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+
+export const cancelLearningReview = (id: number) =>
+  request<{ cancelled: boolean }>(`/learning-reviews/${id}/cancel`, { method: 'POST' })

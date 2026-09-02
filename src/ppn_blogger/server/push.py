@@ -222,6 +222,15 @@ def _describe(kind: str, status: str, label: str, result: dict[str, Any] | None)
             f"/source-reviews/{result.get('review_id', '')}".rstrip("/"),
         )
 
+    if result.get("awaiting_learning_approval"):
+        n = result.get("survived", 0)
+        return (
+            "Improvements awaiting your verdict",
+            f"{n} change{'' if n == 1 else 's'} proposed from your own edits, each tested "
+            "against what you published. Nothing is applied until you approve.",
+            f"/learning-reviews/{result.get('review_id', '')}".rstrip("/"),
+        )
+
     if status != "succeeded":
         return (f"Run {status}", name, "/runs")
 

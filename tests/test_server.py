@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from ppn_blogger.config_source import DOCUMENTS
+
 
 @pytest.fixture
 async def api(tmp_path, monkeypatch, database_url):
@@ -112,15 +114,7 @@ async def test_health_and_config_seeded_from_yaml(api):
 
     documents = (await api.get("/api/config")).json()
     names = {d["name"] for d in documents}
-    assert names == {
-        "blog_profile",
-        "topics",
-        "sources",
-        "validation_rules",
-        "newsletters",
-        "model_prices",
-        "style_guide",
-    }
+    assert names == set(DOCUMENTS)
     # The move to the database must not lose anything — v1 is the YAML import.
     assert all(d["version"] == 1 for d in documents)
 
@@ -1493,3 +1487,113 @@ async def test_applying_a_refresh_saves_a_new_config_version(api, recorded_price
     assert prices_now["images"]["MAI-Image-2.5-Pro"]["per_image"] == 0.07
     assert prices_now["tools"]["web_search"]["per_call"] == 0.035
     assert prices_now["updated_from_azure"]
+
+
+# ---------------------------------------------------------------------------
+# Naming the configuration a run used
+#
+# `Run.config_version` is String(64) and used to hold `name:version|...` sliced
+# to fit. That string is 112 characters with the documents this project ships,
+# so the slice discarded four of them — `validation_rules` among them, which is
+# the only thing the column is really worth asking about.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stamp_fits_the_column_at_realistic_version_numbers():
+    """The guard that has to fail in CI rather than in Azure. String(64) becomes
+    NVARCHAR(64), and an over-long insert is rejected outright there."""
+    from ppn_blogger.config_source import DOCUMENTS, STAMP_MAX_LENGTH, config_stamp
+
+    at_one = config_stamp(dict.fromkeys(DOCUMENTS, 1))
+    at_999 = config_stamp(dict.fromkeys(DOCUMENTS, 999))
+    assert len(at_one) <= STAMP_MAX_LENGTH
+    assert len(at_999) <= STAMP_MAX_LENGTH
+    # The old encoding, for contrast: comfortably over, which is the bug.
+    assert len("|".join(f"{name}:1" for name in sorted(DOCUMENTS))) > STAMP_MAX_LENGTH
+
+
+def test_the_stamp_has_headroom_for_a_few_more_documents():
+    """Four spare documents at three-digit versions. When this fails, someone has
+    added enough config that the encoding needs revisiting — which is a decision,
+    not something to discover from a truncated row in production."""
+    from ppn_blogger.config_source import _STAMP_PREFIX, DOCUMENTS, STAMP_MAX_LENGTH, _names_digest
+
+    names = sorted(DOCUMENTS) + [f"future_{n}" for n in range(4)]
+    widest = f"{_STAMP_PREFIX}:{_names_digest(names)}:" + ".".join(["999"] * len(names))
+    assert len(widest) <= STAMP_MAX_LENGTH
+
+
+def test_a_stamp_round_trips_to_the_versions_it_recorded():
+    from ppn_blogger.config_source import DOCUMENTS, config_stamp, read_config_stamp
+
+    versions = {name: n for n, name in enumerate(sorted(DOCUMENTS), start=1)}
+    assert read_config_stamp(config_stamp(versions)) == versions
+
+
+def test_the_stamp_changes_when_any_single_document_does():
+    """It is also the cache token Settings compares, so a state that produced the
+    same string would leave the agents reading a stale ruleset."""
+    from ppn_blogger.config_source import DOCUMENTS, config_stamp
+
+    base = dict.fromkeys(DOCUMENTS, 1)
+    seen = {config_stamp(base)}
+    for name in DOCUMENTS:
+        seen.add(config_stamp({**base, name: 2}))
+    assert len(seen) == len(DOCUMENTS) + 1
+
+
+def test_a_stamp_from_a_different_document_set_reads_as_unknown():
+    """The reason the digest is there. Lining seven old versions up against eight
+    current names would misreport every document after the one that was added —
+    a confident reading of the wrong ruleset, which is worse than no reading."""
+    from ppn_blogger.config_source import _STAMP_PREFIX, DOCUMENTS, _names_digest, read_config_stamp
+
+    stale_names = sorted(DOCUMENTS)[:-1]
+    stale = f"{_STAMP_PREFIX}:{_names_digest(stale_names)}:" + ".".join(["1"] * len(stale_names))
+    assert read_config_stamp(stale) is None
+
+
+def test_rows_written_before_this_encoding_read_as_unknown_not_as_data():
+    """Existing rows hold a truncated `name:version|...`. They must not be
+    reinterpreted — there is no honest way to recover what they meant."""
+    from ppn_blogger.config_source import DOCUMENTS, read_config_stamp
+
+    old = "|".join(f"{name}:1" for name in sorted(DOCUMENTS))[:64]
+    assert read_config_stamp(old) is None
+    assert read_config_stamp("") is None
+    assert read_config_stamp("cfg1:deadbeef:not.numbers.here") is None
+
+
+@pytest.mark.asyncio
+async def test_a_run_records_a_configuration_it_can_be_traced_back_to(api):
+    """The whole point of the column: which ruleset was this draft written under."""
+    from ppn_blogger.config_source import read_config_stamp
+
+    run_id = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, run_id)
+
+    run = (await api.get(f"/api/runs/{run_id}")).json()
+    versions = read_config_stamp(run["config_version"])
+    assert versions is not None
+    assert versions["validation_rules"] == 1
+    assert run["config_versions"] == versions
+
+
+@pytest.mark.asyncio
+async def test_editing_a_document_moves_the_stamp_of_the_next_run(api):
+    from ppn_blogger.config_source import read_config_stamp
+
+    first = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, first)
+
+    current = (await api.get("/api/config/topics")).json()["content"]
+    await api.put("/api/config/topics", json={"content": current, "note": "no-op edit"})
+
+    second = (await api.post("/api/runs/suggest", json={})).json()["id"]
+    await _wait_for(api, second)
+
+    before = read_config_stamp((await api.get(f"/api/runs/{first}")).json()["config_version"])
+    after = read_config_stamp((await api.get(f"/api/runs/{second}")).json()["config_version"])
+    assert before["topics"] == 1
+    assert after["topics"] == 2
+    assert after["validation_rules"] == 1
