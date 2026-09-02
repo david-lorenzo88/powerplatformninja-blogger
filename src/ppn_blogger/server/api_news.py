@@ -234,6 +234,10 @@ class GroupFeeds(BaseModel):
     feed_ids: list[int] = Field(default_factory=list)
 
 
+class GroupRealtime(BaseModel):
+    realtime: bool
+
+
 @router.get("/feed-groups")
 async def list_groups() -> list[dict[str, Any]]:
     return await news_store.list_groups()
@@ -268,6 +272,20 @@ async def delete_group(group_id: int) -> dict[str, Any]:
     if not await news_store.delete_group(group_id):
         raise HTTPException(404, f"No feed group {group_id}")
     return {"deleted": True}
+
+
+@router.post("/feed-groups/{group_id}/realtime")
+async def set_group_realtime(group_id: int, body: GroupRealtime) -> dict[str, Any]:
+    """Watch, or stop watching, every feed in a group.
+
+    A POST rather than a field on the group PATCH, because it is not a property
+    of the group: it writes `realtime` on each member feed, and the endpoint
+    should say so rather than look like an attribute that persists.
+    """
+    try:
+        return await news_store.set_group_realtime(group_id, body.realtime)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.put("/feed-groups/{group_id}/feeds")

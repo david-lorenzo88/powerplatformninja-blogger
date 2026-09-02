@@ -91,6 +91,60 @@ async def test_feed_groups_membership_round_trips(store) -> None:
     assert detail is not None and detail["feed_ids"] == [b["id"]]
 
 
+async def test_watching_a_whole_group_watches_its_feeds(store) -> None:
+    """The group toggle is a bulk write, and the feed flag stays the truth.
+
+    Nothing else in the system learns about groups: the poller, the watch query
+    and the cost calculation all read `Feed.realtime`, and that is what this has
+    to leave correct.
+    """
+    from ppn_blogger.server import news_store
+
+    a = await news_store.create_feed("https://a.example/feed", name="A")
+    b = await news_store.create_feed("https://b.example/feed", name="B")
+    outside = await news_store.create_feed("https://c.example/feed", name="C")
+    group = await news_store.create_group("Microsoft")
+    await news_store.set_group_feeds(group["id"], [a["id"], b["id"]])
+
+    detail = await news_store.get_group(group["id"])
+    assert detail is not None and detail["feeds_realtime"] == 0
+
+    result = await news_store.set_group_realtime(group["id"], True)
+    assert result["feeds_realtime"] == 2 and result["feed_count"] == 2
+    assert {f["id"] for f in await news_store.list_feeds(realtime=True)} == {a["id"], b["id"]}
+
+    # A feed outside the group is untouched, whichever way the toggle goes.
+    assert (await news_store.list_feeds(realtime=False))[0]["id"] == outside["id"]
+
+    # And it takes effect on the next tick rather than at the six-hourly sweep.
+    assert await news_store.due_feeds(only_realtime=True) == [a["id"], b["id"]]
+
+    await news_store.set_group_realtime(group["id"], False)
+    detail = await news_store.get_group(group["id"])
+    assert detail is not None and detail["feeds_realtime"] == 0
+    assert await news_store.list_feeds(realtime=True) == []
+
+
+async def test_watching_one_feed_brings_its_next_poll_forward(store) -> None:
+    """Otherwise "watch this closely" is silent until the slow sweep comes round."""
+    from datetime import timedelta
+
+    from ppn_blogger.server import news_store
+    from ppn_blogger.server.db import Feed, as_utc, session, utcnow
+
+    feed = await news_store.create_feed("https://a.example/feed", name="A")
+    async with session() as s:
+        row = await s.get(Feed, feed["id"])
+        row.next_poll_at = utcnow() + timedelta(hours=5)
+        await s.commit()
+
+    await news_store.update_feed(feed["id"], {"realtime": True})
+
+    async with session() as s:
+        row = await s.get(Feed, feed["id"])
+        assert as_utc(row.next_poll_at) <= utcnow()
+
+
 async def test_deleting_a_feed_keeps_its_articles_by_default(store, monkeypatch) -> None:
     from ppn_blogger.server import ingest, news_store
 

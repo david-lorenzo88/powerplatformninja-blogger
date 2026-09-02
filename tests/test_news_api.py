@@ -211,6 +211,26 @@ async def test_groups_round_trip_over_http(api) -> None:
     in_group = (await api.get(f"/api/news/feeds?group_id={group['id']}")).json()
     assert len(in_group) == 2
 
+    # Watching is set for the whole group in one call.
+    watched = await api.post(
+        f"/api/news/feed-groups/{group['id']}/realtime", json={"realtime": True}
+    )
+    assert watched.status_code == 200, watched.text
+    assert watched.json()["feeds_realtime"] == watched.json()["feed_count"]
+    members = (await api.get(f"/api/news/feeds?group_id={group['id']}")).json()
+    assert all(f["realtime"] for f in members)
+    # Feeds outside the group are left alone.
+    others = [f for f in (await api.get("/api/news/feeds")).json() if f["id"] not in ids]
+    assert not any(f["realtime"] for f in others)
+
+    off = await api.post(
+        f"/api/news/feed-groups/{group['id']}/realtime", json={"realtime": False}
+    )
+    assert off.json()["feeds_realtime"] == 0
+
+    missing = await api.post("/api/news/feed-groups/9999/realtime", json={"realtime": True})
+    assert missing.status_code == 404
+
     assert (await api.delete(f"/api/news/feed-groups/{group['id']}")).status_code == 200
     assert (await api.get(f"/api/news/feed-groups/{group['id']}")).status_code == 404
 

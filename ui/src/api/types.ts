@@ -469,6 +469,10 @@ export interface FeedGroup {
   name: string
   description: string
   feed_count: number
+  // Derived, never stored: how many of this group's feeds are watched. Watching
+  // is a property of a feed (server/news_store.py `_group_dict`), so a group is
+  // watched in the sense of all / some / none.
+  feeds_realtime: number
   created_at: string | null
   feed_ids?: number[]
 }

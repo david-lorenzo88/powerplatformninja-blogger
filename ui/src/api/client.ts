@@ -425,6 +425,13 @@ export const setFeedGroupFeeds = (id: number, feed_ids: number[]) =>
     body: JSON.stringify({ feed_ids }),
   })
 
+// A bulk write over the group's feeds, not a group attribute — POST says so.
+export const setFeedGroupRealtime = (id: number, realtime: boolean) =>
+  request<FeedGroup>(`/news/feed-groups/${id}/realtime`, {
+    method: 'POST',
+    body: JSON.stringify({ realtime }),
+  })
+
 export const listArticles = (filters: ArticleFilters = {}) => {
   const query = new URLSearchParams()
   if (filters.group_id !== undefined) query.set('group_id', String(filters.group_id))
