@@ -7,7 +7,9 @@ import {
   listFeedGroups,
   listFeeds,
   setFeedGroupFeeds,
+  setFeedGroupRealtime,
 } from '../api/client'
+import type { FeedGroup } from '../api/types'
 import { Modal } from '../components/Modal'
 import { NewsSubNav } from '../components/SubNav'
 import { useOnline } from '../hooks/useOnline'
@@ -64,6 +66,13 @@ export function FeedGroupsScreen() {
                     <span className="text-xs text-slate-500">
                       {g.feed_count} feed{g.feed_count === 1 ? '' : 's'}
                     </span>
+                    {g.feeds_realtime > 0 && (
+                      <span className="text-xs text-cyan-300">
+                        {g.feeds_realtime === g.feed_count
+                          ? 'all watched'
+                          : `${g.feeds_realtime} watched`}
+                      </span>
+                    )}
                   </div>
                   {g.description && (
                     <p className="mt-1 text-xs text-slate-500">{g.description}</p>
@@ -177,6 +186,8 @@ function EditMembersDialog({ groupId, onClose }: { groupId: number; onClose: () 
   return (
     <Modal title={group.data?.name ?? 'Group'} onClose={onClose}>
       <div className="flex flex-col gap-3">
+        <WatchGroup groupId={groupId} group={group.data} />
+
         <div className="flex items-center gap-3 text-xs text-slate-500">
           <span>
             {chosen.length} of {feeds.data?.length ?? 0} selected
@@ -239,5 +250,70 @@ function EditMembersDialog({ groupId, onClose }: { groupId: number; onClose: () 
         </div>
       </div>
     </Modal>
+  )
+}
+
+// Buttons rather than a checkbox, deliberately. Watching is a property of a
+// *feed* — it is what puts one on the fifteen-minute cadence — so this is a bulk
+// write over the group's members applied when pressed, not a setting the group
+// remembers. A checkbox would promise that a feed added tomorrow inherits it,
+// and it would not: a feed quietly joining the fast cadence is a bill nobody
+// chose. The count above says what the group looks like now.
+function WatchGroup({ groupId, group }: { groupId: number; group?: FeedGroup }) {
+  const qc = useQueryClient()
+  const watched = group?.feeds_realtime ?? 0
+  const total = group?.feed_count ?? 0
+
+  const apply = useMutation({
+    mutationFn: (realtime: boolean) => setFeedGroupRealtime(groupId, realtime),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['feed-group', groupId] })
+      qc.invalidateQueries({ queryKey: ['feed-groups'] })
+      qc.invalidateQueries({ queryKey: ['feeds'] })
+      qc.invalidateQueries({ queryKey: ['news-summary'] })
+    },
+  })
+
+  if (total === 0) return null
+
+  return (
+    <div className={`${card} p-3`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-slate-300">
+          Watched closely:{' '}
+          <span className={watched > 0 ? 'text-cyan-300' : 'text-slate-500'}>
+            {watched} of {total}
+          </span>
+        </span>
+        <div className="ml-auto flex gap-2">
+          <button
+            className={`${quietBtn} px-2 text-xs`}
+            disabled={apply.isPending || watched === total}
+            onClick={() => apply.mutate(true)}
+          >
+            Watch all
+          </button>
+          <button
+            className={`${quietBtn} px-2 text-xs`}
+            disabled={apply.isPending || watched === 0}
+            onClick={() => apply.mutate(false)}
+          >
+            Stop watching
+          </button>
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-slate-500">
+        Applies to the feeds in this group now — checked every 15 minutes instead of every 6
+        hours, notifying you and relaying to Telegram when they publish. A feed added later has
+        to be included again.
+      </p>
+      {watched === 0 && (
+        <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          Polling more often than hourly stops the database idling, which costs roughly
+          $150–200/month more than letting it pause.
+        </p>
+      )}
+      {apply.error && <p className="mt-1 text-xs text-rose-400">{String(apply.error)}</p>}
+    </div>
   )
 }

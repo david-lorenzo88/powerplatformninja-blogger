@@ -697,8 +697,28 @@ call, no issue stored, headline and link exactly as the feed gave them.
   stamped, so the backlog rolls up at 07:00 rather than being lost. Set
   `PPN_REALTIME_QUIET_HOURS=` to switch that off.
 
-- **Tests**: 5 new (4 relay, 1 for a one-article issue); the quiet-week test now
-  asserts the empty-window skip.
+**Watching is now settable per group.** A group screen with no way to say "watch
+everything in here" meant flagging forty feeds one at a time. It is a **bulk
+write over the group's feeds**, not a flag on the group, and the reasoning is
+the same one that kept the relay off a column of its own: `Feed.realtime` is
+what the poller, `watch.pending_articles` and the cadence cost calculation all
+read, and a group-level column would have to be ORed into every one of them —
+and would never reach the live database, because `create_all` never ALTERs.
+`feeds_realtime` on the group is therefore derived: all, some or none. The cost
+is that it does not persist as an intention — a feed added tomorrow is not
+watched until the button is pressed again — and that is the safer direction,
+because a feed silently joining the fifteen-minute cadence is a bill nobody
+chose. The UI says so, and uses buttons rather than a checkbox for exactly that
+reason.
+
+Switching a feed to watched now also pulls `next_poll_at` forward, on both
+paths. Without it "watch this closely" changed nothing until the six-hourly
+sweep next came round, which can be five hours of silence from a feed the
+operator just asked to hear from quickly.
+
+- **Tests**: 8 new (4 relay, 1 for a one-article issue, 2 for group watching,
+  1 for the poll-forward); the quiet-week test now asserts the empty-window
+  skip, and the group HTTP round-trip covers the new endpoint.
 
 ---
 

@@ -18,7 +18,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, desc, func, or_, select, true
+from sqlalchemy import delete, desc, func, or_, select, true, update
 
 from .. import news
 from ..settings import get_settings
@@ -143,9 +143,15 @@ async def update_feed(feed_id: int, changes: dict[str, Any]) -> dict[str, Any]:
         row = await s.get(Feed, feed_id)
         if row is None:
             raise KeyError(f"No feed {feed_id}")
+        started_watching = bool(changes.get("realtime")) and not row.realtime
         for key, value in changes.items():
             if key in editable:
                 setattr(row, key, value)
+        if started_watching:
+            # Otherwise "watch this closely" does nothing until the six-hourly
+            # sweep next comes round, which can be five hours of silence from a
+            # feed the operator just asked to hear from quickly.
+            row.next_poll_at = utcnow()
         if changes.get("enabled"):
             # Re-enabling is the operator saying "try again" — clear the strike
             # count or it is disabled again on the next failure.
@@ -208,7 +214,19 @@ async def list_groups() -> list[dict[str, Any]]:
                 )
             ).all()
         )
-    return [_group_dict(r, int(counts.get(r.id, 0))) for r in rows]
+        watched = dict(
+            (
+                await s.execute(
+                    select(FeedGroupMember.group_id, func.count())
+                    .join(Feed, Feed.id == FeedGroupMember.feed_id)
+                    .where(Feed.realtime == true(), Feed.enabled == true())
+                    .group_by(FeedGroupMember.group_id)
+                )
+            ).all()
+        )
+    return [
+        _group_dict(r, int(counts.get(r.id, 0)), int(watched.get(r.id, 0))) for r in rows
+    ]
 
 
 async def get_group(group_id: int) -> dict[str, Any] | None:
@@ -230,7 +248,17 @@ async def get_group(group_id: int) -> dict[str, Any] | None:
                 )
             ).scalars()
         )
-    out = _group_dict(row, int(count or 0))
+        watched = await s.scalar(
+            select(func.count())
+            .select_from(FeedGroupMember)
+            .join(Feed, Feed.id == FeedGroupMember.feed_id)
+            .where(
+                FeedGroupMember.group_id == group_id,
+                Feed.realtime == true(),
+                Feed.enabled == true(),
+            )
+        )
+    out = _group_dict(row, int(count or 0), int(watched or 0))
     out["feed_ids"] = feed_ids
     return out
 
@@ -270,6 +298,51 @@ async def update_group(group_id: int, changes: dict[str, Any]) -> dict[str, Any]
             )
         )
         return _group_dict(row, int(count or 0))
+
+
+async def set_group_realtime(group_id: int, realtime: bool) -> dict[str, Any]:
+    """Watch, or stop watching, every feed in a group. Returns the group.
+
+    A bulk write over the members rather than a flag on the group, for the
+    reasons in `_group_dict`: `Feed.realtime` stays the single thing the poller,
+    `watch.pending_articles` and the cadence cost calculation read, and no
+    column has to reach a database that `create_all` will never ALTER.
+
+    The price is that it does not persist as an intention: a feed added to the
+    group tomorrow is not watched until the button is pressed again. That is
+    also the safer failure — a feed silently joining the fifteen-minute cadence
+    is a bill nobody chose.
+
+    Turning it on pulls `next_poll_at` forward, so "watch this" takes effect on
+    the next tick instead of whenever the six-hourly sweep next came round.
+    """
+    async with session() as s:
+        row = await s.get(FeedGroup, group_id)
+        if row is None:
+            raise KeyError(f"No feed group {group_id}")
+
+        members = list(
+            (
+                await s.execute(
+                    select(FeedGroupMember.feed_id).where(
+                        FeedGroupMember.group_id == group_id
+                    )
+                )
+            ).scalars()
+        )
+        if members:
+            values: dict[str, Any] = {"realtime": bool(realtime)}
+            if realtime:
+                values["next_poll_at"] = utcnow()
+            await s.execute(update(Feed).where(Feed.id.in_(members)).values(**values))
+            await s.commit()
+
+    logger.info(
+        "group %s: %d feed(s) %s", row.name, len(members), "watched" if realtime else "unwatched"
+    )
+    result = await get_group(group_id)
+    assert result is not None
+    return result
 
 
 async def delete_group(group_id: int) -> bool:
@@ -481,13 +554,23 @@ def _health_of(row: Feed) -> str:
     return "ok"
 
 
-def _group_dict(row: FeedGroup, feed_count: int) -> dict[str, Any]:
+def _group_dict(row: FeedGroup, feed_count: int, watched: int = 0) -> dict[str, Any]:
+    """`feeds_realtime` is derived, never stored.
+
+    Watching is a property of a feed — it is what puts that feed on the fast
+    cadence and what `pending_articles` selects on. A group-level *column* would
+    have to be ORed into every one of those queries and, worse, would never
+    reach the live database, because `create_all` never ALTERs. So the group
+    toggle is a bulk action over its members and this count is how the screen
+    shows the result: all, some, or none.
+    """
     return {
         "id": row.id,
         "slug": row.slug,
         "name": row.name,
         "description": row.description,
         "feed_count": feed_count,
+        "feeds_realtime": watched,
         "created_at": _iso(row.created_at),
     }
 

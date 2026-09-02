@@ -726,9 +726,10 @@ been added to — negative for those. Several are allowed, comma-separated.
 
 Three things decide what actually arrives:
 
-- **Only watched feeds are relayed.** Flag them in the Feeds screen; that flag is
-  also what puts them on the 15-minute cadence, and doing it to even one feed
-  makes the serverless database effectively always-on.
+- **Only watched feeds are relayed.** Flag them in the Feeds screen, or a whole
+  group at once with *Watch all* in Groups; that flag is also what puts them on
+  the 15-minute cadence, and doing it to even one feed makes the serverless
+  database effectively always-on.
 - **`PPN_REALTIME_QUIET_HOURS` applies** (22:00–07:00 by default). Nothing is
   marked notified during the window, so the backlog rolls up afterwards rather
   than being lost. Set it empty for a true round-the-clock relay.
