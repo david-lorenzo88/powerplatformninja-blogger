@@ -624,7 +624,12 @@ class Newsletter(Base):
 
     lookback_hours: Mapped[int] = mapped_column(Integer, default=168)
     max_items: Mapped[int] = mapped_column(Integer, default=12)
-    min_items: Mapped[int] = mapped_column(Integer, default=3)
+    # Dead, and still mapped. Nothing reads it: an issue now happens whenever
+    # there is anything to put in one. The column stays because `create_all`
+    # never ALTERs, so dropping it from the model would leave a NOT NULL column
+    # with no default on every database that already exists — and every INSERT
+    # would fail there while passing on a fresh one.
+    min_items: Mapped[int] = mapped_column(Integer, default=0)
     max_per_feed: Mapped[int] = mapped_column(Integer, default=3)
     audience: Mapped[str] = mapped_column(Text, default="")
     tone: Mapped[str] = mapped_column(String(120), default="")

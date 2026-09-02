@@ -1797,7 +1797,7 @@ def newsletter_preview(
         console.print(
             f"[green]{len(rows)}[/] candidate(s) between {material['window_from'][:10]} "
             f"and {material['window_to'][:10]}"
-            + ("" if material.get("enough") else "  [yellow](below the minimum — a run would skip)[/]")
+            + ("" if material.get("enough") else "  [yellow](nothing new — a run would skip)[/]")
         )
         for row in rows:
             console.print(f"  [dim]{row['published'] or '—'}[/] [cyan]{row['source']}[/] {row['title']}")

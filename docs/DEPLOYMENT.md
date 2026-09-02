@@ -706,6 +706,42 @@ that button.
 so a *fresh* provision is correct, following the same `empty() ? [] : [...]`
 pattern as `adminToken`. Never run it against the live resource group.
 
+### Turning on the Telegram article relay
+
+Every article from a **watched** feed, posted to a chat as it lands — one message
+each, no model call, no issue stored. Two values, and both are config-only, so no
+rebuild:
+
+```bash
+az containerapp secret set -g ppn-blogger-rg -n ppn-blogger \
+  --secrets telegram-bot-token="<token from @BotFather>"
+az containerapp update -g ppn-blogger-rg -n ppn-blogger \
+  --set-env-vars TELEGRAM_BOT_TOKEN=secretref:telegram-bot-token \
+                 PPN_TELEGRAM_RELAY_CHAT_ID="<chat id>"
+```
+
+The chat id is your own chat with the bot (message it, then read
+`https://api.telegram.org/bot<token>/getUpdates`), or a group/channel the bot has
+been added to — negative for those. Several are allowed, comma-separated.
+
+Three things decide what actually arrives:
+
+- **Only watched feeds are relayed.** Flag them in the Feeds screen; that flag is
+  also what puts them on the 15-minute cadence, and doing it to even one feed
+  makes the serverless database effectively always-on.
+- **`PPN_REALTIME_QUIET_HOURS` applies** (22:00–07:00 by default). Nothing is
+  marked notified during the window, so the backlog rolls up afterwards rather
+  than being lost. Set it empty for a true round-the-clock relay.
+- **`PPN_TELEGRAM_RELAY_MAX_PER_TICK`** (default 10) is a throttle, not a filter:
+  Telegram limits a group to roughly twenty messages a minute, and a feed's first
+  poll can carry a hundred articles, so the overflow arrives as one digest
+  message that says how many it holds.
+
+The relay chats are named here and never taken from the recipient list — a
+subscriber to a composed issue has not asked for the raw firehose. For a *fresh*
+provision, `infra/main.bicep` takes `telegramRelayChatId` alongside
+`telegramBotToken`, following the same `empty() ? [] : [...]` pattern.
+
 ### Making the app installable behind Easy Auth
 
 The UI ships as a PWA. Easy Auth is configured to answer every unauthenticated

@@ -405,6 +405,122 @@ async def test_a_broken_push_service_never_stops_the_tick(sched, monkeypatch) ->
 
 
 # ---------------------------------------------------------------------------
+# The Telegram relay — every watched article, unedited
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def relayed(monkeypatch):
+    """Capture relay messages, with a bot token and one chat id configured."""
+    from ppn_blogger.server import channels
+    from ppn_blogger.settings import get_settings
+
+    telegram = get_settings().telegram
+    monkeypatch.setattr(telegram, "bot_token", "test-token")
+    monkeypatch.setattr(telegram, "relay_chat_ids", ["-1001234567890"])
+
+    messages: list[tuple[str, str]] = []
+
+    async def fake_send(chat_id, text, *, markdown=False):
+        assert markdown is False, "a feed's headline is not ours to parse as Markdown"
+        messages.append((chat_id, text))
+        return channels.DeliveryResult(True, provider_message_id="1")
+
+    monkeypatch.setattr(channels, "send_telegram", fake_send)
+    return messages
+
+
+async def test_every_watched_article_gets_its_own_telegram_message(
+    sched, monkeypatch, sent, relayed
+) -> None:
+    """One message each — the relay is a raw feed, not a digest."""
+    from ppn_blogger.server.watch import notify_new_articles
+
+    await _watched_feed_with(
+        monkeypatch,
+        [_entry(f"https://example.com/{i}", f"Post {i}") for i in range(3)],
+    )
+
+    await notify_new_articles()
+
+    assert len(relayed) == 3
+    bodies = "\n".join(text for _, text in relayed)
+    for i in range(3):
+        assert f"Post {i}" in bodies
+        assert f"https://example.com/{i}" in bodies
+    assert all(chat == "-1001234567890" for chat, _ in relayed)
+
+    # And the same stamp covers both announcements: nothing is relayed twice.
+    await notify_new_articles()
+    assert len(relayed) == 3
+
+
+async def test_nothing_is_relayed_until_a_chat_id_is_named(sched, monkeypatch, sent) -> None:
+    """The recipient list is not the relay list — a subscriber never gets the firehose."""
+    from ppn_blogger.server import channels
+    from ppn_blogger.server.watch import notify_new_articles
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(get_settings().telegram, "bot_token", "test-token")
+    monkeypatch.setattr(get_settings().telegram, "relay_chat_ids", [])
+
+    calls: list[str] = []
+
+    async def fake_send(chat_id, text, *, markdown=False):
+        calls.append(chat_id)
+        return channels.DeliveryResult(True)
+
+    monkeypatch.setattr(channels, "send_telegram", fake_send)
+    await _watched_feed_with(monkeypatch, [_entry("https://example.com/one", "Something")])
+
+    await notify_new_articles()
+    assert calls == []
+
+
+async def test_a_flood_overflows_into_one_digest_rather_than_being_dropped(
+    sched, monkeypatch, sent, relayed
+) -> None:
+    """Telegram throttles a group; a first poll can carry a hundred articles."""
+    from ppn_blogger.server.watch import notify_new_articles
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(get_settings().telegram, "relay_max_per_tick", 3)
+    await _watched_feed_with(
+        monkeypatch,
+        [_entry(f"https://example.com/{i}", f"Post {i}") for i in range(10)],
+    )
+
+    await notify_new_articles()
+
+    assert len(relayed) == 4  # three articles, then the rest as one message
+    digest = relayed[-1][1]
+    assert "7 more new articles" in digest
+    # Newest first: the three most recent travel on their own, the tail is listed.
+    assert "Post 9" in relayed[0][1]
+    assert "Post 0" in digest and "https://example.com/0" in digest
+
+
+async def test_a_failing_relay_never_stops_the_tick(sched, monkeypatch, sent) -> None:
+    """Same doctrine as the push: the articles are stamped, so this must not raise."""
+    from ppn_blogger.server import channels
+    from ppn_blogger.server.watch import notify_new_articles
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(get_settings().telegram, "bot_token", "test-token")
+    monkeypatch.setattr(get_settings().telegram, "relay_chat_ids", ["-100"])
+
+    async def boom(*a, **kw):
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr(channels, "send_telegram", boom)
+    await _watched_feed_with(monkeypatch, [_entry("https://example.com/one", "Something")])
+
+    # The push still went out, and the failure was swallowed.
+    assert await notify_new_articles() == 1
+    assert len(sent) == 1
+
+
+# ---------------------------------------------------------------------------
 # The weekly price refresh
 # ---------------------------------------------------------------------------
 

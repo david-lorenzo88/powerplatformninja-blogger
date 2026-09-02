@@ -41,6 +41,8 @@ param emailFrom string = ''
 @description('Telegram bot token. Blank = the channel stays off. Telegram is the only channel that can post to a group.')
 @secure()
 param telegramBotToken string = ''
+@description('Comma-separated chat ids for the raw article relay: every article from a watched feed, posted as it lands. Blank = the relay stays off. Not a secret, and deliberately not the recipient list.')
+param telegramRelayChatId string = ''
 @description('WhatsApp Cloud API. Individual numbers only (Meta has no group API) and the template must be pre-approved.')
 @secure()
 param whatsappToken string = ''
@@ -288,6 +290,11 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ACS_CONNECTION_STRING', secretRef: 'acs-connection-string' }
           ], empty(telegramBotToken) ? [] : [
             { name: 'TELEGRAM_BOT_TOKEN', secretRef: 'telegram-bot-token' }
+          ], empty(telegramRelayChatId) ? [] : [
+            // The relay needs the token above as well; it is separate from it
+            // because the two do different things — one channel carries composed
+            // issues to recipients, this posts every watched article as it lands.
+            { name: 'PPN_TELEGRAM_RELAY_CHAT_ID', value: telegramRelayChatId }
           ], empty(whatsappToken) ? [] : [
             { name: 'WHATSAPP_TOKEN', secretRef: 'whatsapp-token' }
             { name: 'WHATSAPP_PHONE_NUMBER_ID', value: whatsappPhoneNumberId }

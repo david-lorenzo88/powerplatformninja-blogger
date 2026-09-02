@@ -209,9 +209,10 @@ async def candidates(newsletter_id: int, *, now: datetime | None = None) -> dict
         "window_to": moment.isoformat(),
         "candidates": out,
         "already_used": len(used),
-        "min_items": row["min_items"],
         "max_items": row["max_items"],
-        "enough": len(out) >= int(row["min_items"] or 0),
+        # There is no minimum any more: anything at all is an issue, and only an
+        # empty window is a skip.
+        "enough": bool(out),
     }
 
 
@@ -557,7 +558,6 @@ EDITABLE = {
     "timezone",
     "lookback_hours",
     "max_items",
-    "min_items",
     "max_per_feed",
     "audience",
     "tone",
@@ -629,7 +629,6 @@ def _dict(row: Newsletter, group_ids: list[int], issue_count: int) -> dict[str, 
         "timezone": row.timezone,
         "lookback_hours": row.lookback_hours,
         "max_items": row.max_items,
-        "min_items": row.min_items,
         "max_per_feed": row.max_per_feed,
         "audience": row.audience,
         "tone": row.tone,

@@ -37,6 +37,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_list(name: str) -> list[str]:
+    """A comma-separated environment value, blanks dropped."""
+    return [part.strip() for part in _env(name).split(",") if part.strip()]
+
+
 def _env_float(name: str, default: float) -> float:
     raw = _env(name)
     try:
@@ -446,18 +451,39 @@ class EmailSettings:
 
 @dataclass(slots=True)
 class TelegramSettings:
-    """A bot token is the whole configuration.
+    """A bot token is the whole configuration, plus the relay's own chat ids.
 
     Telegram is the only channel here that can post to a *group*: a group or
     channel is just a chat id (negative for groups), and the bot has to be added
     to it first. That is why it exists — WhatsApp has no group API at all.
+
+    ``relay_chat_ids`` is deliberately *not* the recipient list. The relay posts
+    every watched article the moment it lands, unedited; the recipient list is
+    who receives composed issues. Somebody who subscribed to a weekly letter has
+    not asked for forty raw headlines a day, so the raw feed only ever goes
+    where the operator has named a chat id by hand.
     """
 
     bot_token: str = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
+    relay_chat_ids: list[str] = field(
+        default_factory=lambda: _env_list("PPN_TELEGRAM_RELAY_CHAT_ID")
+    )
+    # A cap per tick, not a limit on what is relayed: the overflow travels as one
+    # digest message rather than being dropped. Telegram throttles a group at
+    # roughly twenty messages a minute, and a feed's *first* poll can bring a
+    # hundred articles at once.
+    relay_max_per_tick: int = field(
+        default_factory=lambda: _env_int("PPN_TELEGRAM_RELAY_MAX_PER_TICK", 10)
+    )
 
     @property
     def is_configured(self) -> bool:
         return bool(self.bot_token)
+
+    @property
+    def relays(self) -> bool:
+        """Whether new articles should be posted straight to a chat."""
+        return bool(self.bot_token and self.relay_chat_ids)
 
     @property
     def status_detail(self) -> str:
