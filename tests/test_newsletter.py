@@ -549,6 +549,41 @@ def test_short_form_truncates_honestly() -> None:
     assert "more." in short
 
 
+def test_short_form_escapes_a_headline_it_did_not_write() -> None:
+    """The regression that parked a live recipient.
+
+    The digest went out as Markdown with the headline raw, Telegram answered
+    *400 can't parse entities* on an unbalanced `_`, and the delivery was
+    recorded permanent — which parks the recipient for every future issue. The
+    template being ours was never the point: the headlines in it are arbitrary
+    text from somebody else's feed.
+    """
+    issue = {
+        "subject": "Weekly & friends",
+        "sections": [
+            {
+                "id": "ai",
+                "title": "AI",
+                "items": [
+                    {
+                        "headline": "Power_Platform *ships* [preview] <tags> & more",
+                        "url": "https://example.com/x?a=1&b=2",
+                    }
+                ],
+            }
+        ],
+    }
+    short = render.render_short(issue)
+
+    # Bold on the subject, and nothing else Telegram would try to parse.
+    assert short.startswith("<b>Weekly &amp; friends</b>")
+    assert "Power_Platform *ships* [preview] &lt;tags&gt; &amp; more" in short
+    assert "<tags>" not in short
+    # Every tag opens and closes on one line, so a line-boundary cut is safe.
+    for line in short.splitlines():
+        assert line.count("<b>") == line.count("</b>")
+
+
 def test_markdown_is_editable_and_links_out() -> None:
     md = render.render_markdown(ISSUE, name="Weekly")
     assert md.startswith("# Three things")

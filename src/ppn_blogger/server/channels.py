@@ -283,31 +283,32 @@ class TelegramChannel:
     async def send(self, issue: IssuePayload, target: RecipientRef) -> DeliveryResult:
         if not target.address:
             return DeliveryResult(False, error="no chat id", permanent=True)
-        # Markdown is safe here and only here: the digest is produced by
-        # `newsletter_render.render_short`, which is ours. See `send_telegram`.
-        return await send_telegram(target.address, issue.short, markdown=True)
+        # HTML, because `render_short` escapes every value it interpolates and
+        # Telegram's HTML escaping is total. It sent Markdown once; a headline
+        # with a lone `_` in it was a 400 and cost the recipient its place.
+        return await send_telegram(target.address, issue.short, parse_mode="HTML")
 
 
-async def send_telegram(chat_id: str, text: str, *, markdown: bool = False) -> DeliveryResult:
+async def send_telegram(chat_id: str, text: str, *, parse_mode: str = "") -> DeliveryResult:
     """One message to one chat. Never raises; shared with the article relay.
 
-    ``markdown`` defaults to **off**, and that default is the point. Telegram
-    parses ``*``, ``_`` and ``[`` when a parse mode is set and answers a 400 —
-    which this code maps to *permanent* — if they do not balance. An article
-    headline is arbitrary text from somebody else's feed, so a stray underscore
-    in a product name would silently cost that article its message. Only text
-    this project generated may be sent as Markdown.
+    ``parse_mode`` defaults to **none**, and that default is the point: with a
+    parse mode set, Telegram interprets the message's punctuation and answers a
+    400 if it does not balance. Only text whose every interpolated value has
+    been escaped for that mode may set one — `render_short` for the newsletter
+    digest, in HTML. The relay sends a feed's headline verbatim, so it sends it
+    as plain text.
     """
     import httpx
 
     settings = get_settings().telegram
     payload: dict[str, Any] = {
         "chat_id": chat_id,
-        "text": text[:TELEGRAM_LIMIT],
+        "text": _fit(text, parse_mode),
         "disable_web_page_preview": True,
     }
-    if markdown:
-        payload["parse_mode"] = "Markdown"
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
 
     try:
         async with httpx.AsyncClient(timeout=20) as http:
@@ -323,9 +324,41 @@ async def send_telegram(chat_id: str, text: str, *, markdown: bool = False) -> D
             True, provider_message_id=str(body.get("result", {}).get("message_id", ""))
         )
     detail = _describe_http(response)
-    # 400 "chat not found" and 403 "bot was blocked" never fix themselves.
-    permanent = response.status_code in (400, 403)
-    return DeliveryResult(False, error=detail, permanent=permanent)
+    return DeliveryResult(False, error=detail, permanent=_unreachable(response.status_code, detail))
+
+
+def _fit(text: str, parse_mode: str) -> str:
+    """Truncate to Telegram's cap without splitting markup.
+
+    A blind slice is safe on plain text and dangerous with a parse mode: cutting
+    through `&amp;` or between `<b>` and `</b>` is itself a 400. Every tag this
+    project emits opens and closes inside one line, so a line boundary is a safe
+    cut — and if a single line is somehow over the cap there is nothing to
+    preserve anyway.
+    """
+    if len(text) <= TELEGRAM_LIMIT:
+        return text
+    if not parse_mode:
+        return text[:TELEGRAM_LIMIT]
+    cut = text.rfind("\n", 0, TELEGRAM_LIMIT)
+    return text[:cut] if cut > 0 else text[:TELEGRAM_LIMIT]
+
+
+def _unreachable(status: int, detail: str) -> bool:
+    """Whether the failure means this chat will never accept a message.
+
+    Only that answer parks a recipient, so it has to mean the *address* is dead —
+    not that this particular message was malformed. Telegram returns 400 for
+    both "chat not found" and "can't parse entities", and treating the second as
+    permanent is what parked a perfectly good group over a headline containing
+    an underscore. A malformed message is our bug: it retries, it does not
+    disqualify the recipient.
+    """
+    if status == 403:  # blocked, kicked, or the bot was removed from the group
+        return True
+    if status != 400:
+        return False
+    return "parse" not in detail.lower() and "entit" not in detail.lower()
 
 
 class WhatsAppChannel:

@@ -224,13 +224,29 @@ def render_short(issue: dict[str, Any], *, limit: int = 4000, name: str = "") ->
     Telegram caps a message at 4096 characters and WhatsApp templates are far
     shorter, so this carries headline + link only and truncates honestly rather
     than silently losing the tail.
+
+    **HTML, and every interpolated value escaped.** This used to emit Markdown —
+    `*subject*` and the headline raw — and it cost a real send: Telegram replied
+    *400 Bad Request: can't parse entities* on a headline containing an
+    unbalanced `_`, the delivery was recorded as a permanent failure, and the
+    recipient was parked. The template being ours was never the point; the
+    headlines in it come from somebody else's feed and are arbitrary text.
+
+    Telegram's HTML mode is the safe one because its escaping is total and
+    well-defined — `&`, `<`, `>` and nothing else — where legacy Markdown has no
+    escape for a lone `*` at all. Tags are opened and closed within a single
+    line so that truncating on a line boundary can never split one.
     """
-    lines = [f"*{issue.get('subject', '').strip() or name}*", ""]
+    lines = [f"<b>{esc(issue.get('subject', '').strip() or name)}</b>", ""]
     total = 0
     shown = 0
     for section in issue.get("sections", []):
         for item in section.get("items", []):
-            entry = f"• {(item.get('headline') or '').strip()}\n{(item.get('url') or '').strip()}"
+            entry = (
+                f"• {esc((item.get('headline') or '').strip())}\n"
+                f"{esc((item.get('url') or '').strip())}"
+            )
+            # Measured after escaping: `&amp;` is what the API counts, not `&`.
             if total + len(entry) > limit - 80:
                 break
             lines.append(entry)

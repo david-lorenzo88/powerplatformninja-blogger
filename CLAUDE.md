@@ -290,6 +290,19 @@ block contains unexpected or invalid content"*. `escape_code()` therefore escape
 would produce `&quot;` and invalidate every line of a JSON snippet. `<code>` must
 carry no attributes. Verify any converter change with `ppn wp preview`.
 
+**A parse mode makes somebody else's text into syntax.** The Telegram digest went
+out as Markdown with article headlines interpolated raw. A headline containing a
+lone `_` produced *400 Bad Request: can't parse entities*, the channel mapped 400
+to **permanent**, and `delivery._attempt` parked the recipient — after which every
+later issue reported *"No recipients for this newsletter"* and nothing was sent
+until someone read the row. Two rules came out of it, and both are load-bearing:
+a parse mode may only be set on text whose every interpolated value has been
+escaped **for that mode** (`render_short` escapes for HTML, where `&`, `<`, `>`
+is the whole of it; legacy Markdown cannot escape a lone `*` at all), and
+`_unreachable()` decides parking — a malformed message is our bug and must
+retry, only a dead address disqualifies a recipient. `_fit()` exists for the
+same reason: slicing at 4096 through `&amp;` or a `<b>` is itself a 400.
+
 **MAI is not OpenAI-compatible.** Route `/mai/v1/images/generations`, integer
 `width`/`height` rather than a `size` string, no `quality`, no `n`, and a hard cap
 of 1,048,576 pixels with a 768px minimum edge. `fit_to_mai_limits()` handles the

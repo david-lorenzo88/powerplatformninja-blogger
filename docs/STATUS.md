@@ -722,6 +722,43 @@ operator just asked to hear from quickly.
 
 ---
 
+## The digest was Markdown, and it parked a live recipient (new)
+
+Found from the app's own logs while working out why a newsletter never arrived.
+The chain: `render_short` emitted `*subject*` and interpolated article headlines
+raw; `TelegramChannel` sent it with `parse_mode: Markdown`; a headline carrying
+an unbalanced `_` came back **400 Bad Request: can't parse entities**; the
+channel treated *any* 400 as permanent; `delivery._attempt` therefore stamped
+`failed_at` on the recipient. From then on `_materialise` skipped it and every
+issue failed with *"No recipients for this newsletter"* — a message that points
+at the wrong thing entirely, which is why it sat unfixed across several issues.
+
+Three changes, each of which alone would have prevented it:
+
+- **The digest is HTML and escapes everything it interpolates.** Telegram's HTML
+  escaping is total and finite — `&`, `<`, `>` — where legacy Markdown has no
+  escape for a lone `*`. The template being ours was never the point: the
+  headlines in it come from other people's feeds.
+- **`_unreachable()` decides what parks a recipient.** 403, and a 400 that is not
+  about parsing. A malformed message is our bug: it retries under the normal
+  backoff and the recipient keeps its place.
+- **`_fit()` truncates on a line boundary when a parse mode is set**, because
+  slicing at 4096 through `&amp;` or between `<b>` and `</b>` is itself a 400.
+  Every tag the renderer emits opens and closes within one line, which is what
+  makes that cut safe.
+
+The relay was already correct here — it sends plain text precisely because a
+feed's headline is arbitrary — but its guard is now the shared one.
+
+To recover a parked recipient: toggle it off and on in Recipients, which clears
+`failed_at`, then press Send on the issue that failed.
+
+- **Tests**: 5 new — the escaping, a parse failure not being permanent, a dead
+  chat still being permanent, the relay sending no parse mode, and truncation
+  never cutting through markup.
+
+---
+
 ## Still open / not yet exercised
 
 - **A corpus run against real pages** — `write-brief` and the Custom mode are

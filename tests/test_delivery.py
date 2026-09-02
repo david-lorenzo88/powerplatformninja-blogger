@@ -238,6 +238,104 @@ async def test_retry_leaves_what_already_worked_alone(store, monkeypatch) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Telegram: what is permanent, and what is merely wrong
+# ---------------------------------------------------------------------------
+
+
+class _Response:
+    def __init__(self, status_code: int, description: str = "") -> None:
+        self.status_code = status_code
+        self._description = description
+
+    def json(self) -> dict:
+        return {"ok": False, "description": self._description}
+
+    @property
+    def text(self) -> str:
+        return self._description
+
+
+def _telegram_replying(monkeypatch, response) -> list[dict]:
+    """Capture what would be posted to the Bot API."""
+    import httpx
+
+    from ppn_blogger.settings import get_settings
+
+    monkeypatch.setattr(get_settings().telegram, "bot_token", "test-token")
+    sent: list[dict] = []
+
+    class FakeClient:
+        def __init__(self, *a, **kw) -> None: ...
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None: ...
+
+        async def post(self, url, json=None):
+            sent.append(json or {})
+            return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    return sent
+
+
+async def test_a_malformed_message_does_not_disqualify_the_chat(monkeypatch) -> None:
+    """*can't parse entities* is our bug, not a dead address.
+
+    Treating it as permanent is what parked a live group over a headline with an
+    underscore in it, and a parked recipient makes every later issue report "no
+    recipients for this newsletter".
+    """
+    from ppn_blogger.server import channels
+
+    sent = _telegram_replying(
+        monkeypatch,
+        _Response(400, "Bad Request: can't parse entities: Can't find end of the entity"),
+    )
+    result = await channels.send_telegram("-100", "<b>oops", parse_mode="HTML")
+
+    assert result.ok is False
+    assert result.permanent is False  # retried, and the recipient stays
+    assert sent[0]["parse_mode"] == "HTML"
+
+
+async def test_a_dead_chat_is_permanent(monkeypatch) -> None:
+    from ppn_blogger.server import channels
+
+    _telegram_replying(monkeypatch, _Response(400, "Bad Request: chat not found"))
+    assert (await channels.send_telegram("-100", "hi")).permanent is True
+
+    _telegram_replying(monkeypatch, _Response(403, "Forbidden: bot was blocked by the user"))
+    assert (await channels.send_telegram("-100", "hi")).permanent is True
+
+
+async def test_the_relay_sends_no_parse_mode_at_all(monkeypatch) -> None:
+    """A feed's headline is verbatim text, so nothing may interpret it."""
+    from ppn_blogger.server import channels
+
+    sent = _telegram_replying(monkeypatch, _Response(400, "whatever"))
+    await channels.send_telegram("-100", "Power_Platform *ships* [preview]")
+    assert "parse_mode" not in sent[0]
+
+
+def test_truncation_never_cuts_through_markup() -> None:
+    """A blind slice through `&amp;` or a `<b>` tag is itself a 400."""
+    from ppn_blogger.server.channels import TELEGRAM_LIMIT, _fit
+
+    body = "<b>Title</b>\n" + "\n".join(f"• item {i} &amp; more" for i in range(600))
+    assert len(body) > TELEGRAM_LIMIT
+
+    fitted = _fit(body, "HTML")
+    assert len(fitted) <= TELEGRAM_LIMIT
+    assert fitted.count("<b>") == fitted.count("</b>")
+    assert not fitted.endswith("&am") and "&amp" not in fitted.split("\n")[-1][-4:]
+
+    # Plain text has nothing to protect, so it is cut at the cap.
+    assert len(_fit(body, "")) == TELEGRAM_LIMIT
+
+
+# ---------------------------------------------------------------------------
 # Configuration and status
 # ---------------------------------------------------------------------------
 
