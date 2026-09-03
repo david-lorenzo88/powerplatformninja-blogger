@@ -27,6 +27,7 @@ from sqlalchemy import delete, desc, func, select, true
 from ..settings import get_settings
 from .db import (
     Article,
+    Delivery,
     Feed,
     FeedGroupMember,
     Newsletter,
@@ -757,10 +758,24 @@ async def update_recipient(recipient_id: int, changes: dict[str, Any]) -> dict[s
 
 
 async def delete_recipient(recipient_id: int) -> bool:
+    """Remove a recipient, and the delivery rows that point at it.
+
+    `deliveries.recipient_id` is a real foreign key, so deleting the row on its
+    own is *547 The DELETE statement conflicted with the REFERENCE constraint* on
+    SQL Server — a 500 from the Remove button, which is how this was found. The
+    delivery rows go with it rather than being orphaned: nulling the column would
+    make them read as broadcast rows, which is a lie about what was sent. What is
+    lost is the per-recipient history of a recipient that no longer exists; the
+    issue keeps its own status and counts.
+
+    A parked recipient does not need removing at all — re-enabling it clears the
+    failure (see `update_recipient`) — but Remove has to work when it is pressed.
+    """
     async with session() as s:
         row = await s.get(Recipient, recipient_id)
         if row is None:
             return False
+        await s.execute(delete(Delivery).where(Delivery.recipient_id == recipient_id))
         await s.delete(row)
         await s.commit()
     return True

@@ -237,6 +237,26 @@ async def test_retry_leaves_what_already_worked_alone(store, monkeypatch) -> Non
     assert attempted == ["bad@example.com"]
 
 
+async def test_a_recipient_that_has_been_sent_to_can_still_be_removed(store, monkeypatch) -> None:
+    """`deliveries.recipient_id` is a real foreign key.
+
+    Deleting the recipient row alone is *547 The DELETE statement conflicted
+    with the REFERENCE constraint* on SQL Server — a 500 from the Remove button.
+    SQLite would hide this if the suite ran with `PRAGMA foreign_keys` off; it
+    does not (`db._enforce_sqlite_foreign_keys`), which is what lets this test
+    fail on either backend.
+    """
+    issue = await _issue()
+    recipient = await newsletters.create_recipient("telegram", "-1002", name="A group")
+    _channel(monkeypatch, "telegram", DeliveryResult(True, provider_message_id="t"))
+
+    await delivery.deliver_issue(issue["id"])
+    assert (await delivery.summary(issue["id"]))["sent"] >= 1
+
+    assert await newsletters.delete_recipient(recipient["id"]) is True
+    assert all(r["id"] != recipient["id"] for r in await newsletters.list_recipients())
+
+
 # ---------------------------------------------------------------------------
 # Telegram: what is permanent, and what is merely wrong
 # ---------------------------------------------------------------------------

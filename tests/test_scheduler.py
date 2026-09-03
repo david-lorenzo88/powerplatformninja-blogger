@@ -404,6 +404,37 @@ async def test_a_broken_push_service_never_stops_the_tick(sched, monkeypatch) ->
     assert await notify_new_articles() == 0  # swallowed, not raised
 
 
+async def test_marking_a_feed_watched_does_not_replay_its_history(
+    sched, monkeypatch, sent
+) -> None:
+    """The backlog is stamped, never announced.
+
+    Watching 24 feeds that already had months of articles left 2,632 un-notified
+    rows waiting for the first tick. A relay is for what is new; the rest was
+    already in the database and had never been anybody's notification.
+    """
+    from ppn_blogger.server import watch
+    from ppn_blogger.server.db import Article, session, utcnow
+
+    await _watched_feed_with(
+        monkeypatch,
+        [_entry(f"https://example.com/{i}", f"Post {i}") for i in range(3)],
+    )
+    # Age two of the three past the window.
+    async with session() as s:
+        rows = list((await s.execute(select(Article).order_by(Article.id))).scalars())
+        for row in rows[:2]:
+            row.fetched_at = utcnow() - timedelta(days=4)
+        await s.commit()
+
+    assert await watch.unnotified_count() == 3
+    assert await watch.notify_new_articles() == 1
+    # Only the fresh one was announced...
+    assert len(sent) == 1 and "Post 2" in sent[0][1]
+    # ...and the other two are marked read rather than left to fire tomorrow.
+    assert await watch.unnotified_count() == 0
+
+
 # ---------------------------------------------------------------------------
 # The Telegram relay — every watched article, unedited
 # ---------------------------------------------------------------------------
